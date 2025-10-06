@@ -10,7 +10,7 @@ cd ..
 echo "Installing backend dependencies..."
 pip install -r backend/requirements.txt
 
-# Указываем PYTHONPATH
+# Указываем PYTHONPATH, чтобы Django нашел свои модули
 export PYTHONPATH=$(pwd)
 
 echo "Running Django management commands..."
