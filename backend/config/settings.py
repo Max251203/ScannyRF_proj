@@ -3,20 +3,30 @@ Django settings for config project.
 """
 from pathlib import Path
 import os
-from decouple import Config, RepositoryEnv, Csv
+from decouple import Config, RepositoryEnv
 import dj_database_url
 
-# BASE_DIR теперь указывает на корень всего проекта (на 2 уровня выше этого файла)
-# backend/config/settings.py -> backend/config -> backend -> корень
-BASE_DIR = Path(__file__).resolve().parent.parent
+# BASE_DIR указывает на корень всего проекта
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
-# .env файл теперь ищется в папке backend
-config = Config(RepositoryEnv(str(BASE_DIR / 'backend' / '.env')))
+# --- ИСПРАВЛЕНИЕ: Безопасная загрузка .env файла ---
+# На сервере OnRender .env файла не будет, и это нормально.
+# decouple будет брать переменные из окружения сервиса.
+env_path = BASE_DIR / 'backend' / '.env'
+if env_path.exists():
+    # Используем RepositoryEnv только если .env файл существует (для локальной разработки)
+    config = Config(RepositoryEnv(str(env_path)))
+else:
+    # В продакшене создаем пустой config, который будет читать только из os.environ
+    config = Config()
 
 # --- Основные настройки ---
-SECRET_KEY = config('SECRET_KEY', default='local-dev-secret-key-that-is-not-secure')
-DEBUG = config('DEBUG', default=True, cast=bool)
-ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='127.0.0.1,localhost', cast=Csv())
+# На проде SECRET_KEY ДОЛЖЕН быть в переменных окружения, поэтому убираем default
+SECRET_KEY = config('SECRET_KEY')
+# В проде DEBUG всегда False
+DEBUG = config('DEBUG', default=False, cast=bool)
+# ALLOWED_HOSTS будет переопределен ниже для Render
+ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='127.0.0.1,localhost').split(',')
 
 
 # --- Приложения ---
@@ -26,15 +36,10 @@ INSTALLED_APPS = [
     'django.contrib.contenttypes',
     'django.contrib.sessions',
     'django.contrib.messages',
-    # WhiteNoise должен быть здесь для команды runserver_nostatic
     'whitenoise.runserver_nostatic',
     'django.contrib.staticfiles',
-
-    # Сторонние приложения
     'rest_framework',
     'corsheaders',
-
-    # Ваши приложения
     'accounts',
     'cms',
     'core',
@@ -43,7 +48,6 @@ INSTALLED_APPS = [
 # --- Middleware ---
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
-    # WhiteNoise Middleware должен быть сразу после SecurityMiddleware
     'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'corsheaders.middleware.CorsMiddleware',
@@ -60,9 +64,8 @@ ROOT_URLCONF = 'backend.config.urls'
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        # Указываем Django, где искать index.html из билда React
         'DIRS': [
-            BASE_DIR / 'static', # <-- Vite собирает сюда index.html
+            BASE_DIR / 'frontend' / 'dist',
         ],
         'APP_DIRS': True,
         'OPTIONS': {
@@ -78,27 +81,14 @@ TEMPLATES = [
 WSGI_APPLICATION = 'backend.config.wsgi.application'
 
 # --- База данных ---
-DATABASE_URL = config('DATABASE_URL', default=None)
-if DATABASE_URL:
-    DATABASES = {
-        'default': dj_database_url.config(
-            default=DATABASE_URL,
-            conn_max_age=600,
-            conn_health_checks=True,
-        )
-    }
-else:
-    # Фоллбэк для локальной разработки
-    DATABASES = {
-        'default': {
-            'ENGINE': 'django.db.backends.postgresql',
-            'NAME': config('PG_NAME', default='scannyrf'),
-            'USER': config('PG_USER', default='postgres'),
-            'PASSWORD': config('PG_PASS', default='postgres'),
-            'HOST': config('PG_HOST', default='127.0.0.1'),
-            'PORT': config('PG_PORT', default='5432'),
-        }
-    }
+# dj-database-url автоматически возьмет DATABASE_URL из окружения
+DATABASES = {
+    'default': dj_database_url.config(
+        default=config('DATABASE_URL'), # Используем config, чтобы он взял из .env локально
+        conn_max_age=600,
+        conn_health_checks=True
+    )
+}
 
 # --- Аутентификация и авторизация ---
 AUTH_USER_MODEL = 'accounts.User'
@@ -115,41 +105,35 @@ TIME_ZONE = 'Europe/Moscow'
 USE_I18N = True
 USE_TZ = True
 
-# --- Статические и медиа-файлы ---
+# --- Статические файлы ---
 STATIC_URL = '/static/'
-# Папка, куда `collectstatic` соберет ВСЕ статические файлы для продакшена
 STATIC_ROOT = BASE_DIR / 'staticfiles'
-# Папки, где Django будет дополнительно искать статику (включая билд React)
 STATICFILES_DIRS = [
-    BASE_DIR / 'static',
+    BASE_DIR / 'frontend' / 'dist' / 'assets',
+    # Добавим корень dist, чтобы Django нашел vite.svg и др. файлы в корне
+    BASE_DIR / 'frontend' / 'dist',
 ]
-# Хранилище для WhiteNoise
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
-# --- Прочие настройки Django ---
+# --- Прочие настройки ---
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
-
-# --- Настройки DRF и CORS ---
 REST_FRAMEWORK = {
-    'DEFAULT_AUTHENTICATION_CLASSES': (
-        'rest_framework_simplejwt.authentication.JWTAuthentication',
-    ),
+    'DEFAULT_AUTHENTICATION_CLASSES': ('rest_framework_simplejwt.authentication.JWTAuthentication',),
 }
-CORS_ALLOW_ALL_ORIGINS = True # В проде лучше ограничить
+CORS_ALLOW_ALL_ORIGINS = True
 
-# --- Настройки E-mail ---
+# --- Настройки E-mail и OAuth ---
 EMAIL_BACKEND = config('EMAIL_BACKEND', default='django.core.mail.backends.smtp.EmailBackend')
 DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='no-reply@scannyrf')
 EMAIL_HOST = config('EMAIL_HOST', default='smtp.gmail.com')
-EMAIL_PORT = config('EMAIL_PORT', default=587, cast=int)
-EMAIL_HOST_USER = config('EMAIL_HOST_USER', default='')
-EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')
-EMAIL_USE_TLS = config('EMAIL_USE_TLS', default=True, cast=bool)
-EMAIL_USE_SSL = config('EMAIL_USE_SSL', default=False, cast=bool)
+EMAIL_PORT = config('EMAIL_PORT', cast=int)
+EMAIL_HOST_USER = config('EMAIL_HOST_USER')
+EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD')
+EMAIL_USE_TLS = config('EMAIL_USE_TLS', cast=bool, default=True)
+EMAIL_USE_SSL = config('EMAIL_USE_SSL', cast=bool, default=False)
 if EMAIL_USE_SSL:
     EMAIL_USE_TLS = False
 
-# --- Ключи OAuth ---
 GOOGLE_CLIENT_ID    = config('GOOGLE_CLIENT_ID', default='')
 FACEBOOK_APP_ID     = config('FACEBOOK_APP_ID', default='')
 FACEBOOK_APP_SECRET = config('FACEBOOK_APP_SECRET', default='')
@@ -158,12 +142,11 @@ VK_SERVICE_KEY      = config('VK_SERVICE_KEY', default='')
 # ==============================================================================
 # НАСТРОЙКИ ДЛЯ ПРОДАКШЕНА (OnRender)
 # ==============================================================================
-if config('RENDER', default=False, cast=bool):
+if 'RENDER' in os.environ:
     DEBUG = False
-
-    RENDER_EXTERNAL_HOSTNAME = config('RENDER_EXTERNAL_HOSTNAME', default=None)
+    RENDER_EXTERNAL_HOSTNAME = os.environ.get('RENDER_EXTERNAL_HOSTNAME')
     if RENDER_EXTERNAL_HOSTNAME:
-        ALLOWED_HOSTS = [RENDER_EXTERNAL_HOSTNAME]
+        ALLOWED_HOSTS.append(RENDER_EXTERNAL_HOSTNAME)
         CORS_ALLOWED_ORIGINS = [f"https://{RENDER_EXTERNAL_HOSTNAME}"]
         CSRF_TRUSTED_ORIGINS = [f"https://{RENDER_EXTERNAL_HOSTNAME}"]
 
