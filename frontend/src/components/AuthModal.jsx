@@ -188,73 +188,65 @@ export default function AuthModal({ open, onClose, onSuccess }) {
         <button className="modal-x" onClick={onClose}>×</button>
         <h3 className="modal-title">{mode === 'login' ? 'Вход' : 'Регистрация'}</h3>
 
-        {mode === 'login' ? (
-          <>
-            <div className="form-row"><input placeholder="Логин или e‑mail" value={idn} onChange={e => setIdn(e.target.value)} /></div>
-            <div className="form-row"><PasswordField id="login-password" placeholder="Пароль" value={pwd} onChange={e => setPwd(e.target.value)} /></div>
-
-            {error && <div className="form-row form-error">{error}</div>}
-
-            <div className="form-row two">
-              <button className={`btn ${loading ? 'loading' : ''}`} disabled={!canLogin} onClick={submitLogin}>
-                <span className="spinner" aria-hidden="true" /> <span className="label">Войти</span>
-              </button>
-              <button className="link-btn" onClick={() => { setMode('register'); setError('') }}>Нет аккаунта? → Регистрация</button>
-            </div>
-          </>
-        ) : (
-          <>
-            <div className="avatar-uploader hint" onClick={() => fileRef.current?.click()}>
-              {avatar
-                ? <img src={URL.createObjectURL(avatar)} alt="" />
-                : <div className="avatar-placeholder">
-                    <img src={camIcon} alt="" className="cam-img" />
-                    <span>Добавить фото</span>
-                  </div>}
-              <input ref={fileRef} id="reg-avatar" type="file" accept="image/*" hidden onChange={onPickAvatar} />
-            </div>
-            {avatar && (
-              <div className="avatar-actions" style={{textAlign:'center', marginTop: -6}}>
-                <button className="link-btn" onClick={clearAvatar}>Удалить фото</button>
+        {/* --- НАЧАЛО ИЗМЕНЕНИЙ В JSX --- */}
+        <div className="auth-content">
+          {mode === 'login' ? (
+            <>
+              <div className="form-row"><input placeholder="Логин или e‑mail" value={idn} onChange={e => setIdn(e.target.value)} /></div>
+              <div className="form-row"><PasswordField id="login-password" placeholder="Пароль" value={pwd} onChange={e => setPwd(e.target.value)} /></div>
+              {error && <div className="form-row form-error">{error}</div>}
+              <div className="form-row two">
+                <button className={`btn ${loading ? 'loading' : ''}`} disabled={!canLogin} onClick={submitLogin}>
+                  <span className="spinner" aria-hidden="true" /> <span className="label">Войти</span>
+                </button>
+                <button className="link-btn" onClick={() => { setMode('register'); setError('') }}>Нет аккаунта? → Регистрация</button>
               </div>
-            )}
-
-            <div className="form-row"><input placeholder="E‑mail" value={email} onChange={e => setEmail(e.target.value)} /></div>
-            <div className="form-row"><input placeholder="Логин (необязательно)" value={username} onChange={e => setUsername(e.target.value)} /></div>
-            <div className="form-row"><PasswordField id="reg-password" placeholder="Пароль (мин. 6 символов)" value={rpwd} onChange={e => setRpwd(e.target.value)} /></div>
-
-            <div className="form-row agree">
-              <label className="agree-line">
-                <input type="checkbox" checked={ok} onChange={e => setOk(e.target.checked)} />
-                <span className="agree-text">Принимаю условия <Link to="/terms" onClick={onClose}>Пользовательского соглашения</Link> и <Link to="/privacy" onClick={onClose}>Политики конфиденциальности</Link></span>
-              </label>
-            </div>
-
-            {error && <div className="form-row form-error">{error}</div>}
-
-            <div className="form-row two">
-              <button className={`btn ${loading ? 'loading' : ''}`} disabled={!canRegister} onClick={submitRegister}>
-                <span className="spinner" aria-hidden="true" /> <span className="label">Зарегистрироваться</span>
-              </button>
-              <button className="link-btn" onClick={() => { setMode('login'); setError('') }}>Есть аккаунт? → Вход</button>
-            </div>
-          </>
-        )}
-
-        <div className="divider"><span>или</span></div>
-
-        <div className="social-row socials-fixed">
-          {/* Наша круглая кнопка Google — запускает popup с id_token */}
-          <button className="soc soc-lg" type="button" title="Google" onClick={openGoogle}>
-            <img src={iconG} alt="" />
-          </button>
-          <button className="soc soc-lg" type="button" title="Facebook" onClick={openFacebook}>
-            <img src={iconF} alt="" />
-          </button>
-          <button className="soc soc-lg" type="button" title="VK" onClick={openVK}>
-            <img src={iconVK} alt="" />
-          </button>
+            </>
+          ) : (
+            <>
+              <div className="avatar-uploader reg-avatar-uploader hint" onClick={() => fileRef.current?.click()}>
+                {avatar
+                  ? <img src={URL.createObjectURL(avatar)} alt="" />
+                  : <div className="avatar-placeholder">
+                      <img src={camIcon} alt="" className="cam-img" />
+                      <span>Добавить фото</span>
+                    </div>}
+                <input ref={fileRef} id="reg-avatar" type="file" accept="image/*" hidden onChange={onPickAvatar} />
+              </div>
+              {avatar && (
+                <div className="avatar-actions" style={{textAlign:'center', marginTop: -6}}>
+                  <button className="link-btn" onClick={clearAvatar}>Удалить фото</button>
+                </div>
+              )}
+              <div className="form-row"><input placeholder="E‑mail" value={email} onChange={e => setEmail(e.target.value)} /></div>
+              <div className="form-row"><input placeholder="Логин (необязательно)" value={username} onChange={e => setUsername(e.target.value)} /></div>
+              <div className="form-row"><PasswordField id="reg-password" placeholder="Пароль (мин. 6 символов)" value={rpwd} onChange={e => setRpwd(e.target.value)} /></div>
+              <div className="form-row agree">
+                <label className="agree-line">
+                  <input type="checkbox" checked={ok} onChange={e => setOk(e.target.checked)} />
+                  <span className="agree-text">Принимаю условия <Link to="/terms" onClick={onClose}>Пользовательского соглашения</Link> и <Link to="/privacy" onClick={onClose}>Политики конфиденциальности</Link></span>
+                </label>
+              </div>
+              {error && <div className="form-row form-error">{error}</div>}
+              <div className="form-row two">
+                <button className={`btn ${loading ? 'loading' : ''}`} disabled={!canRegister} onClick={submitRegister}>
+                  <span className="spinner" aria-hidden="true" /> <span className="label">Зарегистрироваться</span>
+                </button>
+                <button className="link-btn" onClick={() => { setMode('login'); setError('') }}>Есть аккаунт? → Вход</button>
+              </div>
+            </>
+          )}
         </div>
+
+        <div className="auth-footer">
+          <div className="divider"><span>или</span></div>
+          <div className="social-row socials-fixed">
+            <button className="soc soc-lg" type="button" title="Google" onClick={openGoogle}><img src={iconG} alt="" /></button>
+            <button className="soc soc-lg" type="button" title="Facebook" onClick={openFacebook}><img src={iconF} alt="" /></button>
+            <button className="soc soc-lg" type="button" title="VK" onClick={openVK}><img src={iconVK} alt="" /></button>
+          </div>
+        </div>
+        {/* --- КОНЕЦ ИЗМЕНЕНИЙ В JSX --- */}
       </div>
     </div>
   )
