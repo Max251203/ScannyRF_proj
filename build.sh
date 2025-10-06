@@ -1,17 +1,30 @@
-#!/usr/bin/env bash
-set -o errexit
+import os
+import sys
+import django
+from django.db.models import Q # <-- Импортируйте Q
 
-echo "Building frontend..."
-cd frontend
-npm install
-VITE_API_URL=${RENDER_EXTERNAL_URL}/api npm run build
-cd ..
+# --- Добавляем корень проекта в PYTHONPATH ---
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, project_root)
 
-echo "Installing backend dependencies..."
-pip install -r backend/requirements.txt
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'backend.config.settings')
+django.setup()
 
-# Устанавливаем PYTHONPATH перед каждой командой Django
-echo "Running Django management commands..."
-PYTHONPATH=$(pwd) python backend/manage.py collectstatic --no-input --clear
-PYTHONPATH=$(pwd) python backend/manage.py migrate
-PYTHONPATH=$(pwd) python backend/create_superuser.py
+from django.contrib.auth import get_user_model
+User = get_user_model()
+
+# Данные для создания суперпользователя
+ADMIN_EMAIL = os.environ.get('ADMIN_EMAIL', 'admin@gmail.com')
+ADMIN_USERNAME = os.environ.get('ADMIN_USERNAME', 'admin')
+ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'dmin123')
+
+# --- ИСПРАВЛЕНИЕ: Проверяем и по email, и по username ---
+if not User.objects.filter(Q(email=ADMIN_EMAIL) | Q(username=ADMIN_USERNAME)).exists():
+    User.objects.create_superuser(
+        email=ADMIN_EMAIL,
+        username=ADMIN_USERNAME,
+        password=ADMIN_PASSWORD
+    )
+    print('Superuser created successfully!')
+else:
+    print('Superuser with this email or username already exists.') # <-- Обновили сообщение
