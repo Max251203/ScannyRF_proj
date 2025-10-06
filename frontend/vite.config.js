@@ -3,9 +3,13 @@ import react from '@vitejs/plugin-react'
 
 export default defineConfig({
   plugins: [react()],
-  base: './', // Оставляем относительные пути!
+  // --- НАЧАЛО ИСПРАВЛЛЕНИЯ ---
+  base: '/static/', // <-- Указываем, что все пути к ассетам должны начинаться с /static/
+  // --- КОНЕЦ ИСПРАВЛЕНИЯ ---
   build: {
-    outDir: '../backend/static', // Собираем снова в backend/static
+    outDir: '../backend/static',
     emptyOutDir: true,
+    // Указываем, чтобы манифест тоже генерировался для WhiteNoise
+    manifest: true, 
   },
 })

@@ -1,8 +1,8 @@
 from django.contrib import admin
 from django.urls import path, include, re_path
 from core.views import ReactAppView
+from django.conf import settings # <-- Импортируем настройки
 
-# Сначала определяем маршруты API
 api_patterns = [
     path('', include('accounts.urls')),
     path('', include('cms.urls')),
@@ -11,11 +11,13 @@ api_patterns = [
 
 urlpatterns = [
     path('admin/', admin.site.urls),
-
-    # Все API-запросы идут через /api/
     path('api/', include(api_patterns)),
-
-    # Catch-all маршрут для React-приложения.
-    # Он должен быть последним и не должен перехватывать API или админку.
-    re_path(r'^.*$', ReactAppView.as_view(), name='react_app'),
 ]
+
+# --- ИСПРАВЛЕНИЕ ---
+# Мы добавляем catch-all только если DEBUG=False.
+# В режиме DEBUG Django сам умеет раздавать статику.
+if not settings.DEBUG:
+    urlpatterns += [
+        re_path(r'^.*$', ReactAppView.as_view(), name='react_app'),
+    ]
