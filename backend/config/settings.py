@@ -34,6 +34,7 @@ INSTALLED_APPS = [
     'accounts',
     'cms',
     'core',  # ← добавлено (требуется для моделей/эндпоинтов)
+    'config',
 ]
 
 MIDDLEWARE = [
