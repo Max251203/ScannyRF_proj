@@ -96,13 +96,11 @@ export default function AuthModal({ open, onClose, onSuccess }) {
     window.open(url, 'oauth_popup', `width=${w},height=${h},top=${y},left=${x},status=no,toolbar=no`)
   }
 
-  // Красиво: наш круглый Google — используем OAuth endpoint (response_type=id_token)
   const openGoogle = () => {
     const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID
     if (!clientId) {
       setError('Отсутствуют данные Google'); toast('Укажите VITE_GOOGLE_CLIENT_ID в .env фронта','error'); return
     }
-    // redirect_uri без хэша — строго как в настройках Google
     const redirectUri = (import.meta.env.VITE_GOOGLE_REDIRECT || (location.origin + '/')).replace(/#.*$/,'')
     const nonceBytes = new Uint8Array(16); crypto.getRandomValues(nonceBytes)
     const nonce = Array.from(nonceBytes).map(b=>b.toString(16).padStart(2,'0')).join('')
@@ -188,23 +186,24 @@ export default function AuthModal({ open, onClose, onSuccess }) {
         <button className="modal-x" onClick={onClose}>×</button>
         <h3 className="modal-title">{mode === 'login' ? 'Вход' : 'Регистрация'}</h3>
 
-        {/* --- НАЧАЛО ИЗМЕНЕНИЙ В JSX --- */}
-        <div className="auth-content">
-          {mode === 'login' ? (
-            <>
-              <div className="form-row"><input placeholder="Логин или e‑mail" value={idn} onChange={e => setIdn(e.target.value)} /></div>
-              <div className="form-row"><PasswordField id="login-password" placeholder="Пароль" value={pwd} onChange={e => setPwd(e.target.value)} /></div>
-              {error && <div className="form-row form-error">{error}</div>}
-              <div className="form-row two">
-                <button className={`btn ${loading ? 'loading' : ''}`} disabled={!canLogin} onClick={submitLogin}>
-                  <span className="spinner" aria-hidden="true" /> <span className="label">Войти</span>
-                </button>
-                <button className="link-btn" onClick={() => { setMode('register'); setError('') }}>Нет аккаунта? → Регистрация</button>
-              </div>
-            </>
-          ) : (
-            <>
-              <div className="avatar-uploader reg-avatar-uploader hint" onClick={() => fileRef.current?.click()}>
+        {mode === 'login' ? (
+          <>
+            <div className="form-row"><input placeholder="Логин или e‑mail" value={idn} onChange={e => setIdn(e.target.value)} /></div>
+            <div className="form-row"><PasswordField id="login-password" placeholder="Пароль" value={pwd} onChange={e => setPwd(e.target.value)} /></div>
+
+            {error && <div className="form-row form-error">{error}</div>}
+
+            <div className="form-row two">
+              <button className={`btn ${loading ? 'loading' : ''}`} disabled={!canLogin} onClick={submitLogin}>
+                <span className="spinner" aria-hidden="true" /> <span className="label">Войти</span>
+              </button>
+              <button className="link-btn" onClick={() => { setMode('register'); setError('') }}>Нет аккаунта? → Регистрация</button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="avatar-section">
+              <div className="avatar-uploader hint" onClick={() => fileRef.current?.click()}>
                 {avatar
                   ? <img src={URL.createObjectURL(avatar)} alt="" />
                   : <div className="avatar-placeholder">
@@ -214,39 +213,41 @@ export default function AuthModal({ open, onClose, onSuccess }) {
                 <input ref={fileRef} id="reg-avatar" type="file" accept="image/*" hidden onChange={onPickAvatar} />
               </div>
               {avatar && (
-                <div className="avatar-actions" style={{textAlign:'center', marginTop: -6}}>
+                <div className="avatar-actions">
                   <button className="link-btn" onClick={clearAvatar}>Удалить фото</button>
                 </div>
               )}
-              <div className="form-row"><input placeholder="E‑mail" value={email} onChange={e => setEmail(e.target.value)} /></div>
-              <div className="form-row"><input placeholder="Логин (необязательно)" value={username} onChange={e => setUsername(e.target.value)} /></div>
-              <div className="form-row"><PasswordField id="reg-password" placeholder="Пароль (мин. 6 символов)" value={rpwd} onChange={e => setRpwd(e.target.value)} /></div>
-              <div className="form-row agree">
-                <label className="agree-line">
-                  <input type="checkbox" checked={ok} onChange={e => setOk(e.target.checked)} />
-                  <span className="agree-text">Принимаю условия <Link to="/terms" onClick={onClose}>Пользовательского соглашения</Link> и <Link to="/privacy" onClick={onClose}>Политики конфиденциальности</Link></span>
-                </label>
-              </div>
-              {error && <div className="form-row form-error">{error}</div>}
-              <div className="form-row two">
-                <button className={`btn ${loading ? 'loading' : ''}`} disabled={!canRegister} onClick={submitRegister}>
-                  <span className="spinner" aria-hidden="true" /> <span className="label">Зарегистрироваться</span>
-                </button>
-                <button className="link-btn" onClick={() => { setMode('login'); setError('') }}>Есть аккаунт? → Вход</button>
-              </div>
-            </>
-          )}
-        </div>
+            </div>
+            
+            <div className="form-row"><input placeholder="E‑mail" value={email} onChange={e => setEmail(e.target.value)} /></div>
+            <div className="form-row"><input placeholder="Логин (необязательно)" value={username} onChange={e => setUsername(e.target.value)} /></div>
+            <div className="form-row"><PasswordField id="reg-password" placeholder="Пароль (мин. 6 символов)" value={rpwd} onChange={e => setRpwd(e.target.value)} /></div>
 
-        <div className="auth-footer">
-          <div className="divider"><span>или</span></div>
-          <div className="social-row socials-fixed">
-            <button className="soc soc-lg" type="button" title="Google" onClick={openGoogle}><img src={iconG} alt="" /></button>
-            <button className="soc soc-lg" type="button" title="Facebook" onClick={openFacebook}><img src={iconF} alt="" /></button>
-            <button className="soc soc-lg" type="button" title="VK" onClick={openVK}><img src={iconVK} alt="" /></button>
-          </div>
+            <div className="form-row agree">
+              <label className="agree-line">
+                <input type="checkbox" checked={ok} onChange={e => setOk(e.target.checked)} />
+                <span className="agree-text">Принимаю условия <Link to="/terms" onClick={onClose}>Пользовательского соглашения</Link> и <Link to="/privacy" onClick={onClose}>Политики конфиденциальности</Link></span>
+              </label>
+            </div>
+
+            {error && <div className="form-row form-error">{error}</div>}
+
+            <div className="form-row two">
+              <button className={`btn ${loading ? 'loading' : ''}`} disabled={!canRegister} onClick={submitRegister}>
+                <span className="spinner" aria-hidden="true" /> <span className="label">Зарегистрироваться</span>
+              </button>
+              <button className="link-btn" onClick={() => { setMode('login'); setError('') }}>Есть аккаунт? → Вход</button>
+            </div>
+          </>
+        )}
+
+        <div className="divider"><span>или</span></div>
+
+        <div className="social-row">
+          <button className="soc soc-lg" type="button" title="Google" onClick={openGoogle}><img src={iconG} alt="" /></button>
+          <button className="soc soc-lg" type="button" title="Facebook" onClick={openFacebook}><img src={iconF} alt="" /></button>
+          <button className="soc soc-lg" type="button" title="VK" onClick={openVK}><img src={iconVK} alt="" /></button>
         </div>
-        {/* --- КОНЕЦ ИЗМЕНЕНИЙ В JSX --- */}
       </div>
     </div>
   )
