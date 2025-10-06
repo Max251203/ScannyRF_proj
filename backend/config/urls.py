@@ -1,11 +1,21 @@
 from django.contrib import admin
-from django.urls import path, include, re_path # <-- добавь re_path
-from core.views import ReactAppView # <-- добавь этот импорт
+from django.urls import path, include, re_path
+from core.views import ReactAppView
+
+# Сначала определяем маршруты API
+api_patterns = [
+    path('', include('accounts.urls')),
+    path('', include('cms.urls')),
+    path('', include('core.urls')),
+]
 
 urlpatterns = [
     path('admin/', admin.site.urls),
-    path('api/', include('accounts.urls')),
-    path('api/', include('cms.urls')),
-    path('api/', include('core.urls')),  # utils: /api/utils/key-rate/
+
+    # Все API-запросы идут через /api/
+    path('api/', include(api_patterns)),
+
+    # Catch-all маршрут для React-приложения.
+    # Он должен быть последним и не должен перехватывать API или админку.
     re_path(r'^.*$', ReactAppView.as_view(), name='react_app'),
 ]
