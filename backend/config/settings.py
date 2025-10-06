@@ -8,7 +8,7 @@ import dj_database_url
 
 # BASE_DIR теперь указывает на корень всего проекта (на 2 уровня выше этого файла)
 # backend/config/settings.py -> backend/config -> backend -> корень
-BASE_DIR = Path(__file__).resolve().parent.parent.parent
+BASE_DIR = Path(__file__).resolve().parent.parent
 
 # .env файл теперь ищется в папке backend
 config = Config(RepositoryEnv(str(BASE_DIR / 'backend' / '.env')))
@@ -62,7 +62,7 @@ TEMPLATES = [
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
         # Указываем Django, где искать index.html из билда React
         'DIRS': [
-            BASE_DIR / 'frontend' / 'dist',
+            BASE_DIR / 'static', # <-- Vite собирает сюда index.html
         ],
         'APP_DIRS': True,
         'OPTIONS': {
@@ -121,7 +121,7 @@ STATIC_URL = '/static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 # Папки, где Django будет дополнительно искать статику (включая билд React)
 STATICFILES_DIRS = [
-    BASE_DIR / 'frontend' / 'dist',
+    BASE_DIR / 'static',
 ]
 # Хранилище для WhiteNoise
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
