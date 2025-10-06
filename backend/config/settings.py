@@ -6,26 +6,15 @@ import os
 from decouple import Config, RepositoryEnv
 import dj_database_url
 
-# BASE_DIR указывает на корень всего проекта
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
-# --- ИСПРАВЛЕНИЕ: Безопасная загрузка .env файла ---
-# На сервере OnRender .env файла не будет, и это нормально.
-# decouple будет брать переменные из окружения сервиса.
+# Безопасная загрузка .env
 env_path = BASE_DIR / 'backend' / '.env'
-if env_path.exists():
-    # Используем RepositoryEnv только если .env файл существует (для локальной разработки)
-    config = Config(RepositoryEnv(str(env_path)))
-else:
-    # В продакшене создаем пустой config, который будет читать только из os.environ
-    config = Config()
+config = Config(RepositoryEnv(str(env_path))) if env_path.exists() else Config()
 
 # --- Основные настройки ---
-# На проде SECRET_KEY ДОЛЖЕН быть в переменных окружения, поэтому убираем default
-SECRET_KEY = config('SECRET_KEY')
-# В проде DEBUG всегда False
+SECRET_KEY = config('SECRET_KEY') # КРИТИЧЕСКИ ВАЖНО - ОСТАВЛЯЕМ БЕЗ DEFAULT
 DEBUG = config('DEBUG', default=False, cast=bool)
-# ALLOWED_HOSTS будет переопределен ниже для Render
 ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='127.0.0.1,localhost').split(',')
 
 
@@ -60,31 +49,21 @@ MIDDLEWARE = [
 
 # --- Маршрутизация и шаблоны ---
 ROOT_URLCONF = 'backend.config.urls'
-
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [
-            BASE_DIR / 'frontend' / 'dist',
-        ],
+        'DIRS': [BASE_DIR / 'frontend' / 'dist'],
         'APP_DIRS': True,
-        'OPTIONS': {
-            'context_processors': [
-                'django.template.context_processors.request',
-                'django.contrib.auth.context_processors.auth',
-                'django.contrib.messages.context_processors.messages',
-            ],
-        },
+        'OPTIONS': { 'context_processors': [ 'django.template.context_processors.request', 'django.contrib.auth.context_processors.auth', 'django.contrib.messages.context_processors.messages', ], },
     },
 ]
-
 WSGI_APPLICATION = 'backend.config.wsgi.application'
 
 # --- База данных ---
 # dj-database-url автоматически возьмет DATABASE_URL из окружения
 DATABASES = {
     'default': dj_database_url.config(
-        default=config('DATABASE_URL'), # Используем config, чтобы он взял из .env локально
+        default=config('DATABASE_URL'),
         conn_max_age=600,
         conn_health_checks=True
     )
@@ -108,11 +87,7 @@ USE_TZ = True
 # --- Статические файлы ---
 STATIC_URL = '/static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
-STATICFILES_DIRS = [
-    BASE_DIR / 'frontend' / 'dist' / 'assets',
-    # Добавим корень dist, чтобы Django нашел vite.svg и др. файлы в корне
-    BASE_DIR / 'frontend' / 'dist',
-]
+STATICFILES_DIRS = [ BASE_DIR / 'frontend' / 'dist' ] # Упрощаем, assets найдутся автоматически
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
 # --- Прочие настройки ---
@@ -122,18 +97,19 @@ REST_FRAMEWORK = {
 }
 CORS_ALLOW_ALL_ORIGINS = True
 
-# --- Настройки E-mail и OAuth ---
+# --- Настройки E-mail и OAuth (с default значениями для необязательных) ---
 EMAIL_BACKEND = config('EMAIL_BACKEND', default='django.core.mail.backends.smtp.EmailBackend')
 DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='no-reply@scannyrf')
-EMAIL_HOST = config('EMAIL_HOST', default='smtp.gmail.com')
-EMAIL_PORT = config('EMAIL_PORT', cast=int)
-EMAIL_HOST_USER = config('EMAIL_HOST_USER')
-EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD')
-EMAIL_USE_TLS = config('EMAIL_USE_TLS', cast=bool, default=True)
-EMAIL_USE_SSL = config('EMAIL_USE_SSL', cast=bool, default=False)
+EMAIL_HOST = config('EMAIL_HOST', default='')
+EMAIL_PORT = config('EMAIL_PORT', default=587, cast=int)
+EMAIL_HOST_USER = config('EMAIL_HOST_USER', default='')
+EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')
+EMAIL_USE_TLS = config('EMAIL_USE_TLS', default=True, cast=bool)
+EMAIL_USE_SSL = config('EMAIL_USE_SSL', default=False, cast=bool)
 if EMAIL_USE_SSL:
     EMAIL_USE_TLS = False
 
+# Добавляем default='' для необязательных ключей OAuth
 GOOGLE_CLIENT_ID    = config('GOOGLE_CLIENT_ID', default='')
 FACEBOOK_APP_ID     = config('FACEBOOK_APP_ID', default='')
 FACEBOOK_APP_SECRET = config('FACEBOOK_APP_SECRET', default='')
@@ -142,6 +118,7 @@ VK_SERVICE_KEY      = config('VK_SERVICE_KEY', default='')
 # ==============================================================================
 # НАСТРОЙКИ ДЛЯ ПРОДАКШЕНА (OnRender)
 # ==============================================================================
+# Используем os.environ.get(), так как decouple может быть капризным
 if 'RENDER' in os.environ:
     DEBUG = False
     RENDER_EXTERNAL_HOSTNAME = os.environ.get('RENDER_EXTERNAL_HOSTNAME')
@@ -149,6 +126,8 @@ if 'RENDER' in os.environ:
         ALLOWED_HOSTS.append(RENDER_EXTERNAL_HOSTNAME)
         CORS_ALLOWED_ORIGINS = [f"https://{RENDER_EXTERNAL_HOSTNAME}"]
         CSRF_TRUSTED_ORIGINS = [f"https://{RENDER_EXTERNAL_HOSTNAME}"]
+    else:
+        CORS_ALLOW_ALL_ORIGINS = True # Фоллбэк, если домен не определился
 
     SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
     SECURE_SSL_REDIRECT = True
