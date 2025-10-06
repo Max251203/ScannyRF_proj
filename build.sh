@@ -11,12 +11,10 @@ cd ..
 
 # --- Установка зависимостей и подготовка бэкенда ---
 echo "Preparing backend..."
-cd backend
-pip install -r requirements.txt
-python manage.py collectstatic --no-input
-python manage.py migrate
+pip install -r backend/requirements.txt
+python backend/manage.py collectstatic --no-input
+python backend/manage.py migrate
 
-# --- Создание суперпользователя ---
+# --- Создание суперпользователя (запускаем из корня) ---
 echo "Creating superuser..."
-python create_superuser.py
-cd ..
+python backend/create_superuser.py

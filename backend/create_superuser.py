@@ -1,5 +1,13 @@
 import os
+import sys
 import django
+
+# --- НАЧАЛО ИСПРАВЛЕНИЯ ---
+# Добавляем корневую папку проекта (на уровень выше 'backend') в PYTHONPATH
+# Это позволит Django найти модуль 'backend.config.settings'
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, project_root)
+# --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'backend.config.settings')
 django.setup()
@@ -11,8 +19,8 @@ User = get_user_model()
 if not User.objects.filter(email='admin@gmail.com').exists():
     User.objects.create_superuser(
         email='admin@gmail.com',
-        password='dmin123',
-        name = 'admin'
+        username='admin', # Добавил username, т.к. он обязателен
+        password='admin123'
     )
     print('Superuser created successfully!')
 else:
