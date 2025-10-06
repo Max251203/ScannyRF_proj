@@ -1,10 +1,10 @@
-# Python / Django
-__pycache__/
-*.pyc
-venv/
-db.sqlite3
+# # Python / Django
+# __pycache__/
+# *.pyc
+# venv/
+# db.sqlite3
 
-# Node.js / React
-node_modules/
-dist/
-.DS_Store
+# # Node.js / React
+# node_modules/
+# dist/
+# .DS_Store
