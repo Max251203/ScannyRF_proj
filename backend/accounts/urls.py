@@ -1,12 +1,12 @@
 from django.urls import path
-from rest_framework_simplejwt.views import TokenRefreshView
 
 from .views import (
     ApiRootView,
     RegisterView, LoginView, MeView, ProfileUpdateView,
     RequestResetCodeView, ConfirmResetCodeView,
     GoogleAuthView, FacebookAuthView, VkAuthView,
-    AdminUsersListCreate, AdminUserDetail, PasswordChangeView
+    AdminUsersListCreate, AdminUserDetail, PasswordChangeView,
+    SafeTokenRefreshView,  # <— заменили refresh на безопасный
 )
 
 urlpatterns = [
@@ -22,7 +22,7 @@ urlpatterns = [
     path('auth/facebook/', FacebookAuthView.as_view()),
     path('auth/vk/', VkAuthView.as_view()),
     # автообновление access-токена
-    path('auth/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
+    path('auth/token/refresh/', SafeTokenRefreshView.as_view(), name='token_refresh'),
 
     # админ CRUD
     path('admin/users/', AdminUsersListCreate.as_view()),

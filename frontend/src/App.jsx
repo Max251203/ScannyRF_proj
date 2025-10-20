@@ -1,5 +1,7 @@
 import { Routes, Route } from 'react-router-dom'
 import Layout from './components/Layout.jsx'
+import RequireAuth from './components/RequireAuth.jsx'
+
 import Home from './pages/Home.jsx'
 import Terms from './pages/Terms.jsx'
 import Privacy from './pages/Privacy.jsx'
@@ -16,7 +18,14 @@ export default function App() {
         <Route path="/" element={<Home />} />
         <Route path="/terms" element={<Terms />} />
         <Route path="/privacy" element={<Privacy />} />
-        <Route path="/editor" element={<Editor />} />
+        <Route
+          path="/editor"
+          element={
+            <RequireAuth>
+              <Editor />
+            </RequireAuth>
+          }
+        />
         <Route path="/calculators" element={<Calculators />} />
         <Route path="/help" element={<Help />} />
         <Route path="/help/:id" element={<Help />} />

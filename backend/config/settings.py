@@ -12,10 +12,9 @@ config = Config(RepositoryEnv(str(BASE_DIR / '.env')))
 # --- Основные настройки ---
 # На проде SECRET_KEY ДОЛЖЕН быть в переменных окружения.
 # Локально он будет взят из .env файла.
-SECRET_KEY = config('SECRET_KEY') 
+SECRET_KEY = config('SECRET_KEY')
 DEBUG = config('DEBUG', default=False, cast=bool)
 ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='127.0.0.1,localhost').split(',')
-
 
 # --- Приложения ---
 INSTALLED_APPS = [
@@ -116,38 +115,47 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': ('rest_framework_simplejwt.authentication.JWTAuthentication',),
 }
-CORS_ALLOW_ALL_ORIGINS = True # В проде будет переопределено
+CORS_ALLOW_ALL_ORIGINS = True  # В проде будет переопределено
 
 # --- Настройки E-mail и OAuth ---
-EMAIL_BACKEND = "sendgrid_backend.SendgridBackend"
-# DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='no-reply@example.com')
-# EMAIL_HOST = config('EMAIL_HOST', default='')
-# EMAIL_PORT = config('EMAIL_PORT', default=587, cast=int)
-# EMAIL_HOST_USER = config('EMAIL_HOST_USER', default='')
-# EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')
-# EMAIL_USE_TLS = config('EMAIL_USE_TLS', default=True, cast=bool)
-# EMAIL_USE_SSL = config('EMAIL_USE_SSL', default=False, cast=bool)
-SENDGRID_API_KEY = config('SENDGRID_API_KEY')
-DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', 'no-reply@scannyrf.com')
+# Делаем EMAIL_BACKEND настраиваемым через .env.
+# По умолчанию в локальной разработке используем консольный бэкенд,
+# чтобы не требовать ключи SendGrid.
+EMAIL_BACKEND = config('EMAIL_BACKEND', default='django.core.mail.backends.console.EmailBackend')
+DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='no-reply@scannyrf.com')
 
-GOOGLE_CLIENT_ID    = config('GOOGLE_CLIENT_ID', default='')
-FACEBOOK_APP_ID     = config('FACEBOOK_APP_ID', default='')
+# SMTP-параметры (используются, если выбран SMTP-бэкенд)
+EMAIL_HOST = config('EMAIL_HOST', default='')
+EMAIL_PORT = config('EMAIL_PORT', default=587, cast=int)
+EMAIL_HOST_USER = config('EMAIL_HOST_USER', default='')
+EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')
+EMAIL_USE_TLS = config('EMAIL_USE_TLS', default=True, cast=bool)
+EMAIL_USE_SSL = config('EMAIL_USE_SSL', default=False, cast=bool)
+
+# Параметры SendGrid (используются, если выбран sendgrid_backend)
+SENDGRID_API_KEY = config('SENDGRID_API_KEY', default='')
+
+# Если мы на Render и задан ключ SendGrid — принудительно используем SendGrid
+if 'RENDER' in os.environ and SENDGRID_API_KEY:
+    EMAIL_BACKEND = 'sendgrid_backend.SendgridBackend'
+
+GOOGLE_CLIENT_ID = config('GOOGLE_CLIENT_ID', default='')
+FACEBOOK_APP_ID = config('FACEBOOK_APP_ID', default='')
 FACEBOOK_APP_SECRET = config('FACEBOOK_APP_SECRET', default='')
-VK_SERVICE_KEY      = config('VK_SERVICE_KEY', default='')
-
+VK_SERVICE_KEY = config('VK_SERVICE_KEY', default='')
 
 # ==============================================================================
 # НАСТРОЙКИ СПЕЦИАЛЬНО ДЛЯ ПРОДАКШЕНА (OnRender)
 # ==============================================================================
 if 'RENDER' in os.environ:
     DEBUG = False
-    
+
     RENDER_EXTERNAL_HOSTNAME = os.environ.get('RENDER_EXTERNAL_HOSTNAME')
     if RENDER_EXTERNAL_HOSTNAME:
         ALLOWED_HOSTS.append(RENDER_EXTERNAL_HOSTNAME)
         CORS_ALLOWED_ORIGINS = [f"https://{RENDER_EXTERNAL_HOSTNAME}"]
         CSRF_TRUSTED_ORIGINS = [f"https://{RENDER_EXTERNAL_HOSTNAME}"]
-    
+
     # Django доверяет заголовкам от прокси-сервера Render
     SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
     SECURE_SSL_REDIRECT = True

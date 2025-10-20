@@ -8,12 +8,16 @@ from django.db.models import Q
 from django.utils import timezone
 from django.core.mail import EmailMultiAlternatives
 from django.db import IntegrityError
+from django.contrib.auth import get_user_model
 
 from rest_framework import permissions
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.views import TokenRefreshView
+from rest_framework_simplejwt.serializers import TokenRefreshSerializer
+from rest_framework_simplejwt.exceptions import InvalidToken
 
 from google.oauth2 import id_token
 from google.auth.transport import requests as greq
@@ -339,3 +343,17 @@ class PasswordChangeView(APIView):
             return Response({'detail':'Неверный старый пароль'}, status=400)
         u.set_password(new_pwd); u.save()
         return Response({'ok': True, **tokens_for_user(u)})
+
+
+# ----- Безопасный refresh-токена (устраняем 500 при отсутствии пользователя) -----
+class SafeTokenRefreshSerializer(TokenRefreshSerializer):
+    def validate(self, attrs):
+        try:
+            return super().validate(attrs)
+        except get_user_model().DoesNotExist:
+            # Превращаем в ожидаемую ошибку simplejwt
+            raise InvalidToken("User for this token does not exist")
+
+
+class SafeTokenRefreshView(TokenRefreshView):
+    serializer_class = SafeTokenRefreshSerializer

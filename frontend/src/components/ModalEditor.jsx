@@ -28,7 +28,7 @@ export default function ModalEditor({
 
     const init = async () => {
       try {
-        await ensureCKE422()
+        await ensureCKE422() // теперь подгружается 4.25.1-lts (локально/через CDN)
         await new Promise(r => setTimeout(r, 0))
         if (canceled) return
 
@@ -52,7 +52,7 @@ export default function ModalEditor({
         })
       } catch (e) {
         console.error('[ModalEditor] CKEditor init error:', e)
-        toast('Не удалось инициализировать редактор (CDN недоступен?)', 'error')
+        toast('Не удалось инициализировать редактор (CDN/локальный файл недоступен?)', 'error')
       }
     }
 

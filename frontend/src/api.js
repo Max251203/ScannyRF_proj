@@ -54,6 +54,14 @@ async function refreshAccessToken() {
   return null;
 }
 
+function clearTokens() {
+  localStorage.removeItem('access');
+  localStorage.removeItem('refresh');
+  localStorage.removeItem('user');
+  emitUser(null);
+  emitBilling(null);
+}
+
 async function request(path, options = {}, _retried = false) {
   const url = path.startsWith('http') ? path : (API + path);
   const res = await fetch(url, options);
@@ -67,6 +75,9 @@ async function request(path, options = {}, _retried = false) {
       const text2 = await res2.text();
       if (!res2.ok) throw buildError(text2);
       return parseJsonSafe(text2);
+    } else {
+      // битый refresh — чистим сессию чтобы не было «полузалогина»
+      clearTokens();
     }
   }
 
@@ -159,13 +170,7 @@ export const AuthAPI = {
     return data.user;
   },
 
-  logout() {
-    localStorage.removeItem('access');
-    localStorage.removeItem('refresh');
-    localStorage.removeItem('user');
-    emitUser(null);
-    emitBilling(null);
-  },
+  logout() { clearTokens(); },
 
   me() {
     return requestAuthed('/auth/me/');
@@ -213,7 +218,6 @@ export const AuthAPI = {
   },
 
   async recordDownload(kind, pages, doc_name, mode = 'free') {
-    // если не авторизован — не дёргаем API (убираем 401 в консоли)
     if (!localStorage.getItem('access')) return null;
     try {
       const s = await requestAuthed('/billing/record/', {
@@ -224,15 +228,92 @@ export const AuthAPI = {
       emitBilling(s);
       return s;
     } catch (e) {
-      return null; // не блокируем UX
+      return null;
     }
   },
 
-  startPurchase(plan) {
+  // ----- Покупки -----
+  startPurchase(plan, promo = '') {
     return requestAuthed('/payments/create/', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ plan }),
+      body: JSON.stringify({ plan, promo }),
     });
+  },
+
+  validatePromo(code) {
+    return request('/billing/promo/validate/', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code }),
+    });
+  },
+
+  // ----- Админ: конфиг биллинга и промокоды -----
+  getBillingConfig() {
+    return requestAuthed('/billing/config/');
+  },
+  setBillingConfig(free_daily_quota) {
+    return requestAuthed('/billing/config/', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ free_daily_quota }),
+    });
+  },
+
+  getPromos() {
+    return requestAuthed('/billing/promos/');
+  },
+  createPromo({ code, discount_percent, active = true, note = '' }) {
+    return requestAuthed('/billing/promos/', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code, discount_percent, active, note }),
+    });
+  },
+  updatePromo(id, { code, discount_percent, active = true, note = '' }) {
+    return requestAuthed(`/billing/promos/${id}/`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code, discount_percent, active, note }),
+    });
+  },
+  deletePromo(id) {
+    return requestAuthed(`/billing/promos/${id}/`, { method: 'DELETE' });
+  },
+
+  // ----- Библиотека подписей/печати -----
+  listSigns() {
+    return requestAuthed('/library/signs/');
+  },
+  addSign({ kind = 'signature', data_url = null, file = null }) {
+    const fd = new FormData();
+    fd.append('kind', kind);
+    if (file) fd.append('image', file);
+    else if (data_url) fd.append('data_url', data_url);
+    else throw new Error('Ожидается file или data_url');
+    return requestAuthed('/library/signs/', { method: 'POST', body: fd });
+  },
+  deleteSign(id) {
+    return requestAuthed(`/library/signs/${id}/`, { method: 'DELETE' });
+  },
+
+  // ----- Автосессия при старте приложения -----
+  async bootstrap() {
+    const hasRefresh = !!localStorage.getItem('refresh');
+    if (!hasRefresh) return;
+    try {
+      // если нет access — пробуем рефреш сразу
+      if (!localStorage.getItem('access')) {
+        const ok = await refreshAccessToken();
+        if (!ok) { clearTokens(); return; }
+      }
+      const me = await this.me();
+      localStorage.setItem('user', JSON.stringify(me));
+      emitUser(me);
+      try { emitBilling(await this.getBillingStatus()); } catch {}
+    } catch {
+      clearTokens();
+    }
   },
 };
