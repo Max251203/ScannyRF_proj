@@ -23,9 +23,14 @@ import icPrev from '../assets/icons/prev.png'
 import icNext from '../assets/icons/next.png'
 import icDocAdd from '../assets/icons/doc-add.svg'
 
+// картинки тарифов (замены клиента)
 import plan1 from '../assets/images/один документ.png'
 import plan2 from '../assets/images/безлимит.png'
 import plan3 from '../assets/images/безлимит про.png'
+
+// Базовый «лист» (как в старой версии — стабильный макет, фон вписываем внутрь)
+const PAGE_W = 794
+const PAGE_H = 1123
 
 function randDocId(){ return String(Math.floor(1e15 + Math.random()*9e15)) }
 function genDefaultName(){ const a = Math.floor(Math.random()*1e6), b = Math.floor(Math.random()*1e6); return `${a}-${b}` }
@@ -37,7 +42,7 @@ const FONTS = ['Arial','Times New Roman','Ermilov','Segoe UI','Roboto','Georgia'
 export default function Editor(){
   const [docId, setDocId] = useState(null)
   const [fileName, setFileName] = useState('')
-  // page: {id, elId, canvas, bgObj, baseW, baseH}
+  // page: {id, elId, canvas, bgObj, landscape}
   const [pages, setPages] = useState([])
   const [cur, setCur] = useState(0)
   const [loading, setLoading] = useState(false)
@@ -67,7 +72,6 @@ export default function Editor(){
   // кроппер
   const [cropOpen, setCropOpen] = useState(false)
   const [cropSrc, setCropSrc] = useState('')
-  const [cropOrig, setCropOrig] = useState('')
   const [cropType, setCropType] = useState('signature')
   const [cropThresh, setCropThresh] = useState(40)
   const cropImgRef = useRef(null)
@@ -85,7 +89,12 @@ export default function Editor(){
   const [billing, setBilling] = useState(null)
   const isAuthed = !!localStorage.getItem('access')
   const [guestQuota, setGuestQuota] = useState(()=>{
-    try{ const raw=JSON.parse(localStorage.getItem('guest_quota')||'{}'); const today=new Date().toISOString().slice(0,10); if(!raw.date||raw.date!==today) return {date:today,left:3}; return {date:today,left: typeof raw.left==='number'? raw.left:3} }catch{ return {date:new Date().toISOString().slice(0,10),left:3} }
+    try{
+      const raw=JSON.parse(localStorage.getItem('guest_quota')||'{}')
+      const today=new Date().toISOString().slice(0,10)
+      if(!raw.date||raw.date!==today) return {date:today,left:3}
+      return {date:today,left: typeof raw.left==='number'? raw.left:3}
+    }catch{ return {date:new Date().toISOString().slice(0,10),left:3} }
   })
   const guestLeft = guestQuota.left
 
@@ -143,18 +152,20 @@ export default function Editor(){
   function uniqueObjId(){ return 'obj_'+Math.random().toString(36).slice(2) }
   async function waitForElm(id, timeout=8000){ const t0=Date.now(); return new Promise((res,rej)=>{ (function loop(){ const el=document.getElementById(id); if(el) return res(el); if(Date.now()-t0>timeout) return rej(new Error('Canvas element timeout')); requestAnimationFrame(loop) })() }) }
 
-  async function createCanvasForPage(page){
-    await ensureFabric(); await waitForElm(page.elId)
+  async function ensureCanvas(page){
+    await ensureFabric()
+    if(page.canvas) return page.canvas
+    await waitForElm(page.elId)
     // eslint-disable-next-line no-undef
     const c=new fabric.Canvas(page.elId,{ backgroundColor:'#fff', preserveObjectStacking:true, selection:true })
-    c.setWidth(Math.max(10,Math.round(page.baseW||794)))
-    c.setHeight(Math.max(10,Math.round(page.baseH||1123)))
+    page.canvas = c
+    fitCanvasForPage(page) // первичный размер по контейнеру
+    // обработчики
     c.on('selection:created', onSelectionChanged)
     c.on('selection:updated', onSelectionChanged)
     c.on('selection:cleared', ()=>setPanelOpen(false))
+    // добавить только контрол удаления
     installDeleteControl()
-    page.canvas=c
-    fitCanvasForPage(page)
     return c
   }
 
@@ -184,23 +195,32 @@ export default function Editor(){
     fobj.__delPatched=true
   }
 
+  // Вписываем фон в текущий размер канвы (как в старой версии)
   function placeBgObject(cv,page,img){
-    img.set({ left:0, top:0, scaleX: cv.getWidth()/(img.width||1), scaleY: cv.getHeight()/(img.height||1), selectable:false, evented:false, hoverCursor:'default' })
+    const cw = cv.getWidth(), ch = cv.getHeight()
+    const iw = img.width || 1, ih = img.height || 1
+    const s = Math.min(cw/iw, ch/ih)
+    img.set({ left:(cw-iw*s)/2, top:(ch-ih*s)/2, scaleX:s, scaleY:s, selectable:false, evented:false, hoverCursor:'default' })
     try{ if(page.bgObj) cv.remove(page.bgObj) }catch{}
     page.bgObj=img; cv.add(img); img.moveTo(0); cv.requestRenderAll()
   }
 
+  // Масштаб листа под контейнер: ориентация только меняет «рамку» (качество не портим — фон вписывается)
   function fitCanvasForPage(page){
-    if(!page||!page.canvas) return
-    const cv=page.canvas
-    const box=canvasWrapRef.current?.getBoundingClientRect()
+    if(!page) return
+    const cv = page.canvas
+    if(!cv){ return }
+    const box = canvasWrapRef.current?.getBoundingClientRect()
     if(!box||box.width<10){ setTimeout(()=>fitCanvasForPage(page),30); return }
-    const maxW=Math.max(200,Math.min(box.width-24,980))
-    const baseW=Math.max(10,page.baseW||cv.getWidth()), baseH=Math.max(10,page.baseH||cv.getHeight())
-    const scale=Math.min(1, Math.max(0.1, maxW/baseW))
-    cv.setDimensions({ width:Math.round(baseW*scale), height:Math.round(baseH*scale) }, { cssOnly:true })
-    cv.setZoom(scale)
+    const maxW = Math.min(box.width - 24, 980)
+    const tW = page.landscape ? PAGE_H : PAGE_W
+    const tH = page.landscape ? PAGE_W : PAGE_H
+    const scale = Math.min(1, Math.max(0.1, maxW / tW))
+    cv.setWidth(Math.round(tW*scale))
+    cv.setHeight(Math.round(tH*scale))
     cv.requestRenderAll()
+    // подгоняем фон
+    if(page.bgObj){ placeBgObject(cv, page, page.bgObj) }
   }
   function fitCanvas(idx){ const p=pages[idx]; if(!p||!p.canvas) return; fitCanvasForPage(p) }
 
@@ -209,251 +229,15 @@ export default function Editor(){
     setPages([]); setCur(0); setDocId(null); setPanelOpen(false); setFileName(''); setUndoStack([])
     toast('Документ удалён','success')
   }
-  async function removePage(idx=cur){
+  function removePage(idx=cur){
     if(pages.length<=1){ removeDocument(); return }
-    const target=pages[idx]; try{ target.canvas?.dispose?.() }catch{}
+    const target = pages[idx]; try{ target.canvas?.dispose?.() }catch{}
     setPages(prev=>prev.filter((_,i)=>i!==idx))
-    setCur(i=>Math.max(0, Math.min(idx-1, (pages.length-2))))
+    setCur(i=>Math.max(0, idx-1))
     toast('Страница удалена','success')
   }
 
-  function pickDocument(){ docFileRef.current?.click() }
-  function pickBgForCurrent(){ bgFileRef.current?.click() }
-
-  async function onPickDocument(e){ const files=Array.from(e.target.files||[]); e.target.value=''; if(!files.length) return; await handleFiles(files) }
-  async function onPickBgFile(e){ const files=Array.from(e.target.files||[]); e.target.value=''; if(!files.length) return; await assignFirstFileToCurrent(files[0]) }
-
-  async function handleFiles(files){
-    setLoading(true)
-    try{
-      for(const f of files){
-        const ext=(f.name.split('.').pop()||'').toLowerCase()
-        if(!docId) setDocId(randDocId())
-        if(!fileName){ const base=f.name.replace(/\.[^.]+$/,''); setFileName(sanitizeName(base)) }
-        if(['jpg','jpeg','png'].includes(ext)){ const url=await readAsDataURL(f); await addPageFromImage(url) }
-        else if(ext==='pdf'){ await addPagesFromPDF(f) }
-        else if(['docx','doc'].includes(ext)){ const canv=await renderDOCXToCanvas(f); const slices=sliceCanvasToPages(canv); for(const url of slices) await addPageFromImage(url) }
-        else if(['xls','xlsx'].includes(ext)){ const canv=await renderXLSXToCanvas(f); const slices=sliceCanvasToPages(canv); for(const url of slices) await addPageFromImage(url) }
-        else toast(`Формат не поддерживается: ${ext}`,'error')
-      }
-      toast('Страницы добавлены','success')
-    }catch(err){ console.error(err); toast(err.message||'Ошибка загрузки файлов','error') }
-    finally{ setLoading(false) }
-  }
-
-  function loadImageEl(src){ return new Promise((res,rej)=>{ const img=new Image(); img.crossOrigin='anonymous'; img.onload=()=>res(img); img.onerror=rej; img.src=src }) }
-
-  async function assignFirstFileToCurrent(file){
-    const ext=(file.name.split('.').pop()||'').toLowerCase()
-    const page=pages[cur]; if(!page) return
-    setLoading(true)
-    try{
-      if(['jpg','jpeg','png'].includes(ext)){ const url=await readAsDataURL(file); await setPageBackgroundFromImage(cur,url) }
-      else if(ext==='pdf'){ await setPageBackgroundFromFirstPDFPage(cur,file) }
-      else if(['docx','doc'].includes(ext)){ const canv=await renderDOCXToCanvas(file); const slices=sliceCanvasToPages(canv); await setPageBackgroundFromImage(cur, slices[0]||canv.toDataURL('image/png')) }
-      else if(['xls','xlsx'].includes(ext)){ const canv=await renderXLSXToCanvas(file); const slices=sliceCanvasToPages(canv); await setPageBackgroundFromImage(cur, slices[0]||canv.toDataURL('image/png')) }
-      else toast('Этот формат не поддерживается','error')
-    }catch(e){ toast(e.message||'Не удалось назначить страницу','error') }
-    finally{ setLoading(false) }
-  }
-
-  async function addPageFromImage(dataUrl){
-    const id='p_'+Math.random().toString(36).slice(2), elId='cv_'+id
-    const page={ id, elId, canvas:null, bgObj:null, baseW:0, baseH:0 }
-    setPages(prev=>{ const arr=[...prev,page]; setCur(arr.length-1); return arr })
-    requestAnimationFrame(async()=>{
-      const imgEl=await loadImageEl(dataUrl)
-      page.baseW=imgEl.naturalWidth||imgEl.width||794
-      page.baseH=imgEl.naturalHeight||imgEl.height||1123
-      const cv=await createCanvasForPage(page)
-      await ensureFabric()
-      // eslint-disable-next-line no-undef
-      const img=new fabric.Image(imgEl,{ selectable:false, evented:false })
-      placeBgObject(cv,page,img)
-    })
-  }
-
-  async function setPageBackgroundFromImage(idx,dataUrl){
-    const page=pages[idx]; if(!page) return
-    const imgEl=await loadImageEl(dataUrl)
-    const w=imgEl.naturalWidth||imgEl.width||794, h=imgEl.naturalHeight||imgEl.height||1123
-    page.baseW=w; page.baseH=h
-    const cv=page.canvas || await createCanvasForPage(page)
-    if(cv.getWidth()!==w || cv.getHeight()!==h){ cv.setWidth(w); cv.setHeight(h) }
-    await ensureFabric()
-    // eslint-disable-next-line no-undef
-    const img=new fabric.Image(imgEl,{ selectable:false, evented:false })
-    placeBgObject(cv,page,img)
-    fitCanvasForPage(page)
-  }
-
-  async function addPagesFromPDF(file){
-    await ensurePDFJS(); const ab=await file.arrayBuffer()
-    // eslint-disable-next-line no-undef
-    const pdf=await pdfjsLib.getDocument({data:ab}).promise
-    for(let i=1;i<=pdf.numPages;i++){ const url=await renderPDFPageToDataURL(pdf,i,2.0); await addPageFromImage(url) }
-  }
-  async function setPageBackgroundFromFirstPDFPage(idx,file){
-    await ensurePDFJS(); const ab=await file.arrayBuffer()
-    // eslint-disable-next-line no-undef
-    const pdf=await pdfjsLib.getDocument({data:ab}).promise
-    const url=await renderPDFPageToDataURL(pdf,1,2.0)
-    await setPageBackgroundFromImage(idx,url)
-  }
-
-  async function renderPDFPageToDataURL(pdf,pageNum,scale){
-    const p=await pdf.getPage(pageNum), vp=p.getViewport({scale})
-    const canvas=document.createElement('canvas'), ctx=canvas.getContext('2d')
-    canvas.width=Math.round(vp.width); canvas.height=Math.round(vp.height)
-    ctx.fillStyle='#fff'; ctx.fillRect(0,0,canvas.width,canvas.height)
-    await p.render({canvasContext:ctx, viewport:vp}).promise
-    return canvas.toDataURL('image/png')
-  }
-
-  async function renderDOCXToCanvas(file){
-    await ensureMammothCDN(); await ensureHtml2Canvas()
-    const ab=await file.arrayBuffer()
-    const res=await window.mammoth.convertToHtml({ arrayBuffer:ab })
-    const holder=document.createElement('div')
-    Object.assign(holder.style,{position:'fixed',left:'-9999px',top:'-9999px',width:'1100px',padding:'24px',background:'#fff'})
-    holder.innerHTML=res.value||'<div/>'
-    document.body.appendChild(holder)
-    const canvas=await window.html2canvas(holder,{backgroundColor:'#fff',scale:2})
-    document.body.removeChild(holder)
-    return canvas
-  }
-
-  async function renderXLSXToCanvas(file){
-    await ensureSheetJS(); await ensureHtml2Canvas()
-    const ab=await file.arrayBuffer()
-    const wb=window.XLSX.read(ab,{type:'array'})
-    const sheetName=wb.SheetNames[0]
-    const html=window.XLSX.utils.sheet_to_html(wb.Sheets[sheetName])
-    const holder=document.createElement('div')
-    Object.assign(holder.style,{position:'fixed',left:'-9999px',top:'-9999px',width:'1200px',padding:'16px',background:'#fff'})
-    holder.innerHTML=html
-    document.body.appendChild(holder)
-    const canvas=await window.html2canvas(holder,{backgroundColor:'#fff',scale:2})
-    document.body.removeChild(holder)
-    return canvas
-  }
-
-  function sliceCanvasToPages(canvas){
-    const out=[], totalH=canvas.height, pagePx=3508
-    for(let y=0;y<totalH;y+=pagePx){
-      const sliceH=Math.min(pagePx,totalH-y)
-      const tmp=document.createElement('canvas'), tctx=tmp.getContext('2d')
-      tmp.width=canvas.width; tmp.height=sliceH
-      tctx.drawImage(canvas,0,y,canvas.width,sliceH,0,0,tmp.width,tmp.height)
-      out.push(tmp.toDataURL('image/png'))
-    }
-    return out
-  }
-
-  function pickSignature(){ signFileRef.current?.click() }
-  async function onPickSignature(e){
-    const f=e.target.files?.[0]; e.target.value=''
-    if(!f) return
-    const src=await readAsDataURL(f)
-    setCropOrig(src); setCropSrc(src); setCropOpen(true); setCropType('signature'); setCropThresh(40)
-  }
-
-  useEffect(()=>{ if(!cropOpen) return; (async()=>{ await ensureCropper(); if(cropperRef.current){ try{ cropperRef.current.destroy() }catch{}; cropperRef.current=null } const img=cropImgRef.current; if(!img) return; // eslint-disable-next-line no-undef
-    const inst=new Cropper(img,{viewMode:1,dragMode:'move',guides:true,background:false,autoCrop:true}); cropperRef.current=inst })(); return ()=>{ if(cropperRef.current){ try{ cropperRef.current.destroy() }catch{}; cropperRef.current=null } } },[cropOpen])
-
-  useEffect(()=>{ if(!cropOpen||!cropperRef.current||!cropOrig) return; (async()=>{ const thr=Math.round(255*(cropThresh/100)); const url=await removeWhiteBackground(cropOrig,thr); try{ cropperRef.current.replace(url,true) }catch{} })() },[cropThresh,cropOpen,cropOrig])
-
-  async function cropConfirm(){
-    try{
-      const cr=cropperRef.current; if(!cr) return
-      const c=cr.getCroppedCanvas({ imageSmoothingEnabled:true, imageSmoothingQuality:'high' })
-      let dataUrl=c.toDataURL('image/png')
-      const thr=Math.round(255*(cropThresh/100))
-      dataUrl=await removeWhiteBackground(dataUrl,thr)
-      if(hasDoc && isMobile){
-        const page=pages[cur]; const cv=await ensureCanvas(page); const imgEl=await loadImageEl(dataUrl)
-        // eslint-disable-next-line no-undef
-        const img=new fabric.Image(imgEl); const w=cv.getWidth(),h=cv.getHeight()
-        const scale=Math.min(1,(w*0.35)/img.width); img.set({left:w*0.15,top:h*0.15,scaleX:scale,scaleY:scale,selectable:true})
-        img.__scannyId=uniqueObjId(); cv.add(img); cv.setActiveObject(img); cv.requestRenderAll()
-        setUndoStack(stk=>[...stk,{type:'add_one',page:cur,id:img.__scannyId}])
-      } else {
-        if(localStorage.getItem('access')){ const saved=await AuthAPI.addSign({kind:cropType,data_url:dataUrl}); if(saved&&saved.id){ setSignLib(list=>[{id:saved.id,url:saved.url,kind:saved.kind},...list].slice(0,100)) } }
-        else { const item={id:'g_'+Math.random().toString(36).slice(2),url:dataUrl,kind:cropType}; const next=[item,...signLib].slice(0,100); setSignLib(next); localStorage.setItem('sign_lib',JSON.stringify(next)) }
-      }
-      toast('Изображение обработано','success'); setCropOpen(false)
-    }catch(e){ toast(e.message||'Не удалось обработать изображение','error') }
-  }
-
-  async function removeWhiteBackground(src,threshold=245){
-    const imgEl=await loadImageEl(src)
-    const w=imgEl.naturalWidth||imgEl.width, h=imgEl.naturalHeight||imgEl.height
-    const c=document.createElement('canvas'), ctx=c.getContext('2d'); c.width=w; c.height=h
-    ctx.drawImage(imgEl,0,0); const data=ctx.getImageData(0,0,w,h); const d=data.data
-    for(let i=0;i<d.length;i+=4){ const r=d[i],g=d[i+1],b=d[i+2]; if(r>threshold&&g>threshold&&b>threshold) d[i+3]=0; else { const avg=(r+g+b)/3; if(avg>220) d[i+3]=Math.max(0,d[i+3]-120) } }
-    ctx.putImageData(data,0,0); return c.toDataURL('image/png')
-  }
-
-  function startDragSign(url,e){ try{ e.dataTransfer.setData('application/x-sign-url',url); e.dataTransfer.effectAllowed='copy' }catch{} }
-  function placeFromLib(url){
-    if(!hasDoc){ toast('Сначала добавьте страницу','error'); return }
-    const page=pages[cur]; ensureCanvas(page).then(cv=>{
-      loadImageEl(url).then(imgEl=>{
-        // eslint-disable-next-line no-undef
-        const img=new fabric.Image(imgEl); const w=cv.getWidth(),h=cv.getHeight()
-        const scale=Math.min(1,(w*0.35)/img.width); img.set({left:w*0.15,top:h*0.15,scaleX:scale,scaleY:scale,selectable:true})
-        img.__scannyId=uniqueObjId(); cv.add(img); cv.setActiveObject(img); cv.requestRenderAll()
-        setUndoStack(stk=>[...stk,{type:'add_one',page:cur,id:img.__scannyId}])
-      })
-    })
-  }
-  function removeFromLib(id,isServer=true){
-    setSignLib(list=>list.filter(i=>i.id!==id))
-    if(localStorage.getItem('access') && isServer && String(id).startsWith('g_')===false){ AuthAPI.deleteSign(id).catch(()=>{}) }
-    else { const next=signLib.filter(i=>i.id!==id); localStorage.setItem('sign_lib',JSON.stringify(next)) }
-  }
-
-  async function addText(){
-    if(!hasDoc){ toast('Сначала добавьте страницу','error'); return }
-    await ensureFabric()
-    const page=pages[cur]; const cv=await ensureCanvas(page)
-    // eslint-disable-next-line no-undef
-    const tb=new fabric.Textbox('Вставьте текст',{ left:Math.round(cv.getWidth()*0.1), top:Math.round(cv.getHeight()*0.15), fontSize:48, fill:'#000000', fontFamily:'Arial', fontWeight:'bold' })
-    tb.__scannyId=uniqueObjId(); cv.add(tb); cv.setActiveObject(tb); cv.requestRenderAll(); setPanelOpen(true)
-    setUndoStack(stk=>[...stk,{type:'add_one',page:cur,id:tb.__scannyId}])
-  }
-  async function applyPanel(){ const page=pages[cur]; const cv=page?.canvas; if(!cv) return; const obj=cv.getActiveObject(); if(!obj||obj.type!=='textbox') return; obj.set({ fontFamily:font, fontSize:fontSize, fontWeight:bold?'bold':'normal', fontStyle:italic?'italic':'normal', fill:color }); cv.requestRenderAll() }
-  useEffect(()=>{ if(panelOpen) applyPanel() },[font,fontSize,bold,italic,color])
-
-  async function rotatePage(){
-    if(!hasDoc) return
-    const page=pages[cur]; const cv=await ensureCanvas(page)
-    if(!page.bgObj || !page.bgObj._element){ toast('Фон не найден','error'); return }
-    const el=page.bgObj._element
-    const w=el.naturalWidth||el.width, h=el.naturalHeight||el.height
-    // рисуем повернутый фон
-    const tmp=document.createElement('canvas'), ctx=tmp.getContext('2d')
-    tmp.width=h; tmp.height=w
-    ctx.translate(h/2,w/2); ctx.rotate(Math.PI/2); ctx.drawImage(el,-w/2,-h/2)
-    const dataUrl=tmp.toDataURL('image/png')
-    await setPageBackgroundFromImage(cur,dataUrl) // обновит baseW/baseH и подгонит масштаб
-  }
-
-  function undo(){
-    const stk=[...undoStack], last=stk.pop(); if(!last) return
-    if(last.type==='add_one'){ const p=pages[last.page], cv=p?.canvas; if(cv){ const obj=cv.getObjects().find(o=>o.__scannyId===last.id); if(obj){ cv.remove(obj); cv.discardActiveObject(); cv.requestRenderAll() } } }
-    else if(last.type==='apply_all'){ last.clones.forEach(({page,id})=>{ const p=pages[page], cv=p?.canvas; if(cv){ const obj=cv.getObjects().find(o=>o.__scannyId===id); if(obj){ cv.remove(obj) } cv.requestRenderAll() } }) }
-    setUndoStack(stk)
-  }
-
-  function baseName(){ const nm=(fileName||'').trim(); if(!nm){ toast('Введите название файла вверху','error'); return null } return sanitizeName(nm) }
-  function freeLeft(){ return isAuthed ? (billing?.free_left ?? 3) : guestLeft }
-  function readAsDataURL(file){ return new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result); r.onerror=rej; r.readAsDataURL(file) }) }
-  function downloadBlob(blob,filename){ const a=document.createElement('a'); const url=URL.createObjectURL(blob); a.href=url; a.download=filename||'file'; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(url),2000) }
-
-  async function ensureCanvas(page){ if(page.canvas) return page.canvas; return await createCanvasForPage(page) }
-
-  async function applyToAllPages(){
+ async function applyToAllPages(){
     if(!hasDoc) return
     const srcPage=pages[cur], cvSrc=await ensureCanvas(srcPage), obj=cvSrc.getActiveObject()
     if(!obj){ toast('Выберите объект на странице','error'); return }
@@ -478,8 +262,248 @@ export default function Editor(){
     if(clones.length){ setUndoStack(stk=>[...stk,{type:'apply_all',clones}]); toast('Объект продублирован на все страницы','success') }
   }
 
-  function updateGuestQuota(count){ const today=new Date().toISOString().slice(0,10); const left=Math.max(0,(guestLeft||0)-count); const next={date:today,left}; setGuestQuota(next); localStorage.setItem('guest_quota',JSON.stringify(next)) }
-  function consumeFree(kind,count,bn){ if(isAuthed){ AuthAPI.recordDownload(kind,count,bn,'free').catch(()=>{}) } else updateGuestQuota(count) }
+  // import
+  function pickDocument(){ docFileRef.current?.click() }
+  function pickBgForCurrent(){ bgFileRef.current?.click() }
+  async function onPickDocument(e){ const files=Array.from(e.target.files||[]); e.target.value=''; if(!files.length) return; await handleFiles(files) }
+  async function onPickBgFile(e){ const files=Array.from(e.target.files||[]); e.target.value=''; if(!files.length) return; await assignFirstFileToCurrent(files[0]) }
+
+  async function handleFiles(files){
+    setLoading(true)
+    try{
+      for(const f of files){
+        const ext=(f.name.split('.').pop()||'').toLowerCase()
+        if(!docId) setDocId(randDocId())
+        if(!fileName){ const base=f.name.replace(/\.[^.]+$/,''); setFileName(sanitizeName(base)) }
+        if(['jpg','jpeg','png'].includes(ext)){
+          const url=await readAsDataURL(f)
+          await addPageFromImage(url)
+        }else if(ext==='pdf'){
+          await addPagesFromPDF(f)
+        }else if(['docx','doc'].includes(ext)){
+          const canv=await renderDOCXToCanvas(f)
+          const slices=sliceCanvasToPages(canv,PAGE_W,PAGE_H)
+          for(const url of slices) await addPageFromImage(url)
+        }else if(['xls','xlsx'].includes(ext)){
+          const canv=await renderXLSXToCanvas(f)
+          const slices=sliceCanvasToPages(canv,PAGE_W,PAGE_H)
+          for(const url of slices) await addPageFromImage(url)
+        }else{
+          toast(`Формат не поддерживается: ${ext}`,'error')
+        }
+      }
+      toast('Страницы добавлены','success')
+    }catch(err){ console.error(err); toast(err.message||'Ошибка загрузки файлов','error') }
+    finally{ setLoading(false) }
+  }
+
+  function readAsDataURL(file){ return new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result); r.onerror=rej; r.readAsDataURL(file) }) }
+  function loadImageEl(src){ return new Promise((res,rej)=>{ const img=new Image(); img.crossOrigin='anonymous'; img.onload=()=>res(img); img.onerror=rej; img.src=src }) }
+
+  async function addPageFromImage(dataUrl){
+    const id='p_'+Math.random().toString(36).slice(2), elId='cv_'+id
+    const page={ id, elId, canvas:null, bgObj:null, landscape:false }
+    setPages(prev=>{ const arr=[...prev,page]; setCur(arr.length-1); return arr })
+    // создаём канву и вписываем фон
+    requestAnimationFrame(async()=>{
+      const cv=await ensureCanvas(page)
+      await ensureFabric()
+      const imgEl=await loadImageEl(dataUrl)
+      // eslint-disable-next-line no-undef
+      const img=new fabric.Image(imgEl,{ selectable:false, evented:false })
+      placeBgObject(cv,page,img)
+    })
+  }
+
+  async function assignFirstFileToCurrent(file){
+    const ext=(file.name.split('.').pop()||'').toLowerCase()
+    const page=pages[cur]; if(!page) return
+    setLoading(true)
+    try{
+      if(['jpg','jpeg','png'].includes(ext)){
+        const url=await readAsDataURL(file)
+        await setPageBackgroundFromImage(cur,url)
+      }else if(ext==='pdf'){
+        await setPageBackgroundFromFirstPDFPage(cur,file)
+      }else if(['docx','doc'].includes(ext)){
+        const canv=await renderDOCXToCanvas(file)
+        const slices=sliceCanvasToPages(canv,PAGE_W,PAGE_H)
+        await setPageBackgroundFromImage(cur, slices[0]||canv.toDataURL('image/png'))
+      }else if(['xls','xlsx'].includes(ext)){
+        const canv=await renderXLSXToCanvas(file)
+        const slices=sliceCanvasToPages(canv,PAGE_W,PAGE_H)
+        await setPageBackgroundFromImage(cur, slices[0]||canv.toDataURL('image/png'))
+      }else toast('Этот формат не поддерживается','error')
+    }catch(e){ toast(e.message||'Не удалось назначить страницу','error') }
+    finally{ setLoading(false) }
+  }
+
+  async function setPageBackgroundFromImage(idx, dataUrl){
+    const page=pages[idx]; if(!page) return
+    const cv=await ensureCanvas(page)
+    await ensureFabric()
+    const imgEl=await loadImageEl(dataUrl)
+    // eslint-disable-next-line no-undef
+    const img=new fabric.Image(imgEl,{ selectable:false, evented:false })
+    placeBgObject(cv,page,img)
+  }
+
+  // PDF / DOCX / XLSX генераторы (как раньше)
+  async function addPagesFromPDF(file){
+    await ensurePDFJS()
+    const ab=await file.arrayBuffer()
+    // eslint-disable-next-line no-undef
+    const pdf=await pdfjsLib.getDocument({data:ab}).promise
+    for(let i=1;i<=pdf.numPages;i++){
+      const url=await renderPDFPageToDataURL(pdf,i,2.0)
+      await addPageFromImage(url)
+    }
+  }
+  async function setPageBackgroundFromFirstPDFPage(idx,file){
+    await ensurePDFJS()
+    const ab=await file.arrayBuffer()
+    // eslint-disable-next-line no-undef
+    const pdf=await pdfjsLib.getDocument({data:ab}).promise
+    const url=await renderPDFPageToDataURL(pdf,1,2.0)
+    await setPageBackgroundFromImage(idx,url)
+  }
+  async function renderPDFPageToDataURL(pdf,pageNum,scale){
+    const p=await pdf.getPage(pageNum), vp=p.getViewport({scale})
+    const canvas=document.createElement('canvas'), ctx=canvas.getContext('2d')
+    canvas.width=Math.round(vp.width); canvas.height=Math.round(vp.height)
+    ctx.fillStyle='#fff'; ctx.fillRect(0,0,canvas.width,canvas.height)
+    await p.render({canvasContext:ctx,viewport:vp}).promise
+    return canvas.toDataURL('image/png')
+  }
+  async function renderDOCXToCanvas(file){
+    await ensureMammothCDN(); await ensureHtml2Canvas()
+    const ab=await file.arrayBuffer()
+    const res=await window.mammoth.convertToHtml({ arrayBuffer:ab })
+    const holder=document.createElement('div')
+    Object.assign(holder.style,{position:'fixed',left:'-9999px',top:'-9999px',width:'1100px',padding:'24px',background:'#fff'})
+    holder.innerHTML=res.value||'<div/>'
+    document.body.appendChild(holder)
+    const canvas=await window.html2canvas(holder,{backgroundColor:'#fff',scale:2})
+    document.body.removeChild(holder)
+    return canvas
+  }
+  async function renderXLSXToCanvas(file){
+    await ensureSheetJS(); await ensureHtml2Canvas()
+    const ab=await file.arrayBuffer()
+    const wb=window.XLSX.read(ab,{type:'array'})
+    const sheetName=wb.SheetNames[0]
+    const html=window.XLSX.utils.sheet_to_html(wb.Sheets[sheetName])
+    const holder=document.createElement('div')
+    Object.assign(holder.style,{position:'fixed',left:'-9999px',top:'-9999px',width:'1200px',padding:'16px',background:'#fff'})
+    holder.innerHTML=html
+    document.body.appendChild(holder)
+    const canvas=await window.html2canvas(holder,{backgroundColor:'#fff',scale:2})
+    document.body.removeChild(holder)
+    return canvas
+  }
+  function sliceCanvasToPages(canvas,pageW,pageH){
+    const out=[], totalH=canvas.height, pagePx=3508
+    for(let y=0;y<totalH;y+=pagePx){
+      const sliceH=Math.min(pagePx,totalH-y)
+      const tmp=document.createElement('canvas'); const tctx=tmp.getContext('2d')
+      tmp.width=canvas.width; tmp.height=sliceH
+      tctx.drawImage(canvas,0,y,canvas.width,sliceH,0,0,tmp.width,tmp.height)
+      const dst=document.createElement('canvas'); const dctx=dst.getContext('2d')
+      dst.width=pageW; dst.height=pageH
+      dctx.fillStyle='#fff'; dctx.fillRect(0,0,dst.width,dst.height)
+      const s=Math.min(dst.width/tmp.width, dst.height/tmp.height)
+      const dw=tmp.width*s, dh=tmp.height*s
+      const dx=(dst.width-dw)/2, dy=(dst.height-dh)/2
+      dctx.drawImage(tmp,dx,dy,dw,dh)
+      out.push(dst.toDataURL('image/png'))
+    }
+    return out
+  }
+
+  // подписи
+  function pickSignature(){ signFileRef.current?.click() }
+  async function onPickSignature(e){
+    const f=e.target.files?.[0]; e.target.value=''
+    if(!f) return
+    const src=await readAsDataURL(f)
+    setCropSrc(src); setCropOpen(true); setCropType('signature'); setCropThresh(40)
+  }
+  useEffect(()=>{ if(!cropOpen) return; (async()=>{ await ensureCropper(); if(cropperRef.current){ try{ cropperRef.current.destroy() }catch{}; cropperRef.current=null } const img=cropImgRef.current; if(!img) return; /* eslint-disable no-undef */ const inst=new Cropper(img,{viewMode:1,dragMode:'move',guides:true,background:false,autoCrop:true}); /* eslint-enable */ cropperRef.current=inst })(); return ()=>{ if(cropperRef.current){ try{ cropperRef.current.destroy() }catch{}; cropperRef.current=null } } },[cropOpen])
+  useEffect(()=>{ if(!cropOpen||!cropperRef.current||!cropSrc) return; (async()=>{ const thr=Math.round(255*(cropThresh/100)); const url=await removeWhiteBackground(cropSrc,thr); try{ cropperRef.current.replace(url,true) }catch{} })() },[cropThresh,cropOpen,cropSrc])
+
+  async function cropConfirm(){
+    try{
+      const cr=cropperRef.current; if(!cr) return
+      const c=cr.getCroppedCanvas({ imageSmoothingEnabled:true, imageSmoothingQuality:'high' })
+      let dataUrl=c.toDataURL('image/png')
+      const thr=Math.round(255*(cropThresh/100))
+      dataUrl=await removeWhiteBackground(dataUrl,thr)
+      if(hasDoc && isMobile){
+        const page=pages[cur]; const cv=await ensureCanvas(page); const imgEl=await loadImageEl(dataUrl)
+        // eslint-disable-next-line no-undef
+        const img=new fabric.Image(imgEl); const w=cv.getWidth(),h=cv.getHeight()
+        const s=Math.min(1,(w*0.35)/img.width); img.set({left:w*0.15,top:h*0.15,scaleX:s,scaleY:s,selectable:true})
+        img.__scannyId=uniqueObjId(); cv.add(img); cv.setActiveObject(img); cv.requestRenderAll()
+        setUndoStack(stk=>[...stk,{type:'add_one',page:cur,id:img.__scannyId}])
+      } else {
+        if(localStorage.getItem('access')){ await AuthAPI.addSign({kind:cropType,data_url:dataUrl}); loadLibrary() }
+        else { const item={id:'g_'+Math.random().toString(36).slice(2),url:dataUrl,kind:cropType}; const next=[item,...signLib].slice(0,100); setSignLib(next); localStorage.setItem('sign_lib',JSON.stringify(next)) }
+      }
+      setCropOpen(false)
+    }catch(e){ toast(e.message||'Не удалось обработать изображение','error') }
+  }
+  async function removeWhiteBackground(src,threshold=245){
+    const img=await loadImageEl(src); const w=img.naturalWidth||img.width; const h=img.naturalHeight||img.height
+    const c=document.createElement('canvas'), ctx=c.getContext('2d'); c.width=w; c.height=h
+    ctx.drawImage(img,0,0); const data=ctx.getImageData(0,0,w,h); const d=data.data
+    for(let i=0;i<d.length;i+=4){ const r=d[i],g=d[i+1],b=d[i+2]; if(r>threshold&&g>threshold&&b>threshold) d[i+3]=0; else { const avg=(r+g+b)/3; if(avg>220) d[i+3]=Math.max(0,d[i+3]-120) } }
+    ctx.putImageData(data,0,0); return c.toDataURL('image/png')
+  }
+
+  function startDragSign(url,e){ try{ e.dataTransfer.setData('application/x-sign-url',url); e.dataTransfer.effectAllowed='copy' }catch{} }
+  function placeFromLib(url){
+    if(!hasDoc){ toast('Сначала добавьте страницу','error'); return }
+    const page=pages[cur]; ensureCanvas(page).then(cv=>{
+      loadImageEl(url).then(imgEl=>{
+        // eslint-disable-next-line no-undef
+        const img=new fabric.Image(imgEl); const w=cv.getWidth(),h=cv.getHeight()
+        const s=Math.min(1,(w*0.35)/img.width); img.set({left:w*0.15,top:h*0.15,scaleX:s,scaleY:s,selectable:true})
+        img.__scannyId=uniqueObjId(); cv.add(img); cv.setActiveObject(img); cv.requestRenderAll()
+        setUndoStack(stk=>[...stk,{type:'add_one',page:cur,id:img.__scannyId}])
+      })
+    })
+  }
+  function removeFromLib(id){ setSignLib(list=>list.filter(i=>i.id!==id)) }
+
+  async function addText(){
+    if(!hasDoc){ toast('Сначала добавьте страницу','error'); return }
+    await ensureFabric()
+    const page=pages[cur]; const cv=await ensureCanvas(page)
+    // eslint-disable-next-line no-undef
+    const tb=new fabric.Textbox('Вставьте текст',{ left:Math.round(cv.getWidth()*0.1), top:Math.round(cv.getHeight()*0.15), fontSize:48, fill:'#000000', fontFamily:'Arial', fontWeight:'bold' })
+    tb.__scannyId=uniqueObjId(); cv.add(tb); cv.setActiveObject(tb); cv.requestRenderAll(); setPanelOpen(true)
+    setUndoStack(stk=>[...stk,{type:'add_one',page:cur,id:tb.__scannyId}])
+  }
+  async function applyPanel(){ const page=pages[cur]; const cv=page?.canvas; if(!cv) return; const obj=cv.getActiveObject(); if(!obj||obj.type!=='textbox') return; obj.set({ fontFamily:font, fontSize:fontSize, fontWeight:bold?'bold':'normal', fontStyle:italic?'italic':'normal', fill:color }); cv.requestRenderAll() }
+  useEffect(()=>{ if(panelOpen) applyPanel() },[font,fontSize,bold,italic,color])
+
+  // Поворот — меняем только «рамку» (ориентацию), фон вписывается повторно
+  async function rotatePage(){
+    if(!hasDoc) return
+    const page=pages[cur]; await ensureCanvas(page)
+    page.landscape = !page.landscape
+    fitCanvasForPage(page)
+  }
+
+  function undo(){
+    const stk=[...undoStack], last=stk.pop(); if(!last) return
+    if(last.type==='add_one'){ const p=pages[last.page], cv=p?.canvas; if(cv){ const obj=cv.getObjects().find(o=>o.__scannyId===last.id); if(obj){ cv.remove(obj); cv.discardActiveObject(); cv.requestRenderAll() } } }
+    else if(last.type==='apply_all'){ last.clones.forEach(({page,id})=>{ const p=pages[page], cv=p?.canvas; if(cv){ const obj=cv.getObjects().find(o=>o.__scannyId===id); if(obj){ cv.remove(obj) } cv.requestRenderAll() } }) }
+    setUndoStack(stk)
+  }
+
+  function baseName(){ const nm=(fileName||'').trim(); if(!nm){ toast('Введите название файла вверху','error'); return null } return sanitizeName(nm) }
+  function freeLeft(){ return isAuthed ? (billing?.free_left ?? 3) : guestLeft }
 
   async function exportJPG(){
     try{
@@ -491,13 +515,14 @@ export default function Editor(){
       // eslint-disable-next-line no-undef
       const zip=new JSZip()
       for(let i=0;i<pages.length;i++){
-        const p=pages[i], cv=await ensureCanvas(p), zoom=cv.getZoom()||1
-        const url=cv.toDataURL({format:'jpeg',quality:0.95,multiplier:1/zoom})
+        const p=pages[i], cv=await ensureCanvas(p)
+        const url=cv.toDataURL({format:'jpeg',quality:0.95})
         const res=await fetch(url), blob=await res.blob()
         zip.file(`${bn}-p${i+1}.jpg`,blob)
       }
       const out=await zip.generateAsync({type:'blob'})
-      downloadBlob(out,`${bn}.zip`); consumeFree('jpg',count,bn); toast(`Скачано страниц: ${count}`,'info')
+      const a=document.createElement('a'); const href=URL.createObjectURL(out); a.href=href; a.download=`${bn}.zip`; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(href),1500)
+      toast(`Скачано страниц: ${count}`,'info')
     }catch(e){ console.error(e); toast(e.message||'Не удалось выгрузить JPG','error') }
   }
 
@@ -508,13 +533,14 @@ export default function Editor(){
       const count=pages.length
       if(freeLeft()<count){ setPlan('single'); setPayOpen(true); return }
       await ensureJsPDF()
-      const first=pages[0], cv0=await ensureCanvas(first)
       // eslint-disable-next-line no-undef
-      const PDF=window.jspdf.jsPDF
-      const w0=cv0.getWidth(), h0=cv0.getHeight(), pdf=new PDF({orientation:w0>h0?'l':'p', unit:'px', format:[w0,h0]})
-      const z0=cv0.getZoom()||1, u0=cv0.toDataURL({format:'jpeg',quality:0.95,multiplier:1/z0}); pdf.addImage(u0,'JPEG',0,0,w0,h0)
-      for(let i=1;i<pages.length;i++){ const p=pages[i], cv=await ensureCanvas(p), w=cv.getWidth(), h=cv.getHeight(), z=cv.getZoom()||1, u=cv.toDataURL({format:'jpeg',quality:0.95,multiplier:1/z}); pdf.addPage([w,h],w>h?'l':'p'); pdf.addImage(u,'JPEG',0,0,w,h) }
-      pdf.save(`${bn}.pdf`); consumeFree('pdf',count,bn); toast(`Скачано страниц: ${count}`,'info')
+      const jsPDF=window.jspdf.jsPDF
+      const first=pages[0]; const cv0=await ensureCanvas(first); const w0=cv0.getWidth(), h0=cv0.getHeight()
+      const pdf=new jsPDF({orientation:w0>h0?'l':'p', unit:'px', format:[w0,h0]})
+      const u0=cv0.toDataURL({format:'jpeg',quality:0.95}); pdf.addImage(u0,'JPEG',0,0,w0,h0)
+      for(let i=1;i<pages.length;i++){ const p=pages[i]; const cv=await ensureCanvas(p); const w=cv.getWidth(), h=cv.getHeight(); pdf.addPage([w,h], w>h?'l':'p'); const u=cv.toDataURL({format:'jpeg',quality:0.95}); pdf.addImage(u,'JPEG',0,0,w,h) }
+      pdf.save(`${bn}.pdf`)
+      toast(`Скачано страниц: ${count}`,'info')
     }catch(e){ console.error(e); toast(e.message||'Не удалось выгрузить PDF','error') }
   }
 
@@ -527,23 +553,33 @@ export default function Editor(){
 
   return (
     <div className="doc-editor page">
-      {/* верхняя панель (мобайл) */}
+      {/* mobile top bar */}
       <div className="ed-top" style={{display: isMobile && hasDoc ? undefined : 'none'}}>
         <button className="ed-menu-btn" aria-label="Ещё" onClick={()=>setMenuMoreOpen(o=>!o)}><img src={icMore} alt=""/></button>
         <div className="ed-docid" style={{flex:1,padding:'0 8px'}}><input className="ed-filename" placeholder="Название файла при скачивании" value={fileName} onChange={e=>setFileName(sanitizeName(e.target.value))}/></div>
         <div className="ed-top-right"></div>
         {menuMoreOpen && (
           <div className="ed-menu" ref={moreRef}>
-            <button className={hasDoc?'':'disabled'} onClick={rotatePage}><img src={icRotate} alt="" style={{width:18,height:18,marginRight:8}}/>Повернуть страницу</button>
-            <button className={hasDoc && pages.length>1?'':'disabled'} onClick={()=>removePage()}><img src={icDelete} alt="" style={{width:18,height:18,marginRight:8}}/>Удалить страницу</button>
-            <button className={hasDoc && !!(pages[cur]?.canvas?.getActiveObject()) ? '' : 'disabled'} onClick={()=>{ setMenuMoreOpen(false); applyToAllPages() }}><img src={icAddPage} alt="" style={{width:18,height:18,marginRight:8}}/>На все страницы</button>
+            <button onClick={rotatePage}><img src={icRotate} alt="" style={{width:18,height:18,marginRight:8}}/>Повернуть страницу</button>
+            <button className={pages.length>1?'':'disabled'} onClick={()=>removePage()}><img src={icDelete} alt="" style={{width:18,height:18,marginRight:8}}/>Удалить страницу</button>
             <button className={hasDoc?'':'disabled'} onClick={removeDocument}><img src={icDelete} alt="" style={{width:18,height:18,marginRight:8}}/>Удалить документ</button>
           </div>
         )}
       </div>
 
+      {/* панель форматирования */}
+      {panelOpen && (
+        <div className="ed-toolbar">
+          <select value={font} onChange={e=>setFont(e.target.value)}>{FONTS.map(f=><option key={f} value={f}>{f}</option>)}</select>
+          <div className="sep"/><button onClick={()=>setFontSize(s=>Math.max(6,s-2))}>−</button><span className="val">{fontSize}</span><button onClick={()=>setFontSize(s=>Math.min(300,s+2))}>+</button>
+          <div className="sep"/><input type="color" value={color} onChange={e=>setColor(e.target.value)} title="Цвет текста"/>
+          <button className={bold?'toggled':''} onClick={()=>setBold(b=>!b)}><b>B</b></button>
+          <button className={italic?'toggled':''} onClick={()=>setItalic(i=>!i)}><i>I</i></button>
+        </div>
+      )}
+
       <div className="ed-body">
-        {/* слева — скрывается на мобиле */}
+        {/* слева (скрывается на мобиле) */}
         <aside className="ed-left">
           <div className="ed-tools">
             <button className={`ed-tool ${hasDoc?'':'disabled'}`} onClick={addText}><img className="ico" src={icText} alt=""/><span>Добавить текст</span></button>
@@ -584,17 +620,17 @@ export default function Editor(){
                 <div className="dz-types">JPG, JPEG, PNG, PDF, DOC, DOCX, XLS, XLSX</div>
               </div>
             )}
-            {loading && (<div className="ed-canvas-loading"><div className="spinner" aria-hidden="true"></div>Загрузка…</div>)}
+            {loading && <div className="ed-canvas-loading"><div className="spinner" aria-hidden="true"></div>Загрузка…</div>}
           </div>
 
           {!isMobile && (
             <div className="ed-pages">
               {pages.map((p,i)=>(<div key={p.id} className={`ed-page-btn ${i===cur?'active':''}`} onClick={()=>setCur(i)}>{i+1}</div>))}
-                            <button className="ed-page-add" onClick={pickDocument}><img src={icPlus} alt="+"/></button>
+              <button className="ed-page-add" onClick={pickDocument}><img src={icPlus} alt="+"/></button>
             </div>
           )}
 
-          {/* нижняя панель (мобайл): слева меню «добавить», по центру пейджер, справа меню «скачать» */}
+          {/* нижняя панель (мобайл): слева меню добавления, центр — пейджер, справа — меню скачивания */}
           <div className="ed-bottom" style={{display: isMobile ? undefined : 'none'}}>
             <div className="ed-pager">
               <button onClick={()=>setCur(i=>Math.max(0, i-1))} disabled={!canPrev}><img src={icPrev} alt="Prev" /></button>
@@ -612,85 +648,52 @@ export default function Editor(){
           </div>
         </section>
 
-        {/* справа (скрыто на мобиле) */}
+        {/* справа */}
         <aside className="ed-right">
           <div className="ed-actions">
-            <button className={`ed-action ${hasDoc?'':'disabled'}`} onClick={removeDocument}>
-              <img src={icDelete} alt="" style={{width:18,height:18,marginRight:8}}/>Удалить документ
-            </button>
-            <button className={`ed-action ${canUndo?'':'disabled'}`} onClick={undo}>
-              <img src={icUndo} alt="" style={{width:18,height:18,marginRight:8}}/>Отменить
-            </button>
-            <button className={`ed-action ${hasDoc?'':'disabled'}`} onClick={rotatePage}>
-              <img src={icRotate} alt="" style={{width:18,height:18,marginRight:8}}/>Повернуть страницу
-            </button>
-            <button className={`ed-action ${hasDoc && !!(pages[cur]?.canvas?.getActiveObject()) ? '' : 'disabled'}`} onClick={applyToAllPages}>
-              <img src={icAddPage} alt="" style={{width:18,height:18,marginRight:8}}/>На все страницы
-            </button>
+            <button className={`ed-action ${hasDoc?'':'disabled'}`} onClick={removeDocument}><img src={icDelete} alt="" style={{width:18,height:18,marginRight:8}}/>Удалить документ</button>
+            <button className={`ed-action ${canUndo?'':'disabled'}`} onClick={undo}><img src={icUndo} alt="" style={{width:18,height:18,marginRight:8}}/>Отменить</button>
+            <button className={`ed-action ${hasDoc?'':'disabled'}`} onClick={rotatePage}><img src={icRotate} alt="" style={{width:18,height:18,marginRight:8}}/>Повернуть страницу</button>
+            <button className={`ed-action ${hasDoc && !!(pages[cur]?.canvas?.getActiveObject()) ? '' : 'disabled'}`} onClick={applyToAllPages}><img src={icAddPage} alt="" style={{width:18,height:18,marginRight:8}}/>На все страницы</button>
           </div>
 
           <div className="ed-download">
             <div className="ed-dl-title">Скачать бесплатно:</div>
             <div className="ed-dl-row">
-              <button className={`btn btn-lite ${(!hasDoc)?'disabled':''}`} onClick={()=>exportJPG()}>
-                <img src={icJpgFree} alt="" style={{width:18,height:18,marginRight:8}}/>JPG
-              </button>
-              <button className={`btn btn-lite ${(!hasDoc)?'disabled':''}`} onClick={()=>exportPDF()}>
-                <img src={icPdfFree} alt="" style={{width:18,height:18,marginRight:8}}/>PDF
-              </button>
+              <button className={`btn btn-lite ${(!hasDoc)?'disabled':''}`} onClick={exportJPG}><img src={icJpgFree} alt="" style={{width:18,height:18,marginRight:8}}/>JPG</button>
+              <button className={`btn btn-lite ${(!hasDoc)?'disabled':''}`} onClick={exportPDF}><img src={icPdfFree} alt="" style={{width:18,height:18,marginRight:8}}/>PDF</button>
             </div>
-
             <div className="ed-dl-title" style={{marginTop:10}}>Купить:</div>
             <div className="ed-dl-row ed-dl-row-paid">
-              <button className={`btn ${(!hasDoc)?'disabled':''}`} onClick={()=>{ if(hasDoc) { setPlan('single'); setPayOpen(true) } }}>
-                <img src={icJpgPaid} alt="" style={{width:18,height:18,marginRight:8}}/>JPG
-              </button>
-              <button className={`btn ${(!hasDoc)?'disabled':''}`} onClick={()=>{ if(hasDoc) { setPlan('single'); setPayOpen(true) } }}>
-                <img src={icPdfPaid} alt="" style={{width:18,height:18,marginRight:8}}/>PDF
-              </button>
+              <button className={`btn ${(!hasDoc)?'disabled':''}`} onClick={()=>{ if(hasDoc){ setPlan('single'); setPayOpen(true) } }}><img src={icJpgPaid} alt="" style={{width:18,height:18,marginRight:8}}/>JPG</button>
+              <button className={`btn ${(!hasDoc)?'disabled':''}`} onClick={()=>{ if(hasDoc){ setPlan('single'); setPayOpen(true) } }}><img src={icPdfPaid} alt="" style={{width:18,height:18,marginRight:8}}/>PDF</button>
             </div>
           </div>
         </aside>
       </div>
 
-      {/* add sheet */}
+      {/* шит добавления */}
       {menuAddOpen && (
         <div className="ed-sheet" ref={sheetRef}>
-          <button className={hasDoc?'':'disabled'} onClick={()=>{ if(hasDoc){ setMenuAddOpen(false); addText() } }}>
-            <img src={icText} alt="" style={{width:18,height:18,marginRight:10}}/>Добавить текст
-          </button>
-          <button onClick={()=>{ setMenuAddOpen(false); pickSignature() }}>
-            <img src={icSign} alt="" style={{width:18,height:18,marginRight:10}}/>Добавить подпись/печать
-          </button>
-          {!isMobile && (
-            <button onClick={()=>{ setMenuAddOpen(false); pickDocument() }}>
-              <img src={icDocAdd} alt="" style={{width:18,height:18,marginRight:10}}/>Добавить документ
-            </button>
-          )}
+          <button className={hasDoc?'':'disabled'} onClick={()=>{ if(hasDoc){ setMenuAddOpen(false); addText() } }}><img src={icText} alt="" style={{width:18,height:18,marginRight:10}}/>Добавить текст</button>
+          <button onClick={()=>{ setMenuAddOpen(false); pickSignature() }}><img src={icSign} alt="" style={{width:18,height:18,marginRight:10}}/>Добавить подпись/печать</button>
+          {!isMobile && (<button onClick={()=>{ setMenuAddOpen(false); pickDocument() }}><img src={icDocAdd} alt="" style={{width:18,height:18,marginRight:10}}/>Добавить документ</button>)}
         </div>
       )}
 
-      {/* download sheet */}
+      {/* шит скачивания */}
       {menuDownloadOpen && (
         <div className="ed-sheet" ref={dlRef}>
-          <button className={hasDoc?'':'disabled'} onClick={()=>{ if(hasDoc){ setMenuDownloadOpen(false); setPlan('single'); setPayOpen(true) } }}>
-            <img src={icJpgPaid} alt="" style={{width:18,height:18,marginRight:10}}/>Купить JPG
-          </button>
-          <button className={hasDoc?'':'disabled'} onClick={()=>{ if(hasDoc){ setMenuDownloadOpen(false); setPlan('single'); setPayOpen(true) } }}>
-            <img src={icPdfPaid} alt="" style={{width:18,height:18,marginRight:10}}/>Купить PDF
-          </button>
-          <button className={hasDoc?'':'disabled'} onClick={()=>{ if(hasDoc){ setMenuDownloadOpen(false); exportJPG() } }}>
-            <img src={icJpgFree} alt="" style={{width:18,height:18,marginRight:10}}/>Скачать бесплатно JPG
-          </button>
-          <button className={hasDoc?'':'disabled'} onClick={()=>{ if(hasDoc){ setMenuDownloadOpen(false); exportPDF() } }}>
-            <img src={icPdfFree} alt="" style={{width:18,height:18,marginRight:10}}/>Скачать бесплатно PDF
-          </button>
+          <button className={hasDoc?'':'disabled'} onClick={()=>{ if(hasDoc){ setMenuDownloadOpen(false); setPlan('single'); setPayOpen(true) } }}><img src={icJpgPaid} alt="" style={{width:18,height:18,marginRight:10}}/>Купить JPG</button>
+          <button className={hasDoc?'':'disabled'} onClick={()=>{ if(hasDoc){ setMenuDownloadOpen(false); setPlan('single'); setPayOpen(true) } }}><img src={icPdfPaid} alt="" style={{width:18,height:18,marginRight:10}}/>Купить PDF</button>
+          <button className={hasDoc?'':'disabled'} onClick={()=>{ if(hasDoc){ setMenuDownloadOpen(false); exportJPG() } }}><img src={icJpgFree} alt="" style={{width:18,height:18,marginRight:10}}/>Скачать бесплатно JPG</button>
+          <button className={hasDoc?'':'disabled'} onClick={()=>{ if(hasDoc){ setMenuDownloadOpen(false); exportPDF() } }}><img src={icPdfFree} alt="" style={{width:18,height:18,marginRight:10}}/>Скачать бесплатно PDF</button>
         </div>
       )}
 
       {(menuAddOpen || menuDownloadOpen || menuMoreOpen) && <div className="ed-dim" onClick={()=>{ setMenuAddOpen(false); setMenuDownloadOpen(false); setMenuMoreOpen(false) }}/>}
 
-      {/* crop modal */}
+      {/* кроппер */}
       {cropOpen && (
         <div className="modal-overlay" onClick={()=>setCropOpen(false)}>
           <div className="modal crop-modal" onClick={e=>e.stopPropagation()}>
@@ -703,14 +706,12 @@ export default function Editor(){
                 <option value="round_seal">круглая печать</option>
               </select>
             </div>
-            <div className="crop-area">
-              <img ref={cropImgRef} src={cropSrc} alt="" style={{maxWidth:'100%',maxHeight:'46vh'}}/>
-            </div>
+            <div className="crop-area"><img ref={cropImgRef} src={cropSrc} alt="" style={{maxWidth:'100%',maxHeight:'46vh'}}/></div>
             <div className="crop-controls">
               <h4>2. Настройте прозрачность фона:</h4>
               <div className="thr-row">
                 <input type="range" min="0" max="100" value={cropThresh} onChange={e=>setCropThresh(Number(e.target.value))}/>
-                <input type="number" min="0" max="100" value={cropThresh} onChange={e=>{ const v=Math.max(0,Math.min(100,Number(e.target.value)||0)); setCropThresh(v) }} />
+                <input type="number" min="0" max="100" value={cropThresh} onChange={e=>{ const v=Math.max(0,Math.min(100,Number(e.target.value)||0)); setCropThresh(v) }}/>
                 <span>%</span>
               </div>
               <button className="btn" onClick={cropConfirm}><span className="label">Готово</span></button>
@@ -719,33 +720,17 @@ export default function Editor(){
         </div>
       )}
 
-      {/* pay modal */}
+      {/* оплата */}
       {payOpen && (
         <div className="modal-overlay" onClick={()=>setPayOpen(false)}>
           <div className="modal pay-modal" onClick={e=>e.stopPropagation()}>
             <button className="modal-x" onClick={()=>setPayOpen(false)}>×</button>
             <h3 className="modal-title">Чтобы выгрузить документ придётся немного заплатить</h3>
-
             <div className="pay-grid">
-              <button className={`pay-card ${plan==='single'?'active':''}`} onClick={()=>setPlan('single')} type="button">
-                <img className="pay-ill" src={plan1} alt="" />
-                <div className="pay-price">99 ₽</div>
-                <div className="pay-sub">один (этот) документ</div>
-              </button>
-
-              <button className={`pay-card ${plan==='month'?'active':''}`} onClick={()=>setPlan('month')} type="button">
-                <img className="pay-ill" src={plan2} alt="" />
-                <div className="pay-price">399 ₽</div>
-                <div className="pay-sub">безлимит на месяц</div>
-              </button>
-
-              <button className={`pay-card ${plan==='year'?'active':''}`} onClick={()=>setPlan('year')} type="button">
-                <img className="pay-ill" src={plan3} alt="" />
-                <div className="pay-price">3999 ₽</div>
-                <div className="pay-sub">безлимит на год</div>
-              </button>
+              <button className={`pay-card ${plan==='single'?'active':''}`} onClick={()=>setPlan('single')} type="button"><img className="pay-ill" src={plan1} alt="" /><div className="pay-price">99 ₽</div><div className="pay-sub">один (этот) документ</div></button>
+              <button className={`pay-card ${plan==='month'?'active':''}`} onClick={()=>setPlan('month')} type="button"><img className="pay-ill" src={plan2} alt="" /><div className="pay-price">399 ₽</div><div className="pay-sub">безлимит на месяц</div></button>
+              <button className={`pay-card ${plan==='year'?'active':''}`} onClick={()=>setPlan('year')} type="button"><img className="pay-ill" src={plan3} alt="" /><div className="pay-price">3999 ₽</div><div className="pay-sub">безлимит на год</div></button>
             </div>
-
             <div className={`pay-controls ${promoError?'error':''}`}>
               <div className="promo">
                 <label className="field-label">Промокод</label>
@@ -755,7 +740,6 @@ export default function Editor(){
                 </div>
                 {promoError && <div className="promo-err">{promoError}</div>}
               </div>
-
               <div className="pay-buttons">
                 <button className="btn btn-lite" onClick={applyPromo}><span className="label">Активировать</span></button>
                 <button className="btn" onClick={startPurchase}><span className="label">Оплатить {price} ₽</span></button>
@@ -772,7 +756,8 @@ export default function Editor(){
     </div>
   )
 
-  // --- helpers для промо и оплаты ---
+
+// --- helpers для промо и оплаты ---
   async function applyPromo(){
     try{
       if(!promo){ setPromoPercent(0); setPromoError(''); return }

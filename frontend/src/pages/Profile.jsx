@@ -22,6 +22,7 @@ export default function Profile(){
   const [user,setUser]=useState(()=>JSON.parse(localStorage.getItem('user')||'null'))
   const [tab,setTab]=useState('info')
 
+  // billing
   const [billing, setBilling] = useState(null)
   const reloadBilling = async()=> {
     if (!localStorage.getItem('access')) { setBilling(null); return }
@@ -31,6 +32,7 @@ export default function Profile(){
   useEffect(()=>{ if(!user){ AuthAPI.me().then(u=>setUser(u)).catch(()=>{}) }},[])
   useEffect(()=>{ reloadBilling() },[])
 
+  // обновления из редактора/логина
   useEffect(() => {
     const onUpd = (e) => setUser(e.detail)
     const onBill = (e) => setBilling(e.detail)
@@ -42,7 +44,7 @@ export default function Profile(){
   const isAdmin = !!user?.is_staff
   useEffect(() => { if (!isAdmin && tab === 'users') setTab('info') }, [isAdmin, tab])
 
-  // ----- Админ -----
+  // ----- Админ: конфиг биллинга и промокоды -----
   const [freeQuota, setFreeQuota] = useState(3)
   const [promos, setPromos] = useState([])
   const [promoOpen, setPromoOpen] = useState(false)
@@ -141,7 +143,7 @@ function PlanSection({ billing, isAdmin, freeQuota, setFreeQuota, onSaveQuota, p
             <div className="two-col" style={{alignItems:'end'}}>
               <div>
                 <label className="subhead">Количество бесплатных страниц в сутки</label>
-                <input type="number" min="0" value={freeQuota} onChange={e=>setFreeQuota(e.target.value)} />
+                <input className="text-input admin-input" type="number" min="0" value={freeQuota} onChange={e=>setFreeQuota(e.target.value)} />
               </div>
               <div>
                 <button className="btn" onClick={onSaveQuota}><span className="label">Сохранить</span></button>
@@ -281,8 +283,8 @@ function InfoSection({user,onUpdated}){
           {(previewSrc || user?.avatar_url) && <button className="link-btn" onClick={removeAvatar}>Удалить фото</button>}
         </div>
         <div>
-          <div className="form-row"><input placeholder="E‑mail" value={email} onChange={e=>setEmail(e.target.value)} /></div>
-          <div className="form-row"><input placeholder="Логин (необязательно)" value={username} onChange={e=>setUsername(e.target.value)} /></div>
+          <div className="form-row"><input className="text-input" placeholder="E‑mail" value={email} onChange={e=>setEmail(e.target.value)} /></div>
+          <div className="form-row"><input className="text-input" placeholder="Логин (необязательно)" value={username} onChange={e=>setUsername(e.target.value)} /></div>
           <div className="form-row"><button className="btn" onClick={saveProfile}><span className="label">Сохранить</span></button></div>
         </div>
       </div>
@@ -305,7 +307,7 @@ function InfoSection({user,onUpdated}){
             <div className="form-note">Мы отправим код на ваш e‑mail для подтверждения смены пароля.</div>
             <div className="two-col">
               <button className="btn btn-lite" onClick={sendCode}><span className="label">Отправить код</span></button>
-              <input placeholder="Код из письма" value={code} onChange={e=>setCode(e.target.value)}/>
+              <input className="text-input" placeholder="Код из письма" value={code} onChange={e=>setCode(e.target.value)}/>
               <PasswordField id="new-pass2" placeholder="Новый пароль" value={newPwd} onChange={e=>setNewPwd(e.target.value)} />
               <button className="btn" onClick={changePassword}><span className="label">Изменить</span></button>
             </div>
@@ -419,13 +421,10 @@ function PromoModal({ open, onClose, initial=null, onSaved }){
       <div className="modal" onClick={e=>e.stopPropagation()}>
         <button className="modal-x" onClick={onClose}>×</button>
         <h3 className="modal-title">{isEdit ? 'Редактирование промокода' : 'Новый промокод'}</h3>
-        <div className="form-row"><input placeholder="Код" value={code} onChange={e=>setCode(e.target.value)} /></div>
-        <div className="form-row">
-          <label className="subhead">Скидка, %</label>
-          <input type="number" min="0" max="100" placeholder="0–100" value={percent} onChange={e=>setPercent(Number(e.target.value)||0)} />
-        </div>
+        <div className="form-row"><input className="text-input" placeholder="Код" value={code} onChange={e=>setCode(e.target.value)} /></div>
+        <div className="form-row"><label className="subhead">Скидка, %</label><input className="text-input" type="number" min="0" max="100" placeholder="0–100" value={percent} onChange={e=>setPercent(Number(e.target.value)||0)} /></div>
         <div className="form-row"><label className="agree-line"><input type="checkbox" checked={active} onChange={e=>setActive(e.target.checked)} /><span>Активен</span></label></div>
-        <div className="form-row"><input placeholder="Заметка (необязательно)" value={note} onChange={e=>setNote(e.target.value)} /></div>
+        <div className="form-row"><input className="text-input" placeholder="Заметка (необязательно)" value={note} onChange={e=>setNote(e.target.value)} /></div>
         <div className="form-row two">
           <button className={`btn ${loading?'loading':''}`} onClick={save} disabled={loading}><span className="spinner" aria-hidden="true" /> <span className="label">Сохранить</span></button>
           <button className="link-btn" onClick={onClose}>Отмена</button>

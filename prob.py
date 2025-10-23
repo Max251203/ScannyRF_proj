@@ -20,7 +20,7 @@ def print_project_structure(path, file, indent=0):
         file.write('    ' * indent + '└── [Permission denied]\n')
 
 if __name__ == "__main__":
-    project_path = 'D:/Max/ScannyRF/frontend/public'  # Укажите путь к папке с проектом
+    project_path = 'D:/Max/ScannyRF'  # Укажите путь к папке с проектом
     output_file = 'project_structure.txt'  # Имя выходного файла
 
     with open(output_file, 'w', encoding='utf-8') as file:
