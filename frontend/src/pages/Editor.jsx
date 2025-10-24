@@ -1,4 +1,3 @@
-// src/pages/Editor.jsx
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from '../components/Toast.jsx'
 import { AuthAPI } from '../api'
@@ -21,7 +20,6 @@ import icPdfPaid from '../assets/icons/dl-pdf-paid.png'
 import icDownload from '../assets/icons/download.png'
 import icPlus from '../assets/icons/plus.png'
 import icPrev from '../assets/icons/prev.png'
-import icNext from '../assets/icons/next.png'
 import icDocAdd from '../assets/icons/doc-add.svg'
 
 import plan1 from '../assets/images/один документ.png'
@@ -37,7 +35,6 @@ function randDocId(){ return String(Math.floor(1e15 + Math.random()*9e15)) }
 function genDefaultName(){ const a = Math.floor(Math.random()*1e6), b = Math.floor(Math.random()*1e6); return `${a}-${b}` }
 function sanitizeName(s){ s=(s||'').normalize('NFKC'); s=s.replace(/[^\p{L}\p{N}._-]+/gu,'-').replace(/-+/g,'-').replace(/^[-_.]+|[-_.]+$/g,''); return s.slice(0,64)||genDefaultName() }
 
-// pdf-lib через CDN
 async function ensurePDFLib(){
   if (window.PDFLib) return window.PDFLib
   await ensureScripts(['https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js'])
@@ -45,18 +42,12 @@ async function ensurePDFLib(){
   return window.PDFLib
 }
 
-// безопасное копирование в новый Uint8Array (без slice у ArrayBuffer)
 function toUint8Copy(input){
   if (input instanceof Uint8Array){
-    const out = new Uint8Array(input.length)
-    out.set(input)
-    return out
+    const out = new Uint8Array(input.length); out.set(input); return out
   }
   if (input instanceof ArrayBuffer){
-    const view = new Uint8Array(input)
-    const out = new Uint8Array(view.length)
-    out.set(view)
-    return out
+    const view = new Uint8Array(input); const out = new Uint8Array(view.length); out.set(view); return out
   }
   return new Uint8Array()
 }
@@ -144,7 +135,12 @@ export default function Editor(){
   const dlRef = useRef(null)
 
   const [isMobile, setIsMobile] = useState(()=>window.matchMedia('(max-width: 960px)').matches)
-  useEffect(()=>{ const mq=window.matchMedia('(max-width: 960px)'); const on=()=>setIsMobile(mq.matches); mq.addEventListener('change',on); return ()=>mq.removeEventListener('change',on) },[])
+  useEffect(()=>{
+    const mq=window.matchMedia('(max-width: 960px)')
+    const on=()=>setIsMobile(mq.matches)
+    mq.addEventListener('change',on)
+    return ()=>mq.removeEventListener('change',on)
+  },[])
 
   useEffect(()=>{
     function onDoc(e){
@@ -331,8 +327,8 @@ export default function Editor(){
           await addPageFromImage(url, img.naturalWidth||img.width, img.naturalHeight||img.height, f.type || (url.startsWith('data:image/png')?'image/png':'image/jpeg'))
         }else if(ext==='pdf'){
           const ab = await f.arrayBuffer()
-          const bytes = toUint8Copy(ab)           // наш «вечный» экземпляр
-          await addPagesFromPDFBytes(bytes)       // превью генерим с копии bytes.slice()
+          const bytes = toUint8Copy(ab)
+          await addPagesFromPDFBytes(bytes)
         }else if(['docx','doc'].includes(ext)){
           const canv=await renderDOCXToCanvas(f)
           await addRasterPagesFromCanvas(canv)
@@ -372,7 +368,7 @@ export default function Editor(){
     }
   }
 
-  async function assignFirstFileToCurrent(file){
+    async function assignFirstFileToCurrent(file){
     const ext=(file.name.split('.').pop()||'').toLowerCase()
     const page=pages[cur]; if(!page) return
     setLoading(true)
@@ -385,12 +381,12 @@ export default function Editor(){
         const bytes = toUint8Copy(ab)
         await setPageBackgroundFromFirstPDFPage(cur, bytes)
       }else if(['docx','doc'].includes(ext)){
-        const canv=await renderDOCXToCanvas(file)
+        const canv=await renderDOCXToCanvas(f)
         const slices=sliceCanvasToPages(canv)
         await setPageBackgroundFromImage(cur, slices[0]||canv.toDataURL('image/png'))
         page.meta = { type:'raster', src: slices[0]||canv.toDataURL('image/png'), w: PAGE_W, h: PAGE_H }
       }else if(['xls','xlsx'].includes(ext)){
-        const canv=await renderXLSXToCanvas(file)
+        const canv=await renderXLSXToCanvas(f)
         const slices=sliceCanvasToPages(canv)
         await setPageBackgroundFromImage(cur, slices[0]||canv.toDataURL('image/png'))
         page.meta = { type:'raster', src: slices[0]||canv.toDataURL('image/png'), w: PAGE_W, h: PAGE_H }
@@ -412,11 +408,10 @@ export default function Editor(){
       : { type:'image', src:dataUrl, w:imgEl.naturalWidth||imgEl.width, h:imgEl.naturalHeight||imgEl.height, mime: dataUrl.startsWith('data:image/jpeg')?'image/jpeg':'image/png' }
   }
 
-  // ===== PDF: превью — копия bytes.slice(), экспорт — оригинальные bytes =====
   async function addPagesFromPDFBytes(bytes){
     await ensurePDFJS()
     // eslint-disable-next-line no-undef
-    const pdf=await pdfjsLib.getDocument({data: bytes.slice()}).promise  // важная копия
+    const pdf=await pdfjsLib.getDocument({data: bytes.slice()}).promise
     for(let i=1;i<=pdf.numPages;i++){
       const url=await renderPDFPageToDataURL(pdf,i,2.0)
       const id='p_'+Math.random().toString(36).slice(2), elId='cv_'+id
@@ -441,43 +436,50 @@ export default function Editor(){
     const page = pages[idx]
     if (page) page.meta = { type:'pdf', bytes: toUint8Copy(bytes), index: 0 }
   }
-  async function renderPDFPageToDataURL(pdf,pageNum,scale){
-    const p=await pdf.getPage(pageNum), vp=p.getViewport({scale})
-    const canvas=document.createElement('canvas'), ctx=canvas.getContext('2d')
-    canvas.width=Math.round(vp.width); canvas.height=Math.round(vp.height)
-    ctx.fillStyle='#fff'; ctx.fillRect(0,0,canvas.width,canvas.height)
-    await p.render({canvasContext:ctx,viewport:vp}).promise
+
+  async function renderPDFPageToDataURL(pdf, pageNum, scale){
+    const p = await pdf.getPage(pageNum)
+    const vp = p.getViewport({ scale })
+    const canvas = document.createElement('canvas')
+    const ctx = canvas.getContext('2d')
+    canvas.width = Math.round(vp.width)
+    canvas.height = Math.round(vp.height)
+    ctx.fillStyle = '#fff'
+    ctx.fillRect(0,0,canvas.width,canvas.height)
+    await p.render({ canvasContext: ctx, viewport: vp }).promise
     return canvas.toDataURL('image/png')
   }
 
   async function renderDOCXToCanvas(file){
     await ensureMammothCDN(); await ensureHtml2Canvas()
-    const ab=await file.arrayBuffer()
-    const res=await window.mammoth.convertToHtml({ arrayBuffer: ab })
-    const holder=document.createElement('div')
+    const ab = await file.arrayBuffer()
+    const res = await window.mammoth.convertToHtml({ arrayBuffer: ab })
+    const holder = document.createElement('div')
     Object.assign(holder.style,{position:'fixed',left:'-9999px',top:'-9999px',width:'1100px',padding:'24px',background:'#fff'})
-    holder.innerHTML=res.value||'<div/>'
+    holder.innerHTML = res.value || '<div/>'
     document.body.appendChild(holder)
-    const canvas=await window.html2canvas(holder,{backgroundColor:'#fff',scale:2})
+    const canvas = await window.html2canvas(holder,{backgroundColor:'#fff',scale:2})
     document.body.removeChild(holder)
     return canvas
   }
+
   async function renderXLSXToCanvas(file){
     await ensureSheetJS(); await ensureHtml2Canvas()
-    const ab=await file.arrayBuffer()
-    const wb=window.XLSX.read(ab,{type:'array'})
-    const sheetName=wb.SheetNames[0]
-    const html=window.XLSX.utils.sheet_to_html(wb.Sheets[sheetName])
-    const holder=document.createElement('div')
+    const ab = await file.arrayBuffer()
+    const wb = window.XLSX.read(ab,{type:'array'})
+    const sheetName = wb.SheetNames[0]
+    const html = window.XLSX.utils.sheet_to_html(wb.Sheets[sheetName])
+    const holder = document.createElement('div')
     Object.assign(holder.style,{position:'fixed',left:'-9999px',top:'-9999px',width:'1200px',padding:'16px',background:'#fff'})
-    holder.innerHTML=html
+    holder.innerHTML = html
     document.body.appendChild(holder)
-    const canvas=await window.html2canvas(holder,{backgroundColor:'#fff',scale:2})
+    const canvas = await window.html2canvas(holder,{backgroundColor:'#fff',scale:2})
     document.body.removeChild(holder)
     return canvas
   }
+
   function sliceCanvasToPages(canvas){
-    const out=[], totalH=canvas.height, pagePx=3508
+    const out = [], totalH = canvas.height, pagePx = 3508
     for(let y=0;y<totalH;y+=pagePx){
       const sliceH=Math.min(pagePx,totalH-y)
       const tmp=document.createElement('canvas'); const tctx=tmp.getContext('2d')
@@ -567,7 +569,9 @@ export default function Editor(){
     const page=pages[cur]; const cv=await ensureCanvas(page)
     // eslint-disable-next-line no-undef
     const tb=new fabric.Textbox('Вставьте текст',{ left:Math.round(cv.getWidth()*0.1), top:Math.round(cv.getHeight()*0.15), fontSize:48, fill:'#000000', fontFamily:'Arial', fontWeight:'bold' })
-    tb.__scannyId=uniqueObjId(); cv.add(tb); cv.setActiveObject(tb); cv.requestRenderAll(); setPanelOpen(true)
+    tb.hasControls = true
+    tb.__scannyId=uniqueObjId()
+    cv.add(tb); cv.setActiveObject(tb); cv.requestRenderAll(); setPanelOpen(true)
     setUndoStack(stk=>[...stk,{type:'add_one',page:cur,id:tb.__scannyId}])
   }
   async function applyPanel(){ const page=pages[cur]; const cv=page?.canvas; if(!cv) return; const obj=cv.getActiveObject(); if(!obj||obj.type!=='textbox') return; obj.set({ fontFamily:font, fontSize:fontSize, fontWeight:bold?'bold':'normal', fontStyle:italic?'italic':'normal', fill:color }); cv.requestRenderAll() }
@@ -591,6 +595,7 @@ export default function Editor(){
   function baseName(){ const nm=(fileName||'').trim(); if(!nm){ toast('Введите название файла вверху','error'); return null } return sanitizeName(nm) }
   function freeLeft(){ return isAuthed ? (billing?.free_left ?? 3) : guestLeft }
 
+  // src/pages/Editor.jsx (Часть 3/3) — завершение файла
   async function exportOverlayAsPNGBytes(page, cv, targetW, targetH){
     if (!cv) return null
     const objs = cv.getObjects() || []
@@ -655,7 +660,7 @@ export default function Editor(){
       for (let i=0;i<pages.length;i++){
         const p = pages[i]; const cv = await ensureCanvas(p)
         if (p.meta?.type === 'pdf') {
-          const srcDoc = await PDFLib.PDFDocument.load(p.meta.bytes) // Uint8Array (наш «вечный» экземпляр)
+          const srcDoc = await PDFLib.PDFDocument.load(p.meta.bytes)
           const [copied] = await out.copyPages(srcDoc, [p.meta.index])
           const pageRef = out.addPage(copied)
           const { width, height } = pageRef.getSize()
@@ -726,9 +731,11 @@ export default function Editor(){
 
   return (
     <div className="doc-editor page">
-      <div className="ed-top" style={{display: isMobile && hasDoc ? undefined : 'none'}}>
+      <div className="ed-top mobi-only">
         <button className="ed-menu-btn" aria-label="Ещё" onClick={()=>setMenuMoreOpen(o=>!o)}><img src={icMore} alt=""/></button>
-        <div className="ed-docid" style={{flex:1,padding:'0 8px'}}><input className="ed-filename" placeholder="Название файла при скачивании" value={fileName} onChange={e=>setFileName(sanitizeName(e.target.value))}/></div>
+        <div className="ed-docid" style={{flex:1,padding:'0 8px'}}>
+          <input className="ed-filename" placeholder="Название файла" value={fileName} onChange={e=>setFileName(sanitizeName(e.target.value))}/>
+        </div>
         <div className="ed-top-right"></div>
         {menuMoreOpen && (
           <div className="ed-menu" ref={moreRef}>
@@ -739,18 +746,20 @@ export default function Editor(){
         )}
       </div>
 
-      {panelOpen && (
-        <div className="ed-toolbar">
-          <select value={font} onChange={e=>setFont(e.target.value)}>{FONTS.map(f=><option key={f} value={f}>{f}</option>)}</select>
-          <div className="sep"/><button onClick={()=>setFontSize(s=>Math.max(6,s-2))}>−</button><span className="val">{fontSize}</span><button onClick={()=>setFontSize(s=>Math.min(300,s+2))}>+</button>
-          <div className="sep"/><input type="color" value={color} onChange={e=>setColor(e.target.value)} title="Цвет текста"/>
-          <button className={bold?'toggled':''} onClick={()=>setBold(b=>!b)}><b>B</b></button>
-          <button className={italic?'toggled':''} onClick={()=>setItalic(i=>!i)}><i>I</i></button>
-        </div>
-      )}
+      <div className={`ed-toolbar ${panelOpen ? 'visible' : ''}`}>
+        <select value={font} onChange={e=>setFont(e.target.value)}>{FONTS.map(f=><option key={f} value={f}>{f}</option>)}</select>
+        <div className="sep"/>
+        <button onClick={()=>setFontSize(s=>Math.max(6,s-2))}>−</button>
+        <span className="val">{fontSize}</span>
+        <button onClick={()=>setFontSize(s=>Math.min(300,s+2))}>+</button>
+        <div className="sep"/>
+        <input type="color" value={color} onChange={e=>setColor(e.target.value)} title="Цвет текста"/>
+        <button className={bold?'toggled':''} onClick={()=>setBold(b=>!b)}><b>B</b></button>
+        <button className={italic?'toggled':''} onClick={()=>setItalic(i=>!i)}><i>I</i></button>
+      </div>
 
       <div className="ed-body">
-        <aside className="ed-left">
+        <aside className="ed-left desk-only">
           <div className="ed-tools">
             <button className={`ed-tool ${hasDoc?'':'disabled'}`} onClick={addText}><img className="ico" src={icText} alt=""/><span>Добавить текст</span></button>
             <button className="ed-tool" onClick={pickSignature}><img className="ico" src={icSign} alt=""/><span>Загрузить подпись</span></button>
@@ -768,16 +777,14 @@ export default function Editor(){
         </aside>
 
         <section className="ed-center">
-          {!isMobile && (
-            <div className="ed-namebar">
-              <input className="ed-filename" placeholder="Название файла при скачивании" value={fileName} onChange={e=>setFileName(sanitizeName(e.target.value))}/>
-            </div>
-          )}
+          <div className="ed-namebar desk-only">
+            <input className="ed-filename" placeholder="Название файла при скачивании" value={fileName} onChange={e=>setFileName(sanitizeName(e.target.value))}/>
+          </div>
 
           <div className="ed-canvas-wrap" ref={canvasWrapRef} onDragOver={(e)=>e.preventDefault()} onDrop={onCanvasDrop}>
             {pages.map((p,idx)=>(
               <div key={p.id} className={`ed-canvas ${idx===cur?'active':''}`}>
-                {!isMobile && <button className="ed-page-x" title="Удалить эту страницу" onClick={()=>removePage(idx)}>×</button>}
+                <button className="ed-page-x desk-only" title="Удалить эту страницу" onClick={()=>removePage(idx)}>×</button>
                 <canvas id={p.elId}/>
               </div>
             ))}
@@ -792,30 +799,27 @@ export default function Editor(){
             {loading && <div className="ed-canvas-loading"><div className="spinner" aria-hidden="true"></div>Загрузка…</div>}
           </div>
 
-          {!isMobile && (
-            <div className="ed-pages">
-              {pages.map((p,i)=>(<div key={p.id} className={`ed-page-btn ${i===cur?'active':''}`} onClick={()=>setCur(i)}>{i+1}</div>))}
-              <button className="ed-page-add" onClick={pickDocument}><img src={icPlus} alt="+"/></button>
-            </div>
-          )}
+          <div className="ed-pages desk-only">
+            {pages.map((p,i)=>(<div key={p.id} className={`ed-page-btn ${i===cur?'active':''}`} onClick={()=>setCur(i)}>{i+1}</div>))}
+            <button className="ed-page-add" onClick={pickDocument}><img src={icPlus} alt="+"/></button>
+          </div>
 
-          {/* Мобильная нижняя панель — одна строка: слева меню добавления, центр пейджер, справа меню скачивания */}
-          <div className="ed-bottom" style={{display: isMobile ? undefined : 'none'}}>
-            <button className="fab" onClick={()=>setMenuAddOpen(o=>!o)} title="Добавить"><img src={icPlus} alt="+" /></button>
-            <div className="ed-pager">
+          <div className="ed-bottom mobi-only">
+            <button className={`fab ed-bottom-add ${!hasDoc?'disabled':''}`} onClick={()=>setMenuAddOpen(o=>!o)} title="Добавить"><img src={icPlus} alt="+" /></button>
+            <div className="ed-pager-row">
               <button onClick={()=>setCur(i=>Math.max(0, i-1))} disabled={!canPrev}><img src={icPrev} alt="Prev" /></button>
               <span className="pg">{hasDoc ? `${cur+1}/${pages.length}` : '0/0'}</span>
               {canNext ? (
-                <button onClick={()=>setCur(i=>Math.min(pages.length-1, i+1))}><img src={icNext} alt="Next" /></button>
+                <button onClick={()=>setCur(i=>Math.min(pages.length-1, i+1))}><img src={icPrev} alt="Next" style={{transform:'rotate(180deg)'}}/></button>
               ) : (
-                <button onClick={pickDocument} title="Добавить документ"><img src={icPlus} alt="+"/></button>
+                <button onClick={pickDocument} title="Добавить документ"><img src={icDocAdd} alt="Add" /></button>
               )}
             </div>
-            <button className={`fab main ${(!hasDoc)?'disabled':''}`} onClick={()=>setMenuDownloadOpen(o=>!o)} title="Скачать"><img src={icDownload} alt="↓" /></button>
+            <button className={`fab ed-bottom-dl ${(!hasDoc)?'disabled':''}`} onClick={()=>setMenuDownloadOpen(o=>!o)} title="Скачать"><img src={icDownload} alt="↓" /></button>
           </div>
         </section>
 
-        <aside className="ed-right">
+        <aside className="ed-right desk-only">
           <div className="ed-actions">
             <button className={`ed-action ${hasDoc?'':'disabled'}`} onClick={removeDocument}><img src={icDelete} alt="" style={{width:18,height:18,marginRight:8}}/>Удалить документ</button>
             <button className={`ed-action ${canUndo?'':'disabled'}`} onClick={undo}><img src={icUndo} alt="" style={{width:18,height:18,marginRight:8}}/>Отменить</button>
