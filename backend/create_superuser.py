@@ -16,7 +16,7 @@ User = get_user_model()
 # Данные для создания суперпользователя
 ADMIN_EMAIL = os.environ.get('ADMIN_EMAIL', 'admin@gmail.com')
 ADMIN_USERNAME = os.environ.get('ADMIN_USERNAME', 'admin')
-ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'dmin123')
+ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'admin123')
 
 # --- ИСПРАВЛЕНИЕ: Проверяем и по email, и по username ---
 if not User.objects.filter(Q(email=ADMIN_EMAIL) | Q(username=ADMIN_USERNAME)).exists():
