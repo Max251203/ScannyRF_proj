@@ -5,6 +5,7 @@ import { toast } from '../components/Toast.jsx'
 import UserModal from '../components/UserModal.jsx'
 import eyeOpen from '../assets/icons/eye-open.png'
 import eyeClosed from '../assets/icons/eye-closed.png'
+import { ensureCropper } from '../utils/scriptLoader'
 
 function PasswordField({ value, onChange, placeholder, id }) {
   const [show, setShow] = useState(false)
@@ -18,33 +19,68 @@ function PasswordField({ value, onChange, placeholder, id }) {
   )
 }
 
+const DRAFT_KEY = 'scanny_last_doc'
+function readDraft() {
+  try {
+    const raw = localStorage.getItem(DRAFT_KEY)
+    if (!raw) return null
+    const d = JSON.parse(raw)
+    if (!d || !d.expiresAt) return null
+    if (Date.now() >= d.expiresAt) {
+      localStorage.removeItem(DRAFT_KEY)
+      window.dispatchEvent(new CustomEvent('tempdoc:update'))
+      return null
+    }
+    return d
+  } catch {
+    return null
+  }
+}
+
+// Нормализация имени документа (как в Editor.sanitizeName),
+function normalizeName(s) {
+  try {
+    const out = (s || '')
+      .normalize('NFKC')
+      .replace(/[^\p{L}\p{N}._-]+/gu, '-')
+      .replace(/-+/g, '-')
+      .replace(/^[-_.]+|[-_.]+$/g, '')
+      .slice(0, 64)
+    return out
+  } catch {
+    return (s || '').trim()
+  }
+}
+
 export default function Profile(){
   const [user,setUser]=useState(()=>JSON.parse(localStorage.getItem('user')||'null'))
   const [tab,setTab]=useState('info')
 
-  // billing
   const [billing, setBilling] = useState(null)
   const reloadBilling = async()=> {
     if (!localStorage.getItem('access')) { setBilling(null); return }
     try { setBilling(await AuthAPI.getBillingStatus()) } catch {}
   }
 
+  const [draft,setDraft] = useState(readDraft())
+
   useEffect(()=>{ if(!user){ AuthAPI.me().then(u=>setUser(u)).catch(()=>{}) }},[])
   useEffect(()=>{ reloadBilling() },[])
 
-  // обновления из редактора/логина
   useEffect(() => {
     const onUpd = (e) => setUser(e.detail)
     const onBill = (e) => setBilling(e.detail)
+    const onTemp = () => setDraft(readDraft())
     window.addEventListener('user:update', onUpd)
     window.addEventListener('billing:update', onBill)
-    return () => { window.removeEventListener('user:update', onUpd); window.removeEventListener('billing:update', onBill) }
+    window.addEventListener('tempdoc:update', onTemp)
+    const id = setInterval(onTemp, 1000)
+    return () => { window.removeEventListener('user:update', onUpd); window.removeEventListener('billing:update', onBill); window.removeEventListener('tempdoc:update', onTemp); clearInterval(id) }
   }, [])
 
   const isAdmin = !!user?.is_staff
-  useEffect(() => { if (!isAdmin && tab === 'users') setTab('info') }, [isAdmin, tab])
+  useEffect(() => { if (!isAdmin && (tab === 'users' || tab === 'defaults')) setTab('info') }, [isAdmin, tab])
 
-  // ----- Админ: конфиг биллинга и промокоды -----
   const [freeQuota, setFreeQuota] = useState(3)
   const [promos, setPromos] = useState([])
   const [promoOpen, setPromoOpen] = useState(false)
@@ -84,10 +120,11 @@ export default function Profile(){
         <button className={`tab ${tab==='history'?'active':''}`} onClick={()=>setTab('history')}>История</button>
         <button className={`tab ${tab==='plan'?'active':''}`} onClick={()=>setTab('plan')}>Тариф</button>
         {isAdmin && <button className={`tab ${tab==='users'?'active':''}`} onClick={()=>setTab('users')}>Пользователи</button>}
+        {isAdmin && <button className={`tab ${tab==='defaults'?'active':''}`} onClick={()=>setTab('defaults')}>Стандартные подписи/печати</button>}
       </div>
 
       {tab==='info' && <InfoSection user={user} onUpdated={(u)=>{ setUser(u); window.dispatchEvent(new CustomEvent('user:update',{detail:u})) }} />}
-      {tab==='history' && <HistorySection billing={billing} />}
+      {tab==='history' && <HistorySection billing={billing} draft={draft} />}
       {tab==='plan' && (
         <PlanSection
           billing={billing}
@@ -102,6 +139,7 @@ export default function Profile(){
         />
       )}
       {isAdmin && tab==='users' && <AdminUsers/>}
+      {isAdmin && tab==='defaults' && <DefaultSignsAdmin />}
 
       {isAdmin && (
         <PromoModal
@@ -125,12 +163,14 @@ function PlanSection({ billing, isAdmin, freeQuota, setFreeQuota, onSaveQuota, p
         {!hasSub ? (
           <>
             <p>Тариф: Бесплатный</p>
-            <p>Доступно сегодня: {left} из {total}</p>
+            <p>Лимит страниц для скачивания на сегодня: {left} из {total}</p>
             {billing?.reset_at && <p>Сброс лимита: {new Date(billing.reset_at).toLocaleString('ru-RU')}</p>}
           </>
         ) : (
           <>
             <p>Тариф: Без ограничений ({billing.subscription.plan === 'month' ? 'месяц' : 'год'})</p>
+            <p>Лимит страниц для скачивания на сегодня: неограниченно</p>
+            <p>Сброс лимита: не требуется</p>
             <p>Действует до: {new Date(billing.subscription.expires_at).toLocaleDateString('ru-RU')}</p>
           </>
         )}
@@ -139,7 +179,7 @@ function PlanSection({ billing, isAdmin, freeQuota, setFreeQuota, onSaveQuota, p
       {isAdmin && (
         <>
           <div className="card" style={{marginBottom:16}}>
-            <h3 style={{marginTop:0}}>Настройки тарифа (админ)</h3>
+            <h3 style={{marginTop:0}}>Настройки тарифа</h3>
             <div className="two-col" style={{alignItems:'end'}}>
               <div>
                 <label className="subhead">Количество бесплатных страниц в сутки</label>
@@ -177,7 +217,23 @@ function PlanSection({ billing, isAdmin, freeQuota, setFreeQuota, onSaveQuota, p
   )
 }
 
-function HistorySection({ billing }){
+function HistorySection({ billing, draft }){
+  const [now, setNow] = useState(Date.now())
+  useEffect(()=>{ const id=setInterval(()=>setNow(Date.now()),1000); return ()=>clearInterval(id) },[])
+
+  const draftName = draft?.name || ''
+  const draftDeleted = !!draft?.deleted
+  const draftExpiresAt = draft?.expiresAt || 0
+
+  function fmtRemaining(ms){
+    if (ms <= 0) return '0:00:00'
+    const sec = Math.floor(ms/1000)
+    const h = Math.floor(sec/3600)
+    const m = Math.floor((sec%3600)/60)
+    const s = sec%60
+    return `${String(h).padStart(1,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`
+  }
+
   return (
     <div className="card">
       {!billing?.history?.length && <p>История пока пуста.</p>}
@@ -185,18 +241,27 @@ function HistorySection({ billing }){
         <div className="calc-table" style={{marginTop:0}}>
           <table>
             <thead>
-              <tr><th>Дата</th><th>Тип</th><th>Страниц</th><th>Документ</th><th>Способ</th></tr>
+              <tr><th>Дата</th><th>Тип</th><th>Страниц</th><th>Документ</th><th>Способ</th><th>Временное хранилище</th></tr>
             </thead>
             <tbody>
-              {billing.history.map(op=>(
-                <tr key={op.id}>
-                  <td>{new Date(op.created_at).toLocaleString('ru-RU')}</td>
-                  <td>{op.kind==='download_pdf' ? 'PDF' : 'JPG'}</td>
-                  <td className="t-num">{op.pages}</td>
-                  <td>{op.doc_name || '-'}</td>
-                  <td>{op.free ? 'Бесплатно' : 'Оплачено'}</td>
-                </tr>
-              ))}
+              {billing.history.map((op)=> {
+                let tempCell = '—'
+                // Сравниваем нормализованные имена
+                if (draftName && op.doc_name && normalizeName(op.doc_name) === normalizeName(draftName)) {
+                  if (draftDeleted || draftExpiresAt <= now) tempCell = 'удалён'
+                  else tempCell = `до удаления: ${fmtRemaining(draftExpiresAt - now)}`
+                }
+                return (
+                  <tr key={op.id}>
+                    <td>{new Date(op.created_at).toLocaleString('ru-RU')}</td>
+                    <td>{op.kind==='download_pdf' ? 'PDF' : 'JPG'}</td>
+                    <td className="t-num">{op.pages}</td>
+                    <td>{op.doc_name || '-'}</td>
+                    <td>{op.free ? 'Бесплатно' : 'Оплачено'}</td>
+                    <td>{tempCell}</td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
         </div>
@@ -208,7 +273,7 @@ function HistorySection({ billing }){
 function InfoSection({user,onUpdated}){
   const [email,setEmail]=useState(user?.email||'')
   const [username,setUsername]=useState(user?.username||'')
-  const [avatar,setAvatar]=useState(null) // File | 'remove' | null
+  const [avatar,setAvatar]=useState(null)
   const [pwdMode,setPwdMode]=useState('known')
   const [oldPwd,setOldPwd]=useState('')
   const [newPwd,setNewPwd]=useState('')
@@ -381,7 +446,6 @@ function AdminUsers(){
   )
 }
 
-/* ===== Модалка промокода (создание/редактирование) ===== */
 function PromoModal({ open, onClose, initial=null, onSaved }){
   const isEdit = !!initial
   const [code, setCode] = useState('')
@@ -430,6 +494,149 @@ function PromoModal({ open, onClose, initial=null, onSaved }){
           <button className="link-btn" onClick={onClose}>Отмена</button>
         </div>
       </div>
+    </div>
+  )
+}
+
+function DefaultSignsAdmin(){
+  const [list, setList] = useState([])
+  const [loading, setLoading] = useState(false)
+  const [cropOpen, setCropOpen] = useState(false)
+  const [cropSrc, setCropSrc] = useState('')
+  const [cropType, setCropType] = useState('signature')
+  const [cropThresh, setCropThresh] = useState(40)
+  const cropImgRef = useRef(null)
+  const cropperRef = useRef(null)
+  const fileRef = useRef(null)
+
+  const load = async () => {
+    setLoading(true)
+    try {
+      const items = await AuthAPI.adminListDefaults()
+      setList(Array.isArray(items) ? items : [])
+    } catch (e) {
+      toast(e.message || 'Не удалось загрузить библиотеку', 'error')
+    } finally {
+      setLoading(false)
+    }
+  }
+  useEffect(()=>{ load() },[])
+
+  const onPick = async (e) => {
+    const f = e.target.files?.[0] || null
+    e.target.value = ''
+    if (!f) return
+    const reader = new FileReader()
+    reader.onload = () => {
+      setCropSrc(String(reader.result || ''))
+      setCropOpen(true)
+      setCropType('signature')
+      setCropThresh(40)
+    }
+    reader.readAsDataURL(f)
+  }
+
+  useEffect(()=>{ if(!cropOpen) return; (async()=>{ await ensureCropper(); if(cropperRef.current){ try{ cropperRef.current.destroy() }catch{}; cropperRef.current=null } const img=cropImgRef.current; if(!img) return; /* eslint-disable no-undef */ const inst=new Cropper(img,{viewMode:1,dragMode:'move',guides:true,background:false,autoCrop:true}); /* eslint-enable */ cropperRef.current=inst })(); return ()=>{ if(cropperRef.current){ try{ cropperRef.current.destroy() }catch{}; cropperRef.current=null } } },[cropOpen])
+  useEffect(()=>{ if(!cropOpen||!cropperRef.current||!cropSrc) return; (async()=>{ const thr=Math.round(255*(cropThresh/100)); const url=await removeWhiteBackground(cropSrc,thr); try{ cropperRef.current.replace(url,true) }catch{} })() },[cropThresh,cropOpen,cropSrc])
+
+  async function removeWhiteBackground(src,threshold=245){
+    const img = new Image()
+    img.crossOrigin='anonymous'
+    const url = await new Promise((resolve,reject)=>{
+      img.onload=()=>resolve()
+      img.onerror=reject
+      img.src=src
+    }).then(()=>src)
+    const w=img.naturalWidth||img.width; const h=img.naturalHeight||img.height
+    const c=document.createElement('canvas'), ctx=c.getContext('2d'); c.width=w; c.height=h
+    ctx.drawImage(img,0,0); const data=ctx.getImageData(0,0,w,h); const d=data.data
+    for(let i=0;i<d.length;i+=4){
+      const r=d[i],g=d[i+1],b=d[i+2]
+      if(r>threshold&&g>threshold&&b>threshold) d[i+3]=0
+      else { const avg=(r+g+b)/3; if(avg>220) d[i+3]=Math.max(0,d[i+3]-120) }
+    }
+    ctx.putImageData(data,0,0); return c.toDataURL('image/png')
+  }
+
+  const cropConfirm = async () => {
+    try {
+      const cr=cropperRef.current; if(!cr) return
+      const c=cr.getCroppedCanvas({ imageSmoothingEnabled:true, imageSmoothingQuality:'high' })
+      let dataUrl=c.toDataURL('image/png')
+      const thr=Math.round(255*(cropThresh/100))
+      dataUrl=await removeWhiteBackground(dataUrl,thr)
+      await AuthAPI.adminAddDefault({ kind: cropType, data_url: dataUrl })
+      setCropOpen(false)
+      toast('Добавлено','success')
+      load()
+    } catch (e) {
+      toast(e.message || 'Не удалось добавить', 'error')
+    }
+  }
+
+  const del = async (it) => {
+    if (!confirm('Удалить элемент из стандартной библиотеки?')) return
+    try {
+      await AuthAPI.adminDeleteDefault(it.gid)
+      toast('Удалено','success')
+      load()
+    } catch (e) {
+      toast(e.message || 'Не удалось удалить', 'error')
+    }
+  }
+
+  const saveAll = async () => {
+    await load()
+    toast('Библиотека обновлена у всех пользователей','success')
+  }
+
+  return (
+    <div className="card">
+      <h3 style={{marginTop:0}}>Стандартные подписи и печати</h3>
+      <p className="lead">Это набор подписей и печатей, отображаемый у пользователей по умолчанию. Пользователь может удалить любой элемент у себя, если он не нужен.</p>
+
+      <div className="ed-tools" style={{display:'flex',gap:8,flexWrap:'wrap',margin:'8px 0 12px'}}>
+        <button className="btn btn-lite" onClick={()=>fileRef.current?.click()}><span className="label">Добавить изображение</span></button>
+        <button className="btn" onClick={saveAll}><span className="label">Сохранить</span></button>
+        <input ref={fileRef} type="file" accept=".png,.jpg,.jpeg" hidden onChange={onPick}/>
+      </div>
+
+      {loading && <div>Загрузка…</div>}
+      <div className="defaults-grid">
+        {list.map(it=>(
+          <div key={it.id} className="thumb">
+            <img src={it.url} alt="" style={{width:'100%',height:'100%',objectFit:'contain'}}/>
+            <button className="thumb-x" onClick={()=>del(it)}>×</button>
+          </div>
+        ))}
+        {list.length===0 && !loading && <div style={{gridColumn:'1 / -1',opacity:.7}}>Пока пусто</div>}
+      </div>
+
+      {cropOpen && (
+        <div className="modal-overlay" onClick={()=>setCropOpen(false)}>
+          <div className="modal crop-modal" onClick={e=>e.stopPropagation()}>
+            <button className="modal-x" onClick={()=>setCropOpen(false)}>×</button>
+            <h3 className="modal-title">1. Выделите область</h3>
+            <div className="crop-row">
+              <select value={cropType} onChange={e=>setCropType(e.target.value)}>
+                <option value="signature">подпись</option>
+                <option value="sig_seal">подпись + печать</option>
+                <option value="round_seal">круглая печать</option>
+              </select>
+            </div>
+            <div className="crop-area"><img ref={cropImgRef} src={cropSrc} alt="" style={{maxWidth:'100%',maxHeight:'46vh'}}/></div>
+            <div className="crop-controls">
+              <h4>2. Настройте прозрачность фона:</h4>
+              <div className="thr-row">
+                <input type="range" min="0" max="100" value={cropThresh} onChange={e=>setCropThresh(Number(e.target.value))}/>
+                <input type="number" min="0" max="100" value={cropThresh} onChange={e=>{ const v=Math.max(0,Math.min(100,Number(e.target.value)||0)); setCropThresh(v) }}/>
+                <span>%</span>
+              </div>
+              <button className="btn" onClick={cropConfirm}><span className="label">Готово</span></button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

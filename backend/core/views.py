@@ -15,6 +15,8 @@ from .models import (
     BillingConfig,
     PromoCode,
     SignImage,
+    GlobalSignImage,
+    HiddenDefaultSign,
 )
 
 # ---------- Ключевая ставка ЦБ ----------
@@ -104,7 +106,6 @@ class BillingRecordView(APIView):
         has_sub = Subscription.objects.filter(user=request.user, expires_at__gt=timezone.now()).exists()
         if mode == 'free' and not has_sub:
             st = _billing_status(request.user)
-            # лимит — в страницах
             if st['free_left'] < pages:
                 return Response({'detail': 'Лимит бесплатных страниц на сегодня исчерпан'}, status=403)
 
@@ -213,32 +214,60 @@ class PromoValidateView(APIView):
         return Response({'percent': int(obj.discount_percent) if obj else 0})
 
 
-# ---------- Библиотека подписей/печати пользователя ----------
+# ---------- Библиотека подписей/печати ----------
 def _sign_to_dict(obj: SignImage):
     b64 = base64.b64encode(obj.data).decode('ascii')
     url = f"data:{obj.mime};base64,{b64}"
-    return {"id": obj.id, "kind": obj.kind, "mime": obj.mime, "url": url, "created_at": obj.created_at.isoformat()}
+    return {
+        "id": obj.id,
+        "kind": obj.kind,
+        "mime": obj.mime,
+        "url": url,
+        "created_at": obj.created_at.isoformat(),
+        "is_default": False,
+    }
+
+
+def _default_sign_to_dict(obj: GlobalSignImage):
+    b64 = base64.b64encode(obj.data).decode('ascii')
+    url = f"data:{obj.mime};base64,{b64}"
+    return {
+        "id": f"g_{obj.id}",
+        "gid": obj.id,
+        "kind": obj.kind,
+        "mime": obj.mime,
+        "url": url,
+        "created_at": obj.created_at.isoformat(),
+        "is_default": True,
+    }
 
 
 class UserSignsListCreate(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        qs = SignImage.objects.filter(user=request.user).order_by('-created_at')[:200]
-        return Response([_sign_to_dict(i) for i in qs])
+        # Пользовательские
+        qs_user = SignImage.objects.filter(user=request.user).order_by('-created_at')[:200]
+        user_items = [_sign_to_dict(i) for i in qs_user]
+        # Глобальные (за исключением скрытых пользователем)
+        hidden_ids = HiddenDefaultSign.objects.filter(user=request.user).values_list('sign_id', flat=True)
+        qs_global = GlobalSignImage.objects.exclude(id__in=hidden_ids).order_by('-created_at')[:200]
+        default_items = [_default_sign_to_dict(i) for i in qs_global]
+        # Объединяем: приоритет пользовательских
+        items = [*user_items, *default_items]
+        return Response(items)
 
     def post(self, request):
         kind = (request.data.get('kind') or 'signature').strip()
         if kind not in ('signature', 'sig_seal', 'round_seal'):
             return Response({'detail': 'kind должен быть signature|sig_seal|round_seal'}, status=400)
 
-        # Пытаемся взять файл
+        # Файл или data URL
         if 'image' in request.FILES:
             f = request.FILES['image']
             data = f.read()
             mime = f.content_type or 'image/png'
         else:
-            # Или data URL
             data_url = (request.data.get('data_url') or '').strip()
             if not data_url.startswith('data:'):
                 return Response({'detail': 'Ожидается файл image или data_url'}, status=400)
@@ -265,6 +294,78 @@ class UserSignDetail(APIView):
     def delete(self, request, pk):
         self.get_obj(request, pk).delete()
         return Response(status=204)
+
+
+# ---------- Глобальные подписи/печати (админ) ----------
+class DefaultSignsListCreate(APIView):
+    permission_classes = [permissions.IsAdminUser]
+
+    def get(self, request):
+        qs = GlobalSignImage.objects.all().order_by('-created_at')
+        return Response([_default_sign_to_dict(i) for i in qs])
+
+    def post(self, request):
+        kind = (request.data.get('kind') or 'signature').strip()
+        if kind not in ('signature', 'sig_seal', 'round_seal'):
+            return Response({'detail': 'kind должен быть signature|sig_seal|round_seal'}, status=400)
+
+        if 'image' in request.FILES:
+            f = request.FILES['image']
+            data = f.read()
+            mime = f.content_type or 'image/png'
+        else:
+            data_url = (request.data.get('data_url') or '').strip()
+            if not data_url.startswith('data:'):
+                return Response({'detail': 'Ожидается файл image или data_url'}, status=400)
+            try:
+                mime = data_url.split(';', 1)[0].split(':', 1)[1] or 'image/png'
+                b64 = data_url.split(',', 1)[1]
+                data = base64.b64decode(b64)
+            except Exception:
+                return Response({'detail': 'Некорректный data_url'}, status=400)
+
+        if len(data) > 6 * 1024 * 1024:
+            return Response({'detail': 'Изображение слишком большое (до 6 МБ)'}, status=400)
+
+        obj = GlobalSignImage.objects.create(kind=kind, mime=mime, data=data)
+        return Response(_default_sign_to_dict(obj), status=201)
+
+
+class DefaultSignDetail(APIView):
+    permission_classes = [permissions.IsAdminUser]
+
+    def get_obj(self, pk):
+        return GlobalSignImage.objects.get(pk=pk)
+
+    def delete(self, request, pk):
+        self.get_obj(pk).delete()
+        # Также удаляем скрытия этого объекта у пользователей
+        HiddenDefaultSign.objects.filter(sign_id=pk).delete()
+        return Response(status=204)
+
+
+class HideDefaultSignView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        """
+        POST body: { "sign_id": <int>, "hide": true|false }
+        """
+        try:
+            sign_id = int(request.data.get('sign_id'))
+        except Exception:
+            return Response({'detail': 'sign_id обязателен'}, status=400)
+        hide = bool(request.data.get('hide') in (True, 'true', '1', 1))
+
+        if not GlobalSignImage.objects.filter(id=sign_id).exists():
+            return Response({'detail': 'Объект не найден'}, status=404)
+
+        if hide:
+            HiddenDefaultSign.objects.get_or_create(user=request.user, sign_id=sign_id)
+        else:
+            HiddenDefaultSign.objects.filter(user=request.user, sign_id=sign_id).delete()
+
+        return Response({'ok': True})
 
 
 # ---------- Платежи (заглушка-редирект) ----------

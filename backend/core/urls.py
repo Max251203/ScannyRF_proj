@@ -5,6 +5,7 @@ from .views import (
     BillingConfigView, PromoListCreate, PromoDetail, PromoValidateView,
     UserSignsListCreate, UserSignDetail,
     PaymentCreateView,
+    DefaultSignsListCreate, DefaultSignDetail, HideDefaultSignView,
 )
 
 urlpatterns = [
@@ -20,9 +21,15 @@ urlpatterns = [
     path('billing/promos/<int:pk>/', PromoDetail.as_view()),
     path('billing/promo/validate/', PromoValidateView.as_view()),
 
-    # Библиотека подписей/печати пользователя
+    # Библиотека подписей/печати пользователя (+ глобальные дефолтные)
     path('library/signs/', UserSignsListCreate.as_view()),
     path('library/signs/<int:pk>/', UserSignDetail.as_view()),
+
+    # Глобальные подписи/печати (админ)
+    path('library/default-signs/', DefaultSignsListCreate.as_view()),
+    path('library/default-signs/<int:pk>/', DefaultSignDetail.as_view()),
+    # Скрыть/показать дефолтную подпись у конкретного пользователя
+    path('library/default-signs/hide/', HideDefaultSignView.as_view()),
 
     # Платежи (заглушка)
     path('payments/create/', PaymentCreateView.as_view()),

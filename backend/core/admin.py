@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import Subscription, Operation, BillingConfig, PromoCode, SignImage
+from .models import Subscription, Operation, BillingConfig, PromoCode, SignImage, GlobalSignImage, HiddenDefaultSign
 
 
 @admin.register(Subscription)
@@ -22,7 +22,6 @@ class BillingConfigAdmin(admin.ModelAdmin):
     actions = ['make_default']
 
     def has_add_permission(self, request):
-        # Держим единственную запись
         return not BillingConfig.objects.exists()
 
     @admin.action(description='Сделать дефолтным значением (3)')
@@ -43,4 +42,16 @@ class PromoCodeAdmin(admin.ModelAdmin):
 class SignImageAdmin(admin.ModelAdmin):
     list_display = ('id', 'user', 'kind', 'mime', 'created_at')
     list_filter = ('kind',)
+    search_fields = ('user__email', 'user__username')
+
+
+@admin.register(GlobalSignImage)
+class GlobalSignImageAdmin(admin.ModelAdmin):
+    list_display = ('id', 'kind', 'mime', 'created_at')
+    list_filter = ('kind',)
+
+
+@admin.register(HiddenDefaultSign)
+class HiddenDefaultSignAdmin(admin.ModelAdmin):
+    list_display = ('id', 'user', 'sign')
     search_fields = ('user__email', 'user__username')

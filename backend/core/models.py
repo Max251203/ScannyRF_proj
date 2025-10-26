@@ -81,3 +81,34 @@ class SignImage(models.Model):
 
     def __str__(self) -> str:
         return f'{self.user_id}:{self.kind}:{self.mime}:{self.created_at:%Y-%m-%d}'
+
+
+# Глобальная библиотека подписей/печати (для всех пользователей)
+class GlobalSignImage(models.Model):
+    TYPE_CHOICES = [
+        ('signature', 'signature'),
+        ('sig_seal', 'sig_seal'),
+        ('round_seal', 'round_seal'),
+    ]
+    kind = models.CharField(max_length=16, choices=TYPE_CHOICES, default='signature')
+    mime = models.CharField(max_length=100, default='image/png')
+    data = models.BinaryField()  # PNG/JPEG
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self) -> str:
+        return f'global:{self.kind}:{self.mime}:{self.created_at:%Y-%m-%d}'
+
+
+# Скрытые пользователем элементы из глобальной библиотеки
+class HiddenDefaultSign(models.Model):
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='hidden_defaults')
+    sign = models.ForeignKey(GlobalSignImage, on_delete=models.CASCADE, related_name='hidden_by')
+
+    class Meta:
+        unique_together = ('user', 'sign')
+
+    def __str__(self) -> str:
+        return f'hidden:{self.user_id}:{self.sign_id}'
