@@ -327,17 +327,18 @@ main{flex:1}
 .doc-editor .ed-page-add{border:1px solid #e5e5e5;background:#fff;border-radius:50%;width:36px;height:36px;display:flex;align-items:center;justify-content:center;cursor:pointer}
 .doc-editor .ed-page-add img{width:18px;height:18px}
 .ed-dim{position:fixed;inset:0;background:rgba(0,0,0,.2);z-index:50}
-.doc-editor .ed-center .ed-bottom{position:fixed;left:0;right:0;bottom:0;background:#fff;border-top:1px solid #eee;padding:10px 12px;z-index:100;display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:nowrap}
-.doc-editor .ed-center .ed-bottom .ed-pager{display:flex;align-items:center;gap:10px}
+.doc-editor .ed-center .ed-bottom{position:fixed;left:0;right:0;bottom:0;background:#fff;border-top:1px solid #eee;padding:10px 12px;z-index:100;display:grid;grid-template-columns:44px 1fr 44px;align-items:center;gap:12px;min-height:var(--ed-bottom-h)}
+.doc-editor .ed-center .ed-bottom .ed-pager{display:flex;align-items:center;gap:10px;justify-self:center;min-width:0}
 .doc-editor .ed-center .ed-bottom .ed-pager button{width:36px;height:36px;border:1px solid #eee;border-radius:50%;background:#fff;display:flex;align-items:center;justify-content:center}
 .doc-editor .ed-center .ed-bottom .ed-pager .pg{min-width:64px;text-align:center}
-.doc-editor .ed-center .ed-bottom .fab{width:44px;height:44px;border-radius:50%;border:1px solid #eee;background:#fff;color:#000;font-size:20px;cursor:pointer;display:flex;align-items:center;justify-content:center;box-shadow:0 8px 16px rgba(0,0,0,.12)}
+.doc-editor .ed-center .ed-bottom .fab{width:44px;height:44px;border-radius:50%;border:1px solid #eee;background:#fff;color:#000;font-size:20px;cursor:pointer;display:flex;align-items:center;justify-content:center;box-shadow:0 8px 16px rgba(0,0,0,.12);justify-self:start}
+.doc-editor .ed-center .ed-bottom .fab:last-child{justify-self:end}
 .doc-editor .ed-center .ed-bottom .fab img{width:22px;height:22px;object-fit:contain}
 @media (max-width:960px){
 .doc-editor .ed-body{grid-template-columns:1fr}
 .doc-editor .ed-left,.doc-editor .ed-right{display:none}
 .doc-editor .ed-canvas-wrap{padding-bottom:96px;height:calc(100vh - var(--hdr-h) - var(--ed-top-h) - var(--ed-bottom-h) - 16px);min-height:auto}
-.doc-editor .ed-center .ed-bottom{display:flex;align-items:center;justify-content:space-between}
+.doc-editor .ed-center .ed-bottom{display:grid;grid-template-columns:44px 1fr 44px;align-items:center;gap:12px}
 .ed-sheet{left:12px;right:12px;top:auto;bottom:76px}
 .doc-editor .ed-page-x{display:none}
 }
