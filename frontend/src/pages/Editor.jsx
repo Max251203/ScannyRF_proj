@@ -60,9 +60,10 @@ function toUint8Copy(input){
   return new Uint8Array()
 }
 
-// ====== Временное хранилище последнего документа (24 часа) ======
+// ====== Временное хранилище последнего документа (TTL — из настроек) ======
 const DRAFT_KEY = 'scanny_last_doc'
-const DRAFT_TTL_MS = 24*60*60*1000
+// 24 часа по умолчанию, актуальное значение придёт из billing.status
+const DRAFT_TTL_DEFAULT_MS = 24*60*60*1000
 
 function u8ToB64(u8){
   let bin = ''
@@ -88,10 +89,10 @@ function readDraft(){
     return d
   }catch{ return null }
 }
-function writeDraft(doc){
+function writeDraftWithTTL(doc, ttlMs){
   try{
     const now = Date.now()
-    const d = { ...doc, savedAt: now, expiresAt: now + DRAFT_TTL_MS, deleted: false }
+    const d = { ...doc, savedAt: now, expiresAt: now + Math.max(0, ttlMs||0), deleted: false }
     localStorage.setItem(DRAFT_KEY, JSON.stringify(d))
     window.dispatchEvent(new CustomEvent('tempdoc:update'))
   }catch{}
@@ -166,6 +167,9 @@ export default function Editor(){
   const [undoStack, setUndoStack] = useState([])
   const canUndo = undoStack.length>0
 
+  // TTL черновика — реф, обновляется при приходе billing
+  const draftTTLRef = useRef(DRAFT_TTL_DEFAULT_MS)
+
   // ----- Автосохранение черновика -----
   const saveDebounceRef = useRef(0)
   const draftReadyRef = useRef(false)
@@ -177,7 +181,7 @@ export default function Editor(){
   async function saveDraftNow(){
     if(!hasDoc) return
     const s = await serializeDocument()
-    writeDraft(s)
+    writeDraftWithTTL(s, draftTTLRef.current)
   }
   useEffect(()=>{
     const onTick = () => {
@@ -206,6 +210,15 @@ export default function Editor(){
     return ()=>{ window.removeEventListener('user:update', onUser); window.removeEventListener('billing:update', onBill) }
   },[])
 
+  // Обновляем TTL при изменении настроек на бэке
+  useEffect(()=>{
+    if (billing && typeof billing.draft_ttl_hours === 'number') {
+      draftTTLRef.current = Math.max(0, Number(billing.draft_ttl_hours||0)) * 3600 * 1000
+    } else {
+      draftTTLRef.current = DRAFT_TTL_DEFAULT_MS
+    }
+  }, [billing?.draft_ttl_hours])
+
   const canvasWrapRef = useRef(null)
   const docFileRef = useRef(null)
   const bgFileRef = useRef(null)
@@ -221,6 +234,21 @@ export default function Editor(){
     mq.addEventListener('change',on)
     return ()=>mq.removeEventListener('change',on)
   },[])
+
+  // На мобильном скрываем футер и отключаем прокрутку страницы — работаем в «режиме редактора»
+  useEffect(()=>{
+    if (isMobile) {
+      document.body.classList.add('no-footer')
+      document.documentElement.classList.add('no-footer')
+    } else {
+      document.body.classList.remove('no-footer')
+      document.documentElement.classList.remove('no-footer')
+    }
+    return () => {
+      document.body.classList.remove('no-footer')
+      document.documentElement.classList.remove('no-footer')
+    }
+  }, [isMobile])
 
   useEffect(()=>{
     function onDoc(e){
@@ -377,13 +405,15 @@ export default function Editor(){
     fobj.__delPatched=true
   }
 
-  function removeDocument(){
+  async function removeDocument(){
     if (!hasDoc) return
     if (!window.confirm('Удалить весь документ?')) return
     pages.forEach(p=>{ try{ p.canvas?.dispose?.() }catch{} })
     setPages([]); setCur(0); setDocId(null); setPanelOpen(false); setFileName(''); setUndoStack([])
     markDraftDeleted()
     localStorage.removeItem(DRAFT_KEY)
+    // пометим все загрузки по этому документу как удалённые
+    try { if (docId) await AuthAPI.deleteUploadsByClient(docId) } catch {}
     toast('Документ удалён','success')
   }
   function removePage(idx=cur){
@@ -409,14 +439,28 @@ export default function Editor(){
       // eslint-disable-next-line no-undef
       const F=fabric
       if(obj.type==='textbox'){
-        const tb=new F.Textbox(obj.text||'',{ left:(obj.left||0)*cvDst.getWidth()/cvSrc.getWidth(), top:(obj.top||0)*cvDst.getHeight()/cvSrc.getHeight(), fontFamily:obj.fontFamily||'Arial', fontStyle:obj.fontStyle||'normal', fontWeight:obj.fontWeight||'normal', fill:obj.fill||'#000', fontSize:Math.max(6,(obj.fontSize||42)*cvDst.getHeight()/cvSrc.getHeight()), angle:obj.angle||0, selectable:true })
-        tb.set({ scaleX:obj.scaleX||1, scaleY:obj.scaleY||1 }); tb.__scannyId=uniqueObjId(); cvDst.add(tb); cvDst.requestRenderAll(); clones.push({page:i,id:tb.__scannyId})
+        const tb=new F.Textbox(obj.text||'',{
+          left:(obj.left||0)*cvDst.getWidth()/cvSrc.getWidth(),
+          top:(obj.top||0)*cvDst.getHeight()/cvSrc.getHeight(),
+          fontFamily:obj.fontFamily||'Arial', fontStyle:obj.fontStyle||'normal', fontWeight:obj.fontWeight||'normal',
+          fill:obj.fill||'#000', fontSize:Math.max(6,(obj.fontSize||42)*cvDst.getHeight()/cvSrc.getHeight()),
+          angle:obj.angle||0, selectable:true
+        })
+        tb.set({ scaleX:1, scaleY:1 }) // для текста оставляем унифицированный масштаб
+        tb.__scannyId=uniqueObjId(); cvDst.add(tb); cvDst.requestRenderAll(); clones.push({page:i,id:tb.__scannyId})
       }else if(obj.type==='image'){
-        const src=(obj._originalElement?.src||obj._element?.src); const imgEl=await loadImageEl(src); const im=new F.Image(imgEl,{angle:obj.angle||0,selectable:true})
+        const src=(obj._originalElement?.src||obj._element?.src)
+        const imgEl=await loadImageEl(src)
+        const im=new F.Image(imgEl,{angle:obj.angle||0,selectable:true})
         const dispW=obj.getScaledWidth(), dispH=obj.getScaledHeight()
         const targetW=dispW*cvDst.getWidth()/cvSrc.getWidth(), targetH=dispH*cvDst.getHeight()/cvSrc.getHeight()
-        const sX=targetW/(im.width||1), sY=targetH/(im.height||1)
-        im.set({ left:(obj.left||0)*cvDst.getWidth()/cvSrc.getWidth(), top:(obj.top||0)*cvDst.getHeight()/cvSrc.getHeight(), scaleX:sX, scaleY:sY })
+        const baseW=(im.width||1), baseH=(im.height||1)
+        const sUni = Math.min(targetW/baseW, targetH/baseH) // исправление «сплющивания»: единый масштаб
+        im.set({
+          left:(obj.left||0)*cvDst.getWidth()/cvSrc.getWidth(),
+          top:(obj.top||0)*cvDst.getHeight()/cvSrc.getHeight(),
+          scaleX:sUni, scaleY:sUni
+        })
         im.__scannyId=uniqueObjId(); cvDst.add(im); cvDst.requestRenderAll(); clones.push({page:i,id:im.__scannyId})
       }
     }
@@ -431,29 +475,45 @@ export default function Editor(){
   async function handleFiles(files){
     setLoading(true)
     try{
+      // гарантируем наличие client_id
+      let curDocId = docId
+      if (!curDocId) { curDocId = randDocId(); setDocId(curDocId) }
+
+      let addedPages = 0
+      let initialName = fileName
+
       for(const f of files){
         const ext=(f.name.split('.').pop()||'').toLowerCase()
-        if(!docId) setDocId(randDocId())
-        if(!fileName){ const base=f.name.replace(/\.[^.]+$/,''); setFileName(sanitizeName(base)) }
+        if(!initialName){ const base=f.name.replace(/\.[^.]+$/,''); initialName = sanitizeName(base); setFileName(initialName) }
+
         if(['jpg','jpeg','png'].includes(ext)){
           const url=await readAsDataURL(f)
           const img = await loadImageEl(url)
-          await addPageFromImage(url, img.naturalWidth||img.width, img.naturalHeight||img.height, f.type || (url.startsWith('data:image/png')?'image/png':'image/jpeg'))
+          addedPages += await addPageFromImage(url, img.naturalWidth||img.width, img.naturalHeight||img.height, f.type || (url.startsWith('data:image/png')?'image/png':'image/jpeg'))
         }else if(ext==='pdf'){
           const ab = await f.arrayBuffer()
           const bytes = toUint8Copy(ab)
-          await addPagesFromPDFBytes(bytes)
+          addedPages += await addPagesFromPDFBytes(bytes)
         }else if(['docx','doc'].includes(ext)){
           const canv=await renderDOCXToCanvas(f)
-          await addRasterPagesFromCanvas(canv)
+          addedPages += await addRasterPagesFromCanvas(canv)
         }else if(['xls','xlsx'].includes(ext)){
           const canv=await renderXLSXToCanvas(f)
-          await addRasterPagesFromCanvas(canv)
+          addedPages += await addRasterPagesFromCanvas(canv)
         }else{
           toast(`Формат не поддерживается: ${ext}`,'error')
         }
       }
+
       scheduleSaveDraft()
+      // записываем «загрузку» в историю (только для авторизованных)
+      try{
+        if (isAuthed && addedPages>0) {
+          const nm = sanitizeName(initialName || fileName || genDefaultName())
+          await AuthAPI.recordUpload(curDocId, nm, addedPages)
+        }
+      }catch{}
+
       toast('Страницы добавлены','success')
     }catch(err){ console.error(err); toast(err.message||'Ошибка загрузки файлов','error') }
     finally{ setLoading(false) }
@@ -466,22 +526,25 @@ export default function Editor(){
     const id='p_'+Math.random().toString(36).slice(2), elId='cv_'+id
     const page={ id, elId, canvas:null, bgObj:null, landscape:false, meta:{ type:'image', src:dataUrl, w:Math.max(1,w||PAGE_W), h:Math.max(1,h||PAGE_H), mime } }
     setPages(prev=>{ const arr=[...prev,page]; setCur(arr.length-1); return arr })
-    requestAnimationFrame(async()=>{
-      const cv=await ensureCanvas(page)
-      await ensureFabric()
-      const imgEl=await loadImageEl(dataUrl)
-      // eslint-disable-next-line no-undef
-      const img=new fabric.Image(imgEl,{ selectable:false, evented:false })
-      placeBgObject(cv,page,img)
-      scheduleSaveDraft()
-    })
+    await new Promise(r=>requestAnimationFrame(r))
+    const cv=await ensureCanvas(page)
+    await ensureFabric()
+    const imgEl=await loadImageEl(dataUrl)
+    // eslint-disable-next-line no-undef
+    const img=new fabric.Image(imgEl,{ selectable:false, evented:false })
+    placeBgObject(cv,page,img)
+    scheduleSaveDraft()
+    return 1
   }
   async function addRasterPagesFromCanvas(canvas){
     const slices = sliceCanvasToPages(canvas)
+    let count = 0
     for (const url of slices) {
       const im = await loadImageEl(url)
       await addPageFromImage(url, im.naturalWidth||im.width, im.naturalHeight||im.height, 'image/png')
+      count += 1
     }
+    return count
   }
 
   async function assignFirstFileToCurrent(file){
@@ -530,21 +593,22 @@ export default function Editor(){
     await ensurePDFJS()
     // eslint-disable-next-line no-undef
     const pdf=await pdfjsLib.getDocument({data: bytes.slice()}).promise
+    const total = pdf.numPages
     for(let i=1;i<=pdf.numPages;i++){
       const url=await renderPDFPageToDataURL(pdf,i,2.0)
       const id='p_'+Math.random().toString(36).slice(2), elId='cv_'+id
       const page={ id, elId, canvas:null, bgObj:null, landscape:false, meta:{ type:'pdf', bytes: toUint8Copy(bytes), index:i-1 } }
       setPages(prev=>{ const arr=[...prev,page]; setCur(arr.length-1); return arr })
-      requestAnimationFrame(async()=>{
-        const cv=await ensureCanvas(page)
-        await ensureFabric()
-        const imgEl=await loadImageEl(url)
-        // eslint-disable-next-line no-undef
-        const img=new fabric.Image(imgEl,{ selectable:false, evented:false })
-        placeBgObject(cv,page,img)
-        scheduleSaveDraft()
-      })
+      await new Promise(r=>requestAnimationFrame(r))
+      const cv=await ensureCanvas(page)
+      await ensureFabric()
+      const imgEl=await loadImageEl(url)
+      // eslint-disable-next-line no-undef
+      const img=new fabric.Image(imgEl,{ selectable:false, evented:false })
+      placeBgObject(cv,page,img)
+      scheduleSaveDraft()
     }
+    return total
   }
   async function setPageBackgroundFromFirstPDFPage(idx, bytes){
     await ensurePDFJS()
@@ -602,7 +666,7 @@ export default function Editor(){
     return out
   }
 
-  // ===== Улучшение качества подписи/печати в PDF/JPG =====
+    // ===== Улучшение качества подписи/печати в PDF/JPG =====
   function getOverlayObjects(cv, page){
     const all = cv.getObjects() || []
     return all.filter(o => o !== page.bgObj)
@@ -629,7 +693,7 @@ export default function Editor(){
     return mul
   }
 
-    function pickSignature(){ signFileRef.current?.click() }
+  function pickSignature(){ signFileRef.current?.click() }
   async function onPickSignature(e){
     const f=e.target.files?.[0]; e.target.value=''
     if(!f) return
@@ -649,8 +713,10 @@ export default function Editor(){
       if(hasDoc && isMobile){
         const page=pages[cur]; const cv=await ensureCanvas(page); const imgEl=await loadImageEl(dataUrl)
         // eslint-disable-next-line no-undef
-        const img=new fabric.Image(imgEl); const w=cv.getWidth(),h=cv.getHeight()
-        const s=Math.min(1,(w*0.35)/img.width); img.set({left:w*0.15,top:h*0.15,scaleX:s,scaleY:s,selectable:true})
+        const img=new fabric.Image(imgEl)
+        const w=cv.getWidth(),h=cv.getHeight()
+        const s=Math.min(1,(w*0.35)/(img.width||1))
+        img.set({left:Math.round(w*0.15),top:Math.round(h*0.15),scaleX:s,scaleY:s,selectable:true})
         img.__scannyId=uniqueObjId(); cv.add(img); cv.setActiveObject(img); cv.requestRenderAll()
         setUndoStack(stk=>[...stk,{type:'add_one',page:cur,id:img.__scannyId}])
         scheduleSaveDraft()
@@ -679,8 +745,10 @@ export default function Editor(){
     const page=pages[cur]; ensureCanvas(page).then(cv=>{
       loadImageEl(url).then(imgEl=>{
         // eslint-disable-next-line no-undef
-        const img=new fabric.Image(imgEl); const w=cv.getWidth(),h=cv.getHeight()
-        const s=Math.min(1,(w*0.35)/img.width); img.set({left:w*0.15,top:h*0.15,scaleX:s,scaleY:s,selectable:true})
+        const img=new fabric.Image(imgEl)
+        const w=cv.getWidth(),h=cv.getHeight()
+        const s=Math.min(1,(w*0.35)/(img.width||1))
+        img.set({left:Math.round(w*0.15),top:Math.round(h*0.15),scaleX:s,scaleY:s,selectable:true})
         img.__scannyId=uniqueObjId(); cv.add(img); cv.setActiveObject(img); cv.requestRenderAll()
         setUndoStack(stk=>[...stk,{type:'add_one',page:cur,id:img.__scannyId}])
         scheduleSaveDraft()
@@ -714,7 +782,8 @@ export default function Editor(){
     const page=pages[cur]; const cv=await ensureCanvas(page)
     // eslint-disable-next-line no-undef
     const tb=new fabric.Textbox('Вставьте текст',{ left:Math.round(cv.getWidth()*0.1), top:Math.round(cv.getHeight()*0.15), fontSize:48, fill:'#000000', fontFamily:'Arial', fontWeight:'bold' })
-    tb.__scannyId=uniqueObjId(); cv.add(tb); cv.setActiveObject(tb); cv.requestRenderAll(); setPanelOpen(true)
+    tb.__scannyId=uniqueObjId()
+    cv.add(tb); cv.setActiveObject(tb); cv.requestRenderAll(); setPanelOpen(true)
     setUndoStack(stk=>[...stk,{type:'add_one',page:cur,id:tb.__scannyId}])
     scheduleSaveDraft()
   }
@@ -751,13 +820,17 @@ export default function Editor(){
       const overlays = (cv.getObjects()||[]).filter(o=>o!==p.bgObj).map(o=>{
         if (o.type === 'textbox') {
           return {
-            t:'tb', text:o.text||'', left:o.left||0, top:o.top||0, scaleX:o.scaleX||1, scaleY:o.scaleY||1,
+            t:'tb', text:o.text||'', left:o.left||0, top:o.top||0, scaleX:1, scaleY:1,
             angle:o.angle||0, fontFamily:o.fontFamily||'Arial', fontSize:o.fontSize||42, fontStyle:o.fontStyle||'normal', fontWeight:o.fontWeight||'normal', fill:o.fill||'#000'
           }
         } else if (o.type === 'image') {
           const src = (o._originalElement?.src || o._element?.src || '')
+          const baseW = o._originalElement?.naturalWidth || o._originalElement?.width || o.width || 1
+          const dispW = o.getScaledWidth()
+          const dispH = o.getScaledHeight()
+          const sUni = Math.min(dispW/(baseW||1), dispH/((o._originalElement?.naturalHeight || o._originalElement?.height || o.height || 1)||1))
           return {
-            t:'im', src, left:o.left||0, top:o.top||0, scaleX:o.scaleX||1, scaleY:o.scaleY||1, angle:o.angle||0
+            t:'im', src, left:o.left||0, top:o.top||0, scaleX:sUni, scaleY:sUni, angle:o.angle||0
           }
         }
         return null
@@ -810,12 +883,14 @@ export default function Editor(){
       for (const o of pg.overlays){
         if (o.t === 'tb'){
           // eslint-disable-next-line no-undef
-          const tb=new fabric.Textbox(o.text||'',{ left:o.left||0, top:o.top||0, scaleX:o.scaleX||1, scaleY:o.scaleY||1, angle:o.angle||0, fontFamily:o.fontFamily||'Arial', fontSize:o.fontSize||42, fontStyle:o.fontStyle||'normal', fontWeight:o.fontWeight||'normal', fill:o.fill||'#000' })
+          const tb=new fabric.Textbox(o.text||'',{ left:o.left||0, top:o.top||0, angle:o.angle||0, fontFamily:o.fontFamily||'Arial', fontSize:o.fontSize||42, fontStyle:o.fontStyle||'normal', fontWeight:o.fontWeight||'normal', fill:o.fill||'#000' })
           tb.__scannyId=uniqueObjId(); cv.add(tb)
         } else if (o.t === 'im' && o.src){
           const imgEl = await loadImageEl(o.src)
           // eslint-disable-next-line no-undef
-          const im = new fabric.Image(imgEl,{ left:o.left||0, top:o.top||0, scaleX:o.scaleX||1, scaleY:o.scaleY||1, angle:o.angle||0 })
+          const im = new fabric.Image(imgEl,{ left:o.left||0, top:o.top||0, angle:o.angle||0 })
+          const sUni = Number(o.scaleX || o.scaleY || 1)
+          im.set({ scaleX:sUni, scaleY:sUni })
           im.__scannyId=uniqueObjId(); cv.add(im)
         }
       }
@@ -1054,7 +1129,7 @@ export default function Editor(){
               </div>
 
               <button
-                className={`fab main ${(!hasDoc)?'disabled':''}`}
+                className={`fab ${(!hasDoc)?'disabled':''}`}
                 onClick={()=>{ if(!hasDoc) return; setMenuDownloadOpen(o=>!o) }}
                 title="Скачать"
               >

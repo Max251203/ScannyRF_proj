@@ -6,6 +6,7 @@ from .views import (
     UserSignsListCreate, UserSignDetail,
     PaymentCreateView,
     DefaultSignsListCreate, DefaultSignDetail, HideDefaultSignView,
+    UploadRecordView, UploadDeleteView,
 )
 
 urlpatterns = [
@@ -33,4 +34,8 @@ urlpatterns = [
 
     # Платежи (заглушка)
     path('payments/create/', PaymentCreateView.as_view()),
+
+    # История загрузок документов
+    path('uploads/record/', UploadRecordView.as_view()),
+    path('uploads/delete/', UploadDeleteView.as_view()),
 ]

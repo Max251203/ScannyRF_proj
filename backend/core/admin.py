@@ -1,5 +1,14 @@
 from django.contrib import admin
-from .models import Subscription, Operation, BillingConfig, PromoCode, SignImage, GlobalSignImage, HiddenDefaultSign
+from .models import (
+    Subscription,
+    Operation,
+    BillingConfig,
+    PromoCode,
+    SignImage,
+    GlobalSignImage,
+    HiddenDefaultSign,
+    Upload,
+)
 
 
 @admin.register(Subscription)
@@ -18,16 +27,17 @@ class OperationAdmin(admin.ModelAdmin):
 
 @admin.register(BillingConfig)
 class BillingConfigAdmin(admin.ModelAdmin):
-    list_display = ('id', 'free_daily_quota')
+    list_display = ('id', 'free_daily_quota', 'draft_ttl_hours')
     actions = ['make_default']
 
     def has_add_permission(self, request):
         return not BillingConfig.objects.exists()
 
-    @admin.action(description='Сделать дефолтным значением (3)')
+    @admin.action(description='Сделать дефолтными значениями (quota=3, TTL=24ч)')
     def make_default(self, request, queryset):
         for obj in queryset:
             obj.free_daily_quota = 3
+            obj.draft_ttl_hours = 24
             obj.save()
 
 
@@ -55,3 +65,10 @@ class GlobalSignImageAdmin(admin.ModelAdmin):
 class HiddenDefaultSignAdmin(admin.ModelAdmin):
     list_display = ('id', 'user', 'sign')
     search_fields = ('user__email', 'user__username')
+
+
+@admin.register(Upload)
+class UploadAdmin(admin.ModelAdmin):
+    list_display = ('id', 'user', 'doc_name', 'pages', 'client_id', 'created_at', 'auto_delete_at', 'deleted')
+    list_filter = ('deleted',)
+    search_fields = ('user__email', 'user__username', 'doc_name', 'client_id')

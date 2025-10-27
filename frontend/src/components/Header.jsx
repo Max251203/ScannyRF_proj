@@ -56,7 +56,15 @@ export default function Header() {
   }
 
   const closeAndNav = (to) => () => { setMenuOpen(false); nav(to) }
-  const logout = () => { AuthAPI.logout(); setUser(null); if (loc.pathname.startsWith('/profile')) nav('/') }
+
+  const logout = () => {
+    AuthAPI.logout()
+    setUser(null)
+    // Если выходим на странице редактора или профиля — уходим на главную
+    if (loc.pathname.startsWith('/profile') || loc.pathname.startsWith('/editor')) {
+      nav('/', { replace: true })
+    }
+  }
 
   const label = (user?.username && user.username.trim()) ? user.username.trim() : (user?.email || 'Профиль')
   const avatarSrc = user?.avatar_url || avatarDefault
@@ -82,7 +90,6 @@ export default function Header() {
           <a href="#pricing" onClick={goToSection('pricing')}>Цены</a>
           <Link to="/calculators" onClick={closeAndNav('/calculators')}>Калькуляторы</Link>
           <Link to="/help" onClick={closeAndNav('/help')}>Помощь</Link>
-          {/* Убрали кнопки Условий и Политики из шапки по просьбе клиента */}
         </nav>
 
         {menuOpen && <div className="nav-dim show" onClick={()=>setMenuOpen(false)} />}

@@ -42,9 +42,11 @@ class Operation(models.Model):
 # Глобальная конфигурация биллинга (одна запись)
 class BillingConfig(models.Model):
     free_daily_quota = models.PositiveIntegerField(default=3)  # бесплатные страницы в сутки
+    # Кол-во часов до автоудаления документа из временного хранилища
+    draft_ttl_hours = models.PositiveIntegerField(default=24)
 
     def __str__(self) -> str:
-        return f'BillingConfig(free_daily_quota={self.free_daily_quota})'
+        return f'BillingConfig(free_daily_quota={self.free_daily_quota}, draft_ttl_hours={self.draft_ttl_hours})'
 
 
 # Промокоды
@@ -112,3 +114,25 @@ class HiddenDefaultSign(models.Model):
 
     def __str__(self) -> str:
         return f'hidden:{self.user_id}:{self.sign_id}'
+
+
+# История загрузок документов (для вкладки "История")
+class Upload(models.Model):
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='uploads')
+    client_id = models.CharField(max_length=64, db_index=True)  # id клиента (Editor.docId)
+    doc_name = models.CharField(max_length=200, blank=True, default='')
+    pages = models.PositiveIntegerField(default=1)
+    created_at = models.DateTimeField(auto_now_add=True)
+    auto_delete_at = models.DateTimeField()
+    deleted = models.BooleanField(default=False)  # удалил пользователь вручную
+    deleted_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def is_expired(self) -> bool:
+        return timezone.now() >= self.auto_delete_at
+
+    def __str__(self) -> str:
+        state = 'deleted' if self.deleted else ('expired' if self.is_expired() else 'active')
+        return f'upload:{self.user_id}:{self.doc_name}:{self.pages}:{state}'

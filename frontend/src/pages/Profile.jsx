@@ -124,7 +124,7 @@ export default function Profile(){
       </div>
 
       {tab==='info' && <InfoSection user={user} onUpdated={(u)=>{ setUser(u); window.dispatchEvent(new CustomEvent('user:update',{detail:u})) }} />}
-      {tab==='history' && <HistorySection billing={billing} draft={draft} />}
+      {tab==='history' && <HistorySection billing={billing} draft={draft} isAdmin={isAdmin} onChanged={()=>reloadBilling()} />}
       {tab==='plan' && (
         <PlanSection
           billing={billing}
@@ -217,13 +217,15 @@ function PlanSection({ billing, isAdmin, freeQuota, setFreeQuota, onSaveQuota, p
   )
 }
 
-function HistorySection({ billing, draft }){
+function HistorySection({ billing, draft, isAdmin, onChanged }){
   const [now, setNow] = useState(Date.now())
+  const [ttlHours, setTtlHours] = useState(() => Number(billing?.draft_ttl_hours ?? 24))
+
+  useEffect(()=>{ setTtlHours(Number(billing?.draft_ttl_hours ?? 24)) }, [billing?.draft_ttl_hours])
+
   useEffect(()=>{ const id=setInterval(()=>setNow(Date.now()),1000); return ()=>clearInterval(id) },[])
 
-  const draftName = draft?.name || ''
-  const draftDeleted = !!draft?.deleted
-  const draftExpiresAt = draft?.expiresAt || 0
+  const uploads = Array.isArray(billing?.uploads) ? billing.uploads : []
 
   function fmtRemaining(ms){
     if (ms <= 0) return '0:00:00'
@@ -234,30 +236,50 @@ function HistorySection({ billing, draft }){
     return `${String(h).padStart(1,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`
   }
 
+  const saveTTL = async () => {
+    try{
+      const v = Number(ttlHours)
+      if (!Number.isFinite(v) || v < 0) { toast('Введите неотрицательное число часов', 'error'); return }
+      await AuthAPI.setDraftTTL(v)
+      toast('TTL сохранён', 'success')
+      onChanged?.()
+    }catch(e){
+      toast(e.message || 'Ошибка сохранения', 'error')
+    }
+  }
+
   return (
     <div className="card">
-      {!billing?.history?.length && <p>История пока пуста.</p>}
-      {billing?.history?.length>0 && (
+      {isAdmin && (
+        <div className="two-col" style={{alignItems:'end', marginBottom: 10}}>
+          <div>
+            <label className="subhead">Автоудаление временных документов через (часы)</label>
+            <input className="text-input admin-input" type="number" min="0" value={ttlHours} onChange={e=>setTtlHours(e.target.value)} />
+          </div>
+          <div>
+            <button className="btn" onClick={saveTTL}><span className="label">Сохранить</span></button>
+          </div>
+        </div>
+      )}
+
+      {uploads.length === 0 && <p>История пока пуста.</p>}
+      {uploads.length>0 && (
         <div className="calc-table" style={{marginTop:0}}>
           <table>
             <thead>
-              <tr><th>Дата</th><th>Тип</th><th>Страниц</th><th>Документ</th><th>Способ</th><th>Временное хранилище</th></tr>
+              <tr><th>Дата загрузки</th><th>Страниц</th><th>Документ</th><th>Временное хранилище</th></tr>
             </thead>
             <tbody>
-              {billing.history.map((op)=> {
-                let tempCell = '—'
-                // Сравниваем нормализованные имена
-                if (draftName && op.doc_name && normalizeName(op.doc_name) === normalizeName(draftName)) {
-                  if (draftDeleted || draftExpiresAt <= now) tempCell = 'удалён'
-                  else tempCell = `до удаления: ${fmtRemaining(draftExpiresAt - now)}`
-                }
+              {uploads.map((op)=> {
+                const createdAt = new Date(op.created_at)
+                const autoAt = new Date(op.auto_delete_at)
+                const isDeleted = !!op.deleted || now >= +autoAt
+                const tempCell = isDeleted ? 'Удалён' : `до удаления: ${fmtRemaining(+autoAt - now)}`
                 return (
                   <tr key={op.id}>
-                    <td>{new Date(op.created_at).toLocaleString('ru-RU')}</td>
-                    <td>{op.kind==='download_pdf' ? 'PDF' : 'JPG'}</td>
+                    <td>{createdAt.toLocaleString('ru-RU')}</td>
                     <td className="t-num">{op.pages}</td>
                     <td>{op.doc_name || '-'}</td>
-                    <td>{op.free ? 'Бесплатно' : 'Оплачено'}</td>
                     <td>{tempCell}</td>
                   </tr>
                 )

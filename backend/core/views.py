@@ -4,7 +4,7 @@ from datetime import timedelta
 
 import requests
 from django.utils import timezone
-from django.db.models import Sum
+from django.db.models import Sum, Q
 from rest_framework import permissions
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -17,6 +17,7 @@ from .models import (
     SignImage,
     GlobalSignImage,
     HiddenDefaultSign,
+    Upload,
 )
 
 # ---------- Ключевая ставка ЦБ ----------
@@ -50,8 +51,13 @@ class KeyRateView(APIView):
 
 # ---------- Вспомогательные ----------
 def _get_quota():
-    cfg, _ = BillingConfig.objects.get_or_create(pk=1, defaults={'free_daily_quota': 3})
+    cfg, _ = BillingConfig.objects.get_or_create(pk=1, defaults={'free_daily_quota': 3, 'draft_ttl_hours': 24})
     return int(cfg.free_daily_quota or 0)
+
+
+def _get_ttl_hours():
+    cfg, _ = BillingConfig.objects.get_or_create(pk=1, defaults={'free_daily_quota': 3, 'draft_ttl_hours': 24})
+    return max(0, int(cfg.draft_ttl_hours or 0))
 
 
 def _billing_status(user):
@@ -68,7 +74,10 @@ def _billing_status(user):
     free_left = max(0, free_total - int(free_used))
 
     sub = Subscription.objects.filter(user=user, expires_at__gt=timezone.now()).order_by('-expires_at').first()
-    history = Operation.objects.filter(user=user).values('id', 'kind', 'pages', 'doc_name', 'free', 'created_at')[:50]
+
+    uploads = Upload.objects.filter(user=user).values(
+        'id', 'client_id', 'doc_name', 'pages', 'created_at', 'auto_delete_at', 'deleted'
+    )
 
     return {
         "free_total": free_total,
@@ -79,7 +88,10 @@ def _billing_status(user):
             "plan": sub.plan,
             "expires_at": sub.expires_at.isoformat()
         } if sub else None),
-        "history": list(history),
+        # заменили историю скачиваний на историю загрузок
+        "uploads": list(uploads),
+        # TTL (часы) для временного хранилища
+        "draft_ttl_hours": _get_ttl_hours(),
     }
 
 
@@ -124,20 +136,36 @@ class BillingConfigView(APIView):
     permission_classes = [permissions.IsAdminUser]
 
     def get(self, request):
-        cfg, _ = BillingConfig.objects.get_or_create(pk=1, defaults={'free_daily_quota': 3})
-        return Response({"free_daily_quota": cfg.free_daily_quota})
+        cfg, _ = BillingConfig.objects.get_or_create(pk=1, defaults={'free_daily_quota': 3, 'draft_ttl_hours': 24})
+        return Response({"free_daily_quota": cfg.free_daily_quota, "draft_ttl_hours": cfg.draft_ttl_hours})
 
     def put(self, request):
-        try:
-            val = int(request.data.get('free_daily_quota'))
-            if val < 0:
-                raise ValueError
-        except Exception:
-            return Response({'detail': 'free_daily_quota должен быть неотрицательным числом'}, status=400)
-        cfg, _ = BillingConfig.objects.get_or_create(pk=1, defaults={'free_daily_quota': 3})
-        cfg.free_daily_quota = val
+        cfg, _ = BillingConfig.objects.get_or_create(pk=1, defaults={'free_daily_quota': 3, 'draft_ttl_hours': 24})
+
+        # оба поля — опционально
+        fval = request.data.get('free_daily_quota', None)
+        tval = request.data.get('draft_ttl_hours', None)
+
+        if fval is not None:
+            try:
+                fval = int(fval)
+                if fval < 0:
+                    raise ValueError
+                cfg.free_daily_quota = fval
+            except Exception:
+                return Response({'detail': 'free_daily_quota должен быть неотрицательным числом'}, status=400)
+
+        if tval is not None:
+            try:
+                tval = int(tval)
+                if tval < 0:
+                    raise ValueError
+                cfg.draft_ttl_hours = tval
+            except Exception:
+                return Response({'detail': 'draft_ttl_hours должен быть неотрицательным числом'}, status=400)
+
         cfg.save()
-        return Response({"free_daily_quota": cfg.free_daily_quota})
+        return Response({"free_daily_quota": cfg.free_daily_quota, "draft_ttl_hours": cfg.draft_ttl_hours})
 
 
 # ---------- Промокоды (админ CRUD + проверка) ----------
@@ -381,6 +409,69 @@ class PaymentCreateView(APIView):
             percent = pr.discount_percent if pr else 0
         url = f'https://example.com/pay?plan={plan}&uid={request.user.id}&discount={percent}'
         return Response({'url': url})
+
+
+# ---------- История загрузок документов ----------
+class UploadRecordView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        doc_name = (request.data.get('doc_name') or '').strip()[:200]
+        client_id = (request.data.get('client_id') or '').strip()[:64]
+        try:
+            pages = int(request.data.get('pages') or 0)
+        except Exception:
+            return Response({'detail': 'pages должен быть числом'}, status=400)
+
+        if not client_id:
+            return Response({'detail': 'client_id обязателен'}, status=400)
+        if pages <= 0:
+            return Response({'detail': 'pages должен быть больше 0'}, status=400)
+
+        ttl_h = _get_ttl_hours()
+        auto_delete_at = timezone.now() + timedelta(hours=ttl_h)
+
+        obj = Upload.objects.create(
+            user=request.user,
+            client_id=client_id,
+            doc_name=doc_name,
+            pages=pages,
+            auto_delete_at=auto_delete_at,
+        )
+        return Response({
+            "id": obj.id,
+            "client_id": obj.client_id,
+            "doc_name": obj.doc_name,
+            "pages": obj.pages,
+            "created_at": obj.created_at.isoformat(),
+            "auto_delete_at": obj.auto_delete_at.isoformat(),
+            "deleted": obj.deleted,
+        }, status=201)
+
+
+class UploadDeleteView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        """
+        Пометить загрузку как удалённую.
+        Принимает либо id, либо client_id. Если указан client_id — помечаем все активные записи пользователя с этим client_id.
+        """
+        uid = request.data.get('id', None)
+        cid = (request.data.get('client_id') or '').strip()
+
+        if not uid and not cid:
+            return Response({'detail': 'Требуется id или client_id'}, status=400)
+
+        qs = Upload.objects.filter(user=request.user, deleted=False)
+        if uid:
+            qs = qs.filter(id=uid)
+        if cid:
+            qs = qs.filter(client_id=cid)
+
+        now = timezone.now()
+        updated = qs.update(deleted=True, deleted_at=now)
+        return Response({'updated': int(updated)})
 
 
 # backend/core/views.py (в конец файла)

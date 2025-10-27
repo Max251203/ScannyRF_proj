@@ -1,10 +1,12 @@
-:root{--sage:#C9CBA3;--beige:#FFE1A8;--accent:#E26D5C;--wine:#723D46;--brown:#472D30;--text:#222;--muted:#666;--bg:#fff;--calc-bg:#FFF1E6;--calc-border:#FFD6B3;--calc-ink:#8A3D00}
+:root{--sage:#C9CBA3;--beige:#FFE1A8;--accent:#E26D5C;--wine:#723D46;--brown:#472D30;--text:#222;--muted:#666;--bg:#fff;--calc-bg:#FFF1E6;--calc-border:#FFD6B3;--calc-ink:#8A3D00;--hdr-h:64px;--ed-top-h:52px;--ed-bottom-h:64px}
 @font-face{font-family:"Chicoree Em";src:url("/static/assets/fonts/chicoree.woff2") format("woff2"),url("/static/assets/fonts/Chicoree-Em.ttf") format("truetype"),url("../assets/fonts/chicoree.woff2") format("woff2"),url("../assets/fonts/ofont.ru_Chicoree.otf") format("truetype");font-weight:400;font-style:normal;font-display:swap}
 @font-face{font-family:"Ermilov";src:url("../assets/fonts/Ermilov-bold.otf") format("opentype");font-weight:700;font-style:normal;font-display:swap}
 @font-face{font-family:"Rabbits Elf";src:url("../assets/fonts/rabbits-elf.ttf") format("truetype");font-weight:400;font-style:normal;font-display:swap}
 *{box-sizing:border-box}
 html,body{overflow-x:hidden}
 body{margin:0;color:var(--text);background:var(--bg);font-family:system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif}
+body.no-footer,html.no-footer{overflow:hidden;height:100%}
+body.no-footer .site-footer{display:none!important}
 img{max-width:100%;display:block}
 a{color:inherit;text-decoration:none}
 .container{max-width:1200px;margin:0 auto;padding:0 24px}
@@ -325,16 +327,16 @@ main{flex:1}
 .doc-editor .ed-page-add{border:1px solid #e5e5e5;background:#fff;border-radius:50%;width:36px;height:36px;display:flex;align-items:center;justify-content:center;cursor:pointer}
 .doc-editor .ed-page-add img{width:18px;height:18px}
 .ed-dim{position:fixed;inset:0;background:rgba(0,0,0,.2);z-index:50}
-.doc-editor .ed-center .ed-bottom{position:fixed;left:0;right:0;bottom:0;background:#fff;border-top:1px solid #eee;padding:10px 12px;z-index:100}
+.doc-editor .ed-center .ed-bottom{position:fixed;left:0;right:0;bottom:0;background:#fff;border-top:1px solid #eee;padding:10px 12px;z-index:100;display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:nowrap}
 .doc-editor .ed-center .ed-bottom .ed-pager{display:flex;align-items:center;gap:10px}
 .doc-editor .ed-center .ed-bottom .ed-pager button{width:36px;height:36px;border:1px solid #eee;border-radius:50%;background:#fff;display:flex;align-items:center;justify-content:center}
 .doc-editor .ed-center .ed-bottom .ed-pager .pg{min-width:64px;text-align:center}
 .doc-editor .ed-center .ed-bottom .fab{width:44px;height:44px;border-radius:50%;border:1px solid #eee;background:#fff;color:#000;font-size:20px;cursor:pointer;display:flex;align-items:center;justify-content:center;box-shadow:0 8px 16px rgba(0,0,0,.12)}
-.doc-editor .ed-center .ed-bottom .fab.main{background:var(--accent);color:#fff;border-color:var(--accent)}
+.doc-editor .ed-center .ed-bottom .fab img{width:22px;height:22px;object-fit:contain}
 @media (max-width:960px){
 .doc-editor .ed-body{grid-template-columns:1fr}
 .doc-editor .ed-left,.doc-editor .ed-right{display:none}
-.doc-editor .ed-canvas-wrap{padding-bottom:96px}
+.doc-editor .ed-canvas-wrap{padding-bottom:96px;height:calc(100vh - var(--hdr-h) - var(--ed-top-h) - var(--ed-bottom-h) - 16px);min-height:auto}
 .doc-editor .ed-center .ed-bottom{display:flex;align-items:center;justify-content:space-between}
 .ed-sheet{left:12px;right:12px;top:auto;bottom:76px}
 .doc-editor .ed-page-x{display:none}
