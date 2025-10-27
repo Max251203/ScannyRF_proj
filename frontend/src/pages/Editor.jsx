@@ -383,6 +383,7 @@ export default function Editor(){
     }else setPanelOpen(false)
   }
 
+  // Устанавливаем красный крестик-удаление на все объекты, и дополнительно форсируем для Textbox
   function installDeleteControl(){
     // eslint-disable-next-line no-undef
     const fobj=fabric.Object; if(fobj.__delPatched) return
@@ -401,8 +402,18 @@ export default function Editor(){
       },
       render:(ctx,left,top)=>{ const r=12; ctx.save(); ctx.fillStyle='#E26D5C'; ctx.beginPath(); ctx.arc(left,top,r,0,Math.PI*2); ctx.fill(); ctx.strokeStyle='#fff'; ctx.lineWidth=2; ctx.beginPath(); ctx.moveTo(left-5,top-5); ctx.lineTo(left+5,top+5); ctx.moveTo(left+5,top-5); ctx.lineTo(left-5,top+5); ctx.stroke(); ctx.restore(); }
     })
+    // по умолчанию — всем объектам
     fobj.prototype.controls.tr=del
+    // сохраним в глобале, чтобы можно было явно навесить на конкретный объект (особенно Textbox)
+    // eslint-disable-next-line no-undef
+    window.__scannyDelControl = del
     fobj.__delPatched=true
+  }
+  function ensureDeleteControlFor(obj){
+    try{
+      // eslint-disable-next-line no-undef
+      if (obj && obj.controls && window.__scannyDelControl) obj.controls.tr = window.__scannyDelControl
+    }catch{}
   }
 
   async function removeDocument(){
@@ -446,8 +457,10 @@ export default function Editor(){
           fill:obj.fill||'#000', fontSize:Math.max(6,(obj.fontSize||42)*cvDst.getHeight()/cvSrc.getHeight()),
           angle:obj.angle||0, selectable:true
         })
-        tb.set({ scaleX:1, scaleY:1 }) // для текста оставляем унифицированный масштаб
-        tb.__scannyId=uniqueObjId(); cvDst.add(tb); cvDst.requestRenderAll(); clones.push({page:i,id:tb.__scannyId})
+        tb.set({ scaleX:1, scaleY:1 })
+        tb.__scannyId=uniqueObjId()
+        ensureDeleteControlFor(tb)
+        cvDst.add(tb); cvDst.requestRenderAll(); clones.push({page:i,id:tb.__scannyId})
       }else if(obj.type==='image'){
         const src=(obj._originalElement?.src||obj._element?.src)
         const imgEl=await loadImageEl(src)
@@ -455,13 +468,15 @@ export default function Editor(){
         const dispW=obj.getScaledWidth(), dispH=obj.getScaledHeight()
         const targetW=dispW*cvDst.getWidth()/cvSrc.getWidth(), targetH=dispH*cvDst.getHeight()/cvSrc.getHeight()
         const baseW=(im.width||1), baseH=(im.height||1)
-        const sUni = Math.min(targetW/baseW, targetH/baseH) // исправление «сплющивания»: единый масштаб
+        const sUni = Math.min(targetW/baseW, targetH/baseH) // единый масштаб
         im.set({
           left:(obj.left||0)*cvDst.getWidth()/cvSrc.getWidth(),
           top:(obj.top||0)*cvDst.getHeight()/cvSrc.getHeight(),
           scaleX:sUni, scaleY:sUni
         })
-        im.__scannyId=uniqueObjId(); cvDst.add(im); cvDst.requestRenderAll(); clones.push({page:i,id:im.__scannyId})
+        im.__scannyId=uniqueObjId()
+        ensureDeleteControlFor(im)
+        cvDst.add(im); cvDst.requestRenderAll(); clones.push({page:i,id:im.__scannyId})
       }
     }
     if(clones.length){ setUndoStack(stk=>[...stk,{type:'apply_all',clones}]); scheduleSaveDraft(); toast('Объект продублирован на все страницы','success') }
@@ -717,7 +732,8 @@ export default function Editor(){
         const w=cv.getWidth(),h=cv.getHeight()
         const s=Math.min(1,(w*0.35)/(img.width||1))
         img.set({left:Math.round(w*0.15),top:Math.round(h*0.15),scaleX:s,scaleY:s,selectable:true})
-        img.__scannyId=uniqueObjId(); cv.add(img); cv.setActiveObject(img); cv.requestRenderAll()
+        img.__scannyId=uniqueObjId(); ensureDeleteControlFor(img)
+        cv.add(img); cv.setActiveObject(img); cv.requestRenderAll()
         setUndoStack(stk=>[...stk,{type:'add_one',page:cur,id:img.__scannyId}])
         scheduleSaveDraft()
       } else {
@@ -749,7 +765,8 @@ export default function Editor(){
         const w=cv.getWidth(),h=cv.getHeight()
         const s=Math.min(1,(w*0.35)/(img.width||1))
         img.set({left:Math.round(w*0.15),top:Math.round(h*0.15),scaleX:s,scaleY:s,selectable:true})
-        img.__scannyId=uniqueObjId(); cv.add(img); cv.setActiveObject(img); cv.requestRenderAll()
+        img.__scannyId=uniqueObjId(); ensureDeleteControlFor(img)
+        cv.add(img); cv.setActiveObject(img); cv.requestRenderAll()
         setUndoStack(stk=>[...stk,{type:'add_one',page:cur,id:img.__scannyId}])
         scheduleSaveDraft()
       })
@@ -783,6 +800,7 @@ export default function Editor(){
     // eslint-disable-next-line no-undef
     const tb=new fabric.Textbox('Вставьте текст',{ left:Math.round(cv.getWidth()*0.1), top:Math.round(cv.getHeight()*0.15), fontSize:48, fill:'#000000', fontFamily:'Arial', fontWeight:'bold' })
     tb.__scannyId=uniqueObjId()
+    ensureDeleteControlFor(tb) // крестик удаления и для текста
     cv.add(tb); cv.setActiveObject(tb); cv.requestRenderAll(); setPanelOpen(true)
     setUndoStack(stk=>[...stk,{type:'add_one',page:cur,id:tb.__scannyId}])
     scheduleSaveDraft()
@@ -797,6 +815,41 @@ export default function Editor(){
     fitCanvasForPage(page)
     adjustBgObject(page)
     scheduleSaveDraft()
+  }
+
+  // Патч: показ крестика-удаления и для Textbox по умолчанию
+  function installDeleteControl(){
+    // eslint-disable-next-line no-undef
+    const fobj=fabric.Object; if(fobj.__delPatched) return
+    // eslint-disable-next-line no-undef
+    const F=fabric
+    const del=new F.Control({
+      x:0.5,y:-0.5,offsetX:12,offsetY:-12,cursorStyle:'pointer',
+      mouseUpHandler:(_,tr)=>{
+        const t=tr.target,cv=t.canvas
+        if (window.confirm('Удалить объект со страницы?')) {
+          cv.remove(t); cv.discardActiveObject(); cv.requestRenderAll()
+          toast('Объект удалён','success')
+          scheduleSaveDraft()
+        }
+        return true
+      },
+      render:(ctx,left,top)=>{ const r=12; ctx.save(); ctx.fillStyle='#E26D5C'; ctx.beginPath(); ctx.arc(left,top,r,0,Math.PI*2); ctx.fill(); ctx.strokeStyle='#fff'; ctx.lineWidth=2; ctx.beginPath(); ctx.moveTo(left-5,top-5); ctx.lineTo(left+5,top+5); ctx.moveTo(left+5,top-5); ctx.lineTo(left-5,top+5); ctx.stroke(); ctx.restore(); }
+    })
+    fobj.prototype.controls.tr=del
+    // Дополнительно явно для типов, чтобы не потерялось
+    if (F.Textbox) F.Textbox.prototype.controls.tr = del
+    if (F.Image) F.Image.prototype.controls.tr = del
+    // сохраним для точечного назначения
+    // eslint-disable-next-line no-undef
+    window.__scannyDelControl = del
+    fobj.__delPatched=true
+  }
+  function ensureDeleteControlFor(obj){
+    try{
+      // eslint-disable-next-line no-undef
+      if (obj && obj.controls && window.__scannyDelControl) obj.controls.tr = window.__scannyDelControl
+    }catch{}
   }
 
   function undo(){
@@ -826,9 +879,10 @@ export default function Editor(){
         } else if (o.type === 'image') {
           const src = (o._originalElement?.src || o._element?.src || '')
           const baseW = o._originalElement?.naturalWidth || o._originalElement?.width || o.width || 1
+          const baseH = o._originalElement?.naturalHeight || o._originalElement?.height || o.height || 1
           const dispW = o.getScaledWidth()
           const dispH = o.getScaledHeight()
-          const sUni = Math.min(dispW/(baseW||1), dispH/((o._originalElement?.naturalHeight || o._originalElement?.height || o.height || 1)||1))
+          const sUni = Math.min(dispW/(baseW||1), dispH/(baseH||1)) // единый масштаб — не «сплющиваем»
           return {
             t:'im', src, left:o.left||0, top:o.top||0, scaleX:sUni, scaleY:sUni, angle:o.angle||0
           }
@@ -884,14 +938,14 @@ export default function Editor(){
         if (o.t === 'tb'){
           // eslint-disable-next-line no-undef
           const tb=new fabric.Textbox(o.text||'',{ left:o.left||0, top:o.top||0, angle:o.angle||0, fontFamily:o.fontFamily||'Arial', fontSize:o.fontSize||42, fontStyle:o.fontStyle||'normal', fontWeight:o.fontWeight||'normal', fill:o.fill||'#000' })
-          tb.__scannyId=uniqueObjId(); cv.add(tb)
+          tb.__scannyId=uniqueObjId(); ensureDeleteControlFor(tb); cv.add(tb)
         } else if (o.t === 'im' && o.src){
           const imgEl = await loadImageEl(o.src)
           // eslint-disable-next-line no-undef
           const im = new fabric.Image(imgEl,{ left:o.left||0, top:o.top||0, angle:o.angle||0 })
           const sUni = Number(o.scaleX || o.scaleY || 1)
           im.set({ scaleX:sUni, scaleY:sUni })
-          im.__scannyId=uniqueObjId(); cv.add(im)
+          im.__scannyId=uniqueObjId(); ensureDeleteControlFor(im); cv.add(im)
         }
       }
       cv.requestRenderAll()
