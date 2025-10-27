@@ -62,7 +62,6 @@ function toUint8Copy(input){
 
 // ====== Временное хранилище последнего документа (TTL — из настроек) ======
 const DRAFT_KEY = 'scanny_last_doc'
-// 24 часа по умолчанию, актуальное значение придёт из billing.status
 const DRAFT_TTL_DEFAULT_MS = 24*60*60*1000
 
 function u8ToB64(u8){
@@ -85,7 +84,11 @@ function readDraft(){
     if(!raw) return null
     const d = JSON.parse(raw)
     if(!d || !d.expiresAt) return null
-    if(Date.now() >= d.expiresAt){ localStorage.removeItem(DRAFT_KEY); window.dispatchEvent(new CustomEvent('tempdoc:update')); return null }
+    if(Date.now() >= d.expiresAt){
+      localStorage.removeItem(DRAFT_KEY)
+      window.dispatchEvent(new CustomEvent('tempdoc:update'))
+      return null
+    }
     return d
   }catch{ return null }
 }
@@ -167,12 +170,10 @@ export default function Editor(){
   const [undoStack, setUndoStack] = useState([])
   const canUndo = undoStack.length>0
 
-  // TTL черновика — реф, обновляется при приходе billing
   const draftTTLRef = useRef(DRAFT_TTL_DEFAULT_MS)
 
   // ----- Автосохранение черновика -----
   const saveDebounceRef = useRef(0)
-  const draftReadyRef = useRef(false)
   function scheduleSaveDraft(){
     if(!hasDoc) return
     window.clearTimeout(saveDebounceRef.current)
@@ -271,7 +272,7 @@ export default function Editor(){
   },[pages])
   useEffect(()=>{ if(pages[cur]?.canvas){ requestAnimationFrame(()=>fitCanvas(cur)); setTimeout(()=>fitCanvas(cur),0) } },[cur,pages.length,isMobile])
 
-  // ---- Загрузка черновика последнего документа ----
+  // ---- Восстановление черновика последнего документа (с объектами и ориентацией страниц) ----
   useEffect(()=>{
     (async ()=>{
       const d = readDraft()
@@ -280,7 +281,6 @@ export default function Editor(){
       setLoading(true)
       try{
         await restoreDocumentFromDraft(d)
-        draftReadyRef.current = true
         toast('Восстановлен последний документ из временного хранилища','info')
       }catch(e){
         console.error('restore draft failed',e)
@@ -383,7 +383,7 @@ export default function Editor(){
     }else setPanelOpen(false)
   }
 
-  // Устанавливаем красный крестик-удаление на все объекты, и дополнительно форсируем для Textbox
+  // Кастомный контрол удаления
   function installDeleteControl(){
     // eslint-disable-next-line no-undef
     const fobj=fabric.Object; if(fobj.__delPatched) return
@@ -402,9 +402,7 @@ export default function Editor(){
       },
       render:(ctx,left,top)=>{ const r=12; ctx.save(); ctx.fillStyle='#E26D5C'; ctx.beginPath(); ctx.arc(left,top,r,0,Math.PI*2); ctx.fill(); ctx.strokeStyle='#fff'; ctx.lineWidth=2; ctx.beginPath(); ctx.moveTo(left-5,top-5); ctx.lineTo(left+5,top+5); ctx.moveTo(left+5,top-5); ctx.lineTo(left-5,top+5); ctx.stroke(); ctx.restore(); }
     })
-    // по умолчанию — всем объектам
     fobj.prototype.controls.tr=del
-    // сохраним в глобале, чтобы можно было явно навесить на конкретный объект (особенно Textbox)
     // eslint-disable-next-line no-undef
     window.__scannyDelControl = del
     fobj.__delPatched=true
@@ -420,11 +418,13 @@ export default function Editor(){
     if (!hasDoc) return
     if (!window.confirm('Удалить весь документ?')) return
     pages.forEach(p=>{ try{ p.canvas?.dispose?.() }catch{} })
-    setPages([]); setCur(0); setDocId(null); setPanelOpen(false); setFileName(''); setUndoStack([])
+    setPages([]); setCur(0); setPanelOpen(false); setFileName(''); setUndoStack([])
+    // важно: помечаем локальный черновик как удалён и удаляем ключ
     markDraftDeleted()
     localStorage.removeItem(DRAFT_KEY)
-    // пометим все загрузки по этому документу как удалённые
+    // пометить все загрузки по client_id как удалённые — теперь client_id восстанавливается из черновика
     try { if (docId) await AuthAPI.deleteUploadsByClient(docId) } catch {}
+    setDocId(null)
     toast('Документ удалён','success')
   }
   function removePage(idx=cur){
@@ -468,7 +468,7 @@ export default function Editor(){
         const dispW=obj.getScaledWidth(), dispH=obj.getScaledHeight()
         const targetW=dispW*cvDst.getWidth()/cvSrc.getWidth(), targetH=dispH*cvDst.getHeight()/cvSrc.getHeight()
         const baseW=(im.width||1), baseH=(im.height||1)
-        const sUni = Math.min(targetW/baseW, targetH/baseH) // единый масштаб
+        const sUni = Math.min(targetW/baseW, targetH/baseH)
         im.set({
           left:(obj.left||0)*cvDst.getWidth()/cvSrc.getWidth(),
           top:(obj.top||0)*cvDst.getHeight()/cvSrc.getHeight(),
@@ -504,7 +504,8 @@ export default function Editor(){
         if(['jpg','jpeg','png'].includes(ext)){
           const url=await readAsDataURL(f)
           const img = await loadImageEl(url)
-          addedPages += await addPageFromImage(url, img.naturalWidth||img.width, img.naturalHeight||img.height, f.type || (url.startsWith('data:image/png')?'image/png':'image/jpeg'))
+          await createPageFromImage(url, img.naturalWidth||img.width, img.naturalHeight||img.height, f.type || (url.startsWith('data:image/png')?'image/png':'image/jpeg'), false)
+          addedPages += 1
         }else if(ext==='pdf'){
           const ab = await f.arrayBuffer()
           const bytes = toUint8Copy(ab)
@@ -537,9 +538,10 @@ export default function Editor(){
   function readAsDataURL(file){ return new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result); r.onerror=rej; r.readAsDataURL(file) }) }
   function loadImageEl(src){ return new Promise((res,rej)=>{ const img=new Image(); img.crossOrigin='anonymous'; img.onload=()=>res(img); img.onerror=rej; img.src=src }) }
 
-  async function addPageFromImage(dataUrl, w, h, mime='image/png'){
+  // Создание страницы с фоном из изображения (учёт ориентации)
+  async function createPageFromImage(dataUrl, w, h, mime='image/png', landscape=false){
     const id='p_'+Math.random().toString(36).slice(2), elId='cv_'+id
-    const page={ id, elId, canvas:null, bgObj:null, landscape:false, meta:{ type:'image', src:dataUrl, w:Math.max(1,w||PAGE_W), h:Math.max(1,h||PAGE_H), mime } }
+    const page={ id, elId, canvas:null, bgObj:null, landscape:!!landscape, meta:{ type:'image', src:dataUrl, w:Math.max(1,w||PAGE_W), h:Math.max(1,h||PAGE_H), mime } }
     setPages(prev=>{ const arr=[...prev,page]; setCur(arr.length-1); return arr })
     await new Promise(r=>requestAnimationFrame(r))
     const cv=await ensureCanvas(page)
@@ -549,6 +551,11 @@ export default function Editor(){
     const img=new fabric.Image(imgEl,{ selectable:false, evented:false })
     placeBgObject(cv,page,img)
     scheduleSaveDraft()
+    return page
+  }
+
+  async function addPageFromImage(dataUrl, w, h, mime='image/png'){
+    await createPageFromImage(dataUrl, w, h, mime, false)
     return 1
   }
   async function addRasterPagesFromCanvas(canvas){
@@ -556,13 +563,13 @@ export default function Editor(){
     let count = 0
     for (const url of slices) {
       const im = await loadImageEl(url)
-      await addPageFromImage(url, im.naturalWidth||im.width, im.naturalHeight||im.height, 'image/png')
+      await createPageFromImage(url, im.naturalWidth||im.width, im.naturalHeight||im.height, 'image/png', false)
       count += 1
     }
     return count
   }
 
-  async function assignFirstFileToCurrent(file){
+    async function assignFirstFileToCurrent(file){
     const ext=(file.name.split('.').pop()||'').toLowerCase()
     const page=pages[cur]; if(!page) return
     setLoading(true)
@@ -681,7 +688,7 @@ export default function Editor(){
     return out
   }
 
-    // ===== Улучшение качества подписи/печати в PDF/JPG =====
+  // ===== Улучшение качества подписи/печати в PDF/JPG =====
   function getOverlayObjects(cv, page){
     const all = cv.getObjects() || []
     return all.filter(o => o !== page.bgObj)
@@ -722,26 +729,37 @@ export default function Editor(){
     try{
       const cr=cropperRef.current; if(!cr) return
       const c=cr.getCroppedCanvas({ imageSmoothingEnabled:true, imageSmoothingQuality:'high' })
-      let dataUrl=c.toDataURL('image/png')
-      const thr=Math.round(255*(cropThresh/100))
-      dataUrl=await removeWhiteBackground(dataUrl,thr)
-      if(hasDoc && isMobile){
-        const page=pages[cur]; const cv=await ensureCanvas(page); const imgEl=await loadImageEl(dataUrl)
+      let dataUrl = c.toDataURL('image/png')
+      const thr = Math.round(255 * (cropThresh / 100))
+      dataUrl = await removeWhiteBackground(dataUrl, thr)
+      if (hasDoc && isMobile) {
+        const page = pages[cur]
+        const cv = await ensureCanvas(page)
+        const imgEl = await loadImageEl(dataUrl)
         // eslint-disable-next-line no-undef
-        const img=new fabric.Image(imgEl)
-        const w=cv.getWidth(),h=cv.getHeight()
-        const s=Math.min(1,(w*0.35)/(img.width||1))
-        img.set({left:Math.round(w*0.15),top:Math.round(h*0.15),scaleX:s,scaleY:s,selectable:true})
-        img.__scannyId=uniqueObjId(); ensureDeleteControlFor(img)
+        const img = new fabric.Image(imgEl)
+        const w = cv.getWidth(), h = cv.getHeight()
+        const s = Math.min(1, (w * 0.35) / (img.width || 1))
+        img.set({ left: Math.round(w * 0.15), top: Math.round(h * 0.15), scaleX: s, scaleY: s, selectable: true })
+        img.__scannyId = uniqueObjId(); ensureDeleteControlFor(img)
         cv.add(img); cv.setActiveObject(img); cv.requestRenderAll()
-        setUndoStack(stk=>[...stk,{type:'add_one',page:cur,id:img.__scannyId}])
+        setUndoStack(stk => [...stk, { type: 'add_one', page: cur, id: img.__scannyId }])
         scheduleSaveDraft()
       } else {
-        if(localStorage.getItem('access')){ await AuthAPI.addSign({kind:cropType,data_url:dataUrl}); loadLibrary() }
-        else { const item={id:'g_'+Math.random().toString(36).slice(2),url:dataUrl,kind:cropType}; const next=[item,...signLib].slice(0,100); setSignLib(next); localStorage.setItem('sign_lib',JSON.stringify(next)) }
+        if (localStorage.getItem('access')) {
+          await AuthAPI.addSign({ kind: cropType, data_url: dataUrl })
+          loadLibrary()
+        } else {
+          const item = { id: 'g_' + Math.random().toString(36).slice(2), url: dataUrl, kind: cropType }
+          const next = [item, ...(signLib || [])].slice(0, 100)
+          setSignLib(next)
+          localStorage.setItem('sign_lib', JSON.stringify(next))
+        }
       }
       setCropOpen(false)
-    }catch(e){ toast(e.message||'Не удалось обработать изображение','error') }
+    } catch (e) {
+      toast(e.message || 'Не удалось обработать изображение', 'error')
+    }
   }
   async function removeWhiteBackground(src,threshold=245){
     const img=await loadImageEl(src); const w=img.naturalWidth||img.width; const h=img.naturalHeight||img.height
@@ -800,7 +818,7 @@ export default function Editor(){
     // eslint-disable-next-line no-undef
     const tb=new fabric.Textbox('Вставьте текст',{ left:Math.round(cv.getWidth()*0.1), top:Math.round(cv.getHeight()*0.15), fontSize:48, fill:'#000000', fontFamily:'Arial', fontWeight:'bold' })
     tb.__scannyId=uniqueObjId()
-    ensureDeleteControlFor(tb) // крестик удаления и для текста
+    ensureDeleteControlFor(tb)
     cv.add(tb); cv.setActiveObject(tb); cv.requestRenderAll(); setPanelOpen(true)
     setUndoStack(stk=>[...stk,{type:'add_one',page:cur,id:tb.__scannyId}])
     scheduleSaveDraft()
@@ -817,41 +835,6 @@ export default function Editor(){
     scheduleSaveDraft()
   }
 
-  // Патч: показ крестика-удаления и для Textbox по умолчанию
-  function installDeleteControl(){
-    // eslint-disable-next-line no-undef
-    const fobj=fabric.Object; if(fobj.__delPatched) return
-    // eslint-disable-next-line no-undef
-    const F=fabric
-    const del=new F.Control({
-      x:0.5,y:-0.5,offsetX:12,offsetY:-12,cursorStyle:'pointer',
-      mouseUpHandler:(_,tr)=>{
-        const t=tr.target,cv=t.canvas
-        if (window.confirm('Удалить объект со страницы?')) {
-          cv.remove(t); cv.discardActiveObject(); cv.requestRenderAll()
-          toast('Объект удалён','success')
-          scheduleSaveDraft()
-        }
-        return true
-      },
-      render:(ctx,left,top)=>{ const r=12; ctx.save(); ctx.fillStyle='#E26D5C'; ctx.beginPath(); ctx.arc(left,top,r,0,Math.PI*2); ctx.fill(); ctx.strokeStyle='#fff'; ctx.lineWidth=2; ctx.beginPath(); ctx.moveTo(left-5,top-5); ctx.lineTo(left+5,top+5); ctx.moveTo(left+5,top-5); ctx.lineTo(left-5,top+5); ctx.stroke(); ctx.restore(); }
-    })
-    fobj.prototype.controls.tr=del
-    // Дополнительно явно для типов, чтобы не потерялось
-    if (F.Textbox) F.Textbox.prototype.controls.tr = del
-    if (F.Image) F.Image.prototype.controls.tr = del
-    // сохраним для точечного назначения
-    // eslint-disable-next-line no-undef
-    window.__scannyDelControl = del
-    fobj.__delPatched=true
-  }
-  function ensureDeleteControlFor(obj){
-    try{
-      // eslint-disable-next-line no-undef
-      if (obj && obj.controls && window.__scannyDelControl) obj.controls.tr = window.__scannyDelControl
-    }catch{}
-  }
-
   function undo(){
     const stk=[...undoStack], last=stk.pop(); if(!last) return
     if(last.type==='add_one'){ const p=pages[last.page], cv=p?.canvas; if(cv){ const obj=cv.getObjects().find(o=>o.__scannyId===last.id); if(obj){ cv.remove(obj); cv.discardActiveObject(); cv.requestRenderAll() } } }
@@ -863,7 +846,7 @@ export default function Editor(){
   function baseName(){ const nm=(fileName||'').trim(); if(!nm){ toast('Введите название файла вверху','error'); return null } return sanitizeName(nm) }
   function freeLeft(){ return isAuthed ? (billing?.free_left ?? 3) : guestLeft }
 
-  // ===== Сериализация/восстановление черновика =====
+  // ----- Сериализация/восстановление черновика c client_id и объектами -----
   async function serializeDocument(){
     const outPages = []
     for (let i=0; i<pages.length; i++){
@@ -882,10 +865,8 @@ export default function Editor(){
           const baseH = o._originalElement?.naturalHeight || o._originalElement?.height || o.height || 1
           const dispW = o.getScaledWidth()
           const dispH = o.getScaledHeight()
-          const sUni = Math.min(dispW/(baseW||1), dispH/(baseH||1)) // единый масштаб — не «сплющиваем»
-          return {
-            t:'im', src, left:o.left||0, top:o.top||0, scaleX:sUni, scaleY:sUni, angle:o.angle||0
-          }
+          const sUni = Math.min(dispW/(baseW||1), dispH/(baseH||1))
+          return { t:'im', src, left:o.left||0, top:o.top||0, scaleX:sUni, scaleY:sUni, angle:o.angle||0 }
         }
         return null
       }).filter(Boolean)
@@ -899,58 +880,78 @@ export default function Editor(){
         outPages.push({ type:'raster', src:url, w:cv.getWidth()*2, h:cv.getHeight()*2, mime:'image/png', landscape: !!p.landscape, overlays })
       }
     }
-    return { name: fileName || genDefaultName(), pages: outPages }
+    return { client_id: docId || null, name: fileName || genDefaultName(), pages: outPages }
   }
 
   async function restoreDocumentFromDraft(draft){
-    const restored = []
-    for (const pg of (draft.pages || [])){
-      if (pg.type === 'image' || pg.type === 'raster') {
-        await addPageFromImage(pg.src, pg.w||PAGE_W, pg.h||PAGE_H, pg.mime||'image/png')
-        restored.push(true)
-      } else if (pg.type === 'pdf' && pg.bytes_b64) {
-        const bytes = b64ToU8(pg.bytes_b64)
-        await ensurePDFJS()
-        // eslint-disable-next-line no-undef
-        const pdf=await pdfjsLib.getDocument({data: bytes.slice()}).promise
-        const url=await renderPDFPageToDataURL(pdf, (pg.index||0)+1, 2.0)
+    try{
+      const pagesData = Array.isArray(draft?.pages) ? draft.pages : []
+      const created = []
+      // Предварительно готовим объекты страниц и фоновые URL
+      const bgUrls = []
+      for (let i=0;i<pagesData.length;i++){
+        const pg = pagesData[i]
         const id='p_'+Math.random().toString(36).slice(2), elId='cv_'+id
-        const page={ id, elId, canvas:null, bgObj:null, landscape:!!pg.landscape, meta:{ type:'pdf', bytes: toUint8Copy(bytes), index: pg.index||0 } }
-        setPages(prev=>{ const arr=[...prev,page]; setCur(arr.length-1); return arr })
-        await new Promise(r=>requestAnimationFrame(r))
-        const cv=await ensureCanvas(page)
-        await ensureFabric()
-        const imgEl=await loadImageEl(url)
-        // eslint-disable-next-line no-undef
-        const img=new fabric.Image(imgEl,{ selectable:false, evented:false })
-        placeBgObject(cv,page,img)
-        restored.push(true)
-      }
-    }
-    setFileName(draft.name || fileName || genDefaultName())
-    for (let i=0;i<(draft.pages||[]).length;i++){
-      const pg = draft.pages[i]
-      const page = pages[i] || null
-      if (!page || !pg || !Array.isArray(pg.overlays)) continue
-      const cv = await ensureCanvas(page)
-      await ensureFabric()
-      for (const o of pg.overlays){
-        if (o.t === 'tb'){
+        if (pg.type==='pdf' && pg.bytes_b64){
+          await ensurePDFJS()
+          const bytes = b64ToU8(pg.bytes_b64)
           // eslint-disable-next-line no-undef
-          const tb=new fabric.Textbox(o.text||'',{ left:o.left||0, top:o.top||0, angle:o.angle||0, fontFamily:o.fontFamily||'Arial', fontSize:o.fontSize||42, fontStyle:o.fontStyle||'normal', fontWeight:o.fontWeight||'normal', fill:o.fill||'#000' })
-          tb.__scannyId=uniqueObjId(); ensureDeleteControlFor(tb); cv.add(tb)
-        } else if (o.t === 'im' && o.src){
-          const imgEl = await loadImageEl(o.src)
-          // eslint-disable-next-line no-undef
-          const im = new fabric.Image(imgEl,{ left:o.left||0, top:o.top||0, angle:o.angle||0 })
-          const sUni = Number(o.scaleX || o.scaleY || 1)
-          im.set({ scaleX:sUni, scaleY:sUni })
-          im.__scannyId=uniqueObjId(); ensureDeleteControlFor(im); cv.add(im)
+          const pdf = await pdfjsLib.getDocument({data: bytes.slice()}).promise
+          const url = await renderPDFPageToDataURL(pdf, (pg.index||0)+1, 2.0)
+          bgUrls[i] = url
+          created.push({ id, elId, canvas:null, bgObj:null, landscape:!!pg.landscape, meta:{ type:'pdf', bytes: toUint8Copy(bytes), index: pg.index||0 } })
+        } else if (pg.type==='image' || pg.type==='raster'){
+          bgUrls[i] = pg.src
+          created.push({ id, elId, canvas:null, bgObj:null, landscape:!!pg.landscape, meta:{ type: pg.type, src: pg.src, w: pg.w||PAGE_W, h: pg.h||PAGE_H, mime: pg.mime||'image/png' } })
         }
       }
-      cv.requestRenderAll()
+      // Сразу устанавливаем список страниц одним сетом состояния
+      setPages(created)
+      setCur(created.length ? 0 : 0)
+      setFileName((draft?.name||'').trim() || genDefaultName())
+      setDocId(draft?.client_id || null)
+
+      // Ждём рендер, затем развешиваем фон и оверлеи
+      await new Promise(r=>requestAnimationFrame(r))
+      await ensureFabric()
+
+      for (let i=0;i<created.length;i++){
+        const page = created[i]
+        const cv = await ensureCanvas(page)
+        const url = bgUrls[i]
+        if (url){
+          const imgEl = await loadImageEl(url)
+          // eslint-disable-next-line no-undef
+          const img=new fabric.Image(imgEl,{ selectable:false, evented:false })
+          placeBgObject(cv, page, img)
+        }
+      }
+
+      // Восстанавливаем объекты
+      for (let i=0;i<created.length;i++){
+        const page = created[i]
+        const cv = await ensureCanvas(page)
+        const pg = pagesData[i] || {}
+        const overlays = Array.isArray(pg.overlays) ? pg.overlays : []
+        for (const o of overlays){
+          if (o.t === 'tb'){
+            // eslint-disable-next-line no-undef
+            const tb=new fabric.Textbox(o.text||'',{ left:o.left||0, top:o.top||0, angle:o.angle||0, fontFamily:o.fontFamily||'Arial', fontSize:o.fontSize||42, fontStyle:o.fontStyle||'normal', fontWeight:o.fontWeight||'normal', fill:o.fill||'#000' })
+            tb.__scannyId=uniqueObjId(); ensureDeleteControlFor(tb); cv.add(tb)
+          } else if (o.t === 'im' && o.src){
+            const imgEl = await loadImageEl(o.src)
+            // eslint-disable-next-line no-undef
+            const im = new fabric.Image(imgEl,{ left:o.left||0, top:o.top||0, angle:o.angle||0 })
+            const sUni = Number(o.scaleX || o.scaleY || 1)
+            im.set({ scaleX:sUni, scaleY:sUni })
+            im.__scannyId=uniqueObjId(); ensureDeleteControlFor(im); cv.add(im)
+          }
+        }
+        cv.requestRenderAll()
+      }
+    }catch(e){
+      console.error('restoreDocumentFromDraft error:', e)
     }
-    scheduleSaveDraft()
   }
 
   // ----- Экспорт оверлея как PNG с повышенной чёткостью -----
@@ -1157,24 +1158,17 @@ export default function Editor(){
           </div>
 
           {isMobile && (
-            <div className="ed-bottom mobile-only">
-              <button
-                className={`fab ${hasDoc?'':'disabled'}`}
-                onClick={()=>{ if(!hasDoc){ return } setMenuAddOpen(o=>!o) }}
-                title="Добавить"
-              >
+            <div className="ed-bottom mobile-only" style={{ display:'flex', flexDirection:'row', alignItems:'center', justifyContent:'space-between', gap:12, flexWrap:'nowrap', width:'100%' }}>
+              <button className={`fab ${hasDoc?'':'disabled'}`} onClick={()=>{ if(!hasDoc){ return } setMenuAddOpen(o=>!o) }} title="Добавить" style={{flexShrink:0}}>
                 <img src={icPlus} alt="+" />
               </button>
 
-              <div className="ed-pager">
-                <button onClick={()=>setCur(i=>Math.max(0, i-1))} disabled={!canPrev} title="Предыдущая">
+              <div className="ed-pager" style={{ display:'flex', alignItems:'center', gap:10, flexShrink:0 }}>
+                <button onClick={()=>setCur(i=>Math.max(0, i-1))} disabled={!canPrev} title="Предыдущая" style={{flexShrink:0}}>
                   <img src={icPrev} alt="Prev" />
                 </button>
-                <span className="pg">{hasDoc ? `${cur+1}/${pages.length}` : '0/0'}</span>
-                <button
-                  onClick={()=>{ if(canNext) setCur(i=>Math.min(pages.length-1, i+1)); else pickDocument() }}
-                  title={canNext ? 'Следующая' : 'Добавить документ'}
-                >
+                <span className="pg" style={{ minWidth:64, textAlign:'center', flexShrink:0 }}>{hasDoc ? `${cur+1}/${pages.length}` : '0/0'}</span>
+                <button onClick={()=>{ if(canNext) setCur(i=>Math.min(pages.length-1, i+1)); else pickDocument() }} title={canNext ? 'Следующая' : 'Добавить документ'} style={{flexShrink:0}}>
                   {canNext
                     ? <img src={icPrev} alt="Next" style={{ transform:'rotate(180deg)' }} />
                     : <img src={icPlus} alt="+" />
@@ -1182,11 +1176,7 @@ export default function Editor(){
                 </button>
               </div>
 
-              <button
-                className={`fab ${(!hasDoc)?'disabled':''}`}
-                onClick={()=>{ if(!hasDoc) return; setMenuDownloadOpen(o=>!o) }}
-                title="Скачать"
-              >
+              <button className={`fab ${(!hasDoc)?'disabled':''}`} onClick={()=>{ if(!hasDoc) return; setMenuDownloadOpen(o=>!o) }} title="Скачать" style={{flexShrink:0}}>
                 <img src={icDownload} alt="↓" />
               </button>
             </div>
@@ -1195,7 +1185,7 @@ export default function Editor(){
 
         <aside className="ed-right">
           <div className="ed-actions">
-            <button className={`ed-action ${hasDoc?'':'disabled'}`} onClick={removeDocument}><img src={icDelete} alt="" style={{width:18,height:18,marginRight:8}}/>Удалить документ</button>
+            <button className={`ed-action ${hasDoc?'':''}`} onClick={removeDocument}><img src={icDelete} alt="" style={{width:18,height:18,marginRight:8}}/>Удалить документ</button>
             <button className={`ed-action ${canUndo?'':'disabled'}`} onClick={undo}><img src={icUndo} alt="" style={{width:18,height:18,marginRight:8}}/>Отменить</button>
             <button className={`ed-action ${hasDoc?'':'disabled'}`} onClick={rotatePage}><img src={icRotate} alt="" style={{width:18,height:18,marginRight:8}}/>Повернуть страницу</button>
             <button className={`ed-action ${hasDoc && !!(pages[cur]?.canvas?.getActiveObject()) ? '' : 'disabled'}`} onClick={applyToAllPages}><img src={icAddPage} alt="" style={{width:18,height:18,marginRight:8}}/>На все страницы</button>
@@ -1234,7 +1224,6 @@ export default function Editor(){
       )}
 
       {(menuAddOpen || menuDownloadOpen || menuMoreOpen) && <div className="ed-dim" onClick={()=>{ setMenuAddOpen(false); setMenuDownloadOpen(false); setMenuMoreOpen(false) }}/>}
-
       {cropOpen && (
         <div className="modal-overlay" onClick={()=>setCropOpen(false)}>
           <div className="modal crop-modal" onClick={e=>e.stopPropagation()}>
