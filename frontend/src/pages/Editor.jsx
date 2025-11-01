@@ -60,10 +60,7 @@ function toUint8Copy(input){
   return new Uint8Array()
 }
 
-// ====== Временное хранилище последнего документа (TTL — из настроек) ======
-const DRAFT_KEY = 'scanny_last_doc'
-const DRAFT_TTL_DEFAULT_MS = 24*60*60*1000
-
+// Кодирование/декодирование в base64 для сохранения PDF-страниц в JSON
 function u8ToB64(u8){
   let bin = ''
   const chunk = 0x8000
@@ -77,37 +74,6 @@ function b64ToU8(b64){
   const u8 = new Uint8Array(bin.length)
   for(let i=0;i<bin.length;i++) u8[i] = bin.charCodeAt(i)
   return u8
-}
-function readDraft(){
-  try{
-    const raw = localStorage.getItem(DRAFT_KEY)
-    if(!raw) return null
-    const d = JSON.parse(raw)
-    if(!d || !d.expiresAt) return null
-    if(Date.now() >= d.expiresAt){
-      localStorage.removeItem(DRAFT_KEY)
-      window.dispatchEvent(new CustomEvent('tempdoc:update'))
-      return null
-    }
-    return d
-  }catch{ return null }
-}
-function writeDraftWithTTL(doc, ttlMs){
-  try{
-    const now = Date.now()
-    const d = { ...doc, savedAt: now, expiresAt: now + Math.max(0, ttlMs||0), deleted: false }
-    localStorage.setItem(DRAFT_KEY, JSON.stringify(d))
-    window.dispatchEvent(new CustomEvent('tempdoc:update'))
-  }catch{}
-}
-function markDraftDeleted(){
-  try{
-    const d = readDraft()
-    if(!d) return
-    d.deleted = true
-    localStorage.setItem(DRAFT_KEY, JSON.stringify(d))
-    window.dispatchEvent(new CustomEvent('tempdoc:update'))
-  }catch{}
 }
 
 export default function Editor(){
@@ -151,28 +117,22 @@ export default function Editor(){
   const [plan, setPlan] = useState('month')
   const [promo, setPromo] = useState('')
   const [promoError, setPromoError] = useState('')
-  const basePrice = { single:99, month:399, year:3999 }
+  // Цены приходят из BillingConfig (бэкенд) через /billing/status/
+  const [prices, setPrices] = useState({ single:0, month:0, year:0 })
   const [promoPercent, setPromoPercent] = useState(0)
-  const price = useMemo(()=>{ let v=basePrice[plan]||0; if(promoPercent>0) v=Math.max(0,Math.round(v*(100-promoPercent)/100)); return v },[plan,promoPercent])
+  const price = useMemo(()=>{
+    let v = prices[plan] || 0
+    if (promoPercent>0) v = Math.max(0, Math.round(v*(100-promoPercent)/100))
+    return v
+  },[plan,promoPercent,prices])
 
   const [billing, setBilling] = useState(null)
   const isAuthed = !!localStorage.getItem('access')
-  const [guestQuota, setGuestQuota] = useState(()=>{
-    try{
-      const raw=JSON.parse(localStorage.getItem('guest_quota')||'{}')
-      const today=new Date().toISOString().slice(0,10)
-      if(!raw.date||raw.date!==today) return {date:today,left:3}
-      return {date:today,left: typeof raw.left==='number'? raw.left:3}
-    }catch{ return {date:new Date().toISOString().slice(0,10),left:3} }
-  })
-  const guestLeft = guestQuota.left
 
   const [undoStack, setUndoStack] = useState([])
   const canUndo = undoStack.length>0
 
-  const draftTTLRef = useRef(DRAFT_TTL_DEFAULT_MS)
-
-  // ----- Автосохранение черновика -----
+  // ----- Автосохранение черновика на сервер -----
   const saveDebounceRef = useRef(0)
   function scheduleSaveDraft(){
     if(!hasDoc) return
@@ -182,43 +142,61 @@ export default function Editor(){
   async function saveDraftNow(){
     if(!hasDoc) return
     const s = await serializeDocument()
-    writeDraftWithTTL(s, draftTTLRef.current)
+    try {
+      await AuthAPI.saveDraft(s)
+    } catch {}
   }
-  useEffect(()=>{
-    const onTick = () => {
-      const d = readDraft()
-      if(!d) return
-      if(Date.now() >= d.expiresAt){
-        localStorage.removeItem(DRAFT_KEY)
-        window.dispatchEvent(new CustomEvent('tempdoc:update'))
-      }
-    }
-    const id = setInterval(onTick, 1000)
-    return ()=>clearInterval(id)
-  },[])
 
-  useEffect(()=>{ if(isAuthed) AuthAPI.getBillingStatus().then(setBilling).catch(()=>{}) },[isAuthed])
+  useEffect(()=>{
+    if(isAuthed){
+      AuthAPI.getBillingStatus()
+        .then((st)=>{
+          setBilling(st)
+          if (st && ('price_single' in st)) {
+            setPrices({
+              single: Number(st.price_single||0),
+              month: Number(st.price_month||0),
+              year: Number(st.price_year||0),
+            })
+          }
+        })
+        .catch(()=>{})
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[isAuthed])
+
   useEffect(()=>{
     const onUser=async()=>{
       if(localStorage.getItem('access')){
-        try{ setBilling(await AuthAPI.getBillingStatus()) }catch{}
+        try{
+          const st = await AuthAPI.getBillingStatus()
+          setBilling(st)
+          if (st && ('price_single' in st)) {
+            setPrices({
+              single: Number(st.price_single||0),
+              month: Number(st.price_month||0),
+              year: Number(st.price_year||0),
+            })
+          }
+        }catch{}
         loadLibrary()
-      } else { setBilling(null); loadLibrary() }
+      }
     }
-    const onBill=(e)=>setBilling(e.detail)
+    const onBill=(e)=>{
+      const st = e.detail
+      setBilling(st)
+      if (st && ('price_single' in st)) {
+        setPrices({
+          single: Number(st.price_single||0),
+          month: Number(st.price_month||0),
+          year: Number(st.price_year||0),
+        })
+      }
+    }
     window.addEventListener('user:update', onUser)
     window.addEventListener('billing:update', onBill)
     return ()=>{ window.removeEventListener('user:update', onUser); window.removeEventListener('billing:update', onBill) }
   },[])
-
-  // Обновляем TTL при изменении настроек на бэке
-  useEffect(()=>{
-    if (billing && typeof billing.draft_ttl_hours === 'number') {
-      draftTTLRef.current = Math.max(0, Number(billing.draft_ttl_hours||0)) * 3600 * 1000
-    } else {
-      draftTTLRef.current = DRAFT_TTL_DEFAULT_MS
-    }
-  }, [billing?.draft_ttl_hours])
 
   const canvasWrapRef = useRef(null)
   const docFileRef = useRef(null)
@@ -272,16 +250,19 @@ export default function Editor(){
   },[pages])
   useEffect(()=>{ if(pages[cur]?.canvas){ requestAnimationFrame(()=>fitCanvas(cur)); setTimeout(()=>fitCanvas(cur),0) } },[cur,pages.length,isMobile])
 
-  // ---- Восстановление черновика последнего документа (с объектами и ориентацией страниц) ----
+  // ---- Восстановление черновика последнего документа — только с сервера ----
   useEffect(()=>{
     (async ()=>{
-      const d = readDraft()
-      if(!d) return
       if(hasDoc) return
       setLoading(true)
       try{
-        await restoreDocumentFromDraft(d)
-        toast('Восстановлен последний документ из временного хранилища','info')
+        if (localStorage.getItem('access')) {
+          const srv = await AuthAPI.getDraft()
+          if (srv && srv.exists && srv.data) {
+            await restoreDocumentFromDraft(srv.data)
+            toast('Восстановлен последний документ','info')
+          }
+        }
       }catch(e){
         console.error('restore draft failed',e)
       }finally{
@@ -294,13 +275,8 @@ export default function Editor(){
   async function loadLibrary(){
     setLibLoading(true)
     try{
-      if(localStorage.getItem('access')){
-        const list=await AuthAPI.listSigns()
-        setSignLib(Array.isArray(list)?list:[])
-      } else {
-        const local=JSON.parse(localStorage.getItem('sign_lib')||'[]')
-        setSignLib(Array.isArray(local)?local:[])
-      }
+      const list=await AuthAPI.listSigns()
+      setSignLib(Array.isArray(list)?list:[])
     }catch{ setSignLib([]) } finally{ setLibLoading(false) }
   }
   useEffect(()=>{ loadLibrary() },[])
@@ -419,9 +395,8 @@ export default function Editor(){
     if (!window.confirm('Удалить весь документ?')) return
     pages.forEach(p=>{ try{ p.canvas?.dispose?.() }catch{} })
     setPages([]); setCur(0); setPanelOpen(false); setFileName(''); setUndoStack([])
-    // важно: помечаем локальный черновик как удалён и удаляем ключ
-    markDraftDeleted()
-    localStorage.removeItem(DRAFT_KEY)
+    // удаляем черновик на сервере
+    try { if (localStorage.getItem('access')) await AuthAPI.clearDraft() } catch {}
     // пометить все загрузки по client_id как удалённые — теперь client_id восстанавливается из черновика
     try { if (docId) await AuthAPI.deleteUploadsByClient(docId) } catch {}
     setDocId(null)
@@ -522,7 +497,7 @@ export default function Editor(){
       }
 
       scheduleSaveDraft()
-      // записываем «загрузку» в историю (только для авторизованных)
+      // записываем «загрузку» в историю
       try{
         if (isAuthed && addedPages>0) {
           const nm = sanitizeName(initialName || fileName || genDefaultName())
@@ -554,7 +529,7 @@ export default function Editor(){
     return page
   }
 
-  async function addPageFromImage(dataUrl, w, h, mime='image/png'){
+    async function addPageFromImage(dataUrl, w, h, mime='image/png'){
     await createPageFromImage(dataUrl, w, h, mime, false)
     return 1
   }
@@ -569,7 +544,7 @@ export default function Editor(){
     return count
   }
 
-    async function assignFirstFileToCurrent(file){
+  async function assignFirstFileToCurrent(file){
     const ext=(file.name.split('.').pop()||'').toLowerCase()
     const page=pages[cur]; if(!page) return
     setLoading(true)
@@ -732,6 +707,7 @@ export default function Editor(){
       let dataUrl = c.toDataURL('image/png')
       const thr = Math.round(255 * (cropThresh / 100))
       dataUrl = await removeWhiteBackground(dataUrl, thr)
+
       if (hasDoc && isMobile) {
         const page = pages[cur]
         const cv = await ensureCanvas(page)
@@ -746,15 +722,8 @@ export default function Editor(){
         setUndoStack(stk => [...stk, { type: 'add_one', page: cur, id: img.__scannyId }])
         scheduleSaveDraft()
       } else {
-        if (localStorage.getItem('access')) {
-          await AuthAPI.addSign({ kind: cropType, data_url: dataUrl })
-          loadLibrary()
-        } else {
-          const item = { id: 'g_' + Math.random().toString(36).slice(2), url: dataUrl, kind: cropType }
-          const next = [item, ...(signLib || [])].slice(0, 100)
-          setSignLib(next)
-          localStorage.setItem('sign_lib', JSON.stringify(next))
-        }
+        await AuthAPI.addSign({ kind: cropType, data_url: dataUrl })
+        loadLibrary()
       }
       setCropOpen(false)
     } catch (e) {
@@ -793,18 +762,12 @@ export default function Editor(){
   async function removeFromLib(item){
     if (!window.confirm('Удалить элемент из библиотеки?')) return
     try{
-      if (localStorage.getItem('access')) {
-        if (item.is_default && item.gid) {
-          await AuthAPI.hideDefaultSign(item.gid)
-        } else {
-          await AuthAPI.deleteSign(item.id)
-        }
-        await loadLibrary()
+      if (item.is_default && item.gid) {
+        await AuthAPI.hideDefaultSign(item.gid)
       } else {
-        const next = (signLib || []).filter(i => i.id !== item.id)
-        setSignLib(next)
-        localStorage.setItem('sign_lib', JSON.stringify(next))
+        await AuthAPI.deleteSign(item.id)
       }
+      await loadLibrary()
       toast('Удалено','success')
     } catch (e){
       toast(e.message || 'Не удалось удалить','error')
@@ -844,7 +807,7 @@ export default function Editor(){
   }
 
   function baseName(){ const nm=(fileName||'').trim(); if(!nm){ toast('Введите название файла вверху','error'); return null } return sanitizeName(nm) }
-  function freeLeft(){ return isAuthed ? (billing?.free_left ?? 3) : guestLeft }
+  function freeLeft(){ return billing?.free_left ?? 0 }
 
   // ----- Сериализация/восстановление черновика c client_id и объектами -----
   async function serializeDocument(){
@@ -1158,17 +1121,17 @@ export default function Editor(){
           </div>
 
           {isMobile && (
-            <div className="ed-bottom mobile-only" style={{ display:'flex', flexDirection:'row', alignItems:'center', justifyContent:'space-between', gap:12, flexWrap:'nowrap', width:'100%' }}>
-              <button className={`fab ${hasDoc?'':'disabled'}`} onClick={()=>{ if(!hasDoc){ return } setMenuAddOpen(o=>!o) }} title="Добавить" style={{flexShrink:0}}>
+            <div className="ed-bottom mobile-only">
+              <button className={`fab ${hasDoc?'':'disabled'}`} onClick={()=>{ if(!hasDoc){ return } setMenuAddOpen(o=>!o) }} title="Добавить">
                 <img src={icPlus} alt="+" />
               </button>
 
-              <div className="ed-pager" style={{ display:'flex', alignItems:'center', gap:10, flexShrink:0 }}>
-                <button onClick={()=>setCur(i=>Math.max(0, i-1))} disabled={!canPrev} title="Предыдущая" style={{flexShrink:0}}>
+              <div className="ed-pager">
+                <button onClick={()=>setCur(i=>Math.max(0, i-1))} disabled={!canPrev} title="Предыдущая">
                   <img src={icPrev} alt="Prev" />
                 </button>
-                <span className="pg" style={{ minWidth:64, textAlign:'center', flexShrink:0 }}>{hasDoc ? `${cur+1}/${pages.length}` : '0/0'}</span>
-                <button onClick={()=>{ if(canNext) setCur(i=>Math.min(pages.length-1, i+1)); else pickDocument() }} title={canNext ? 'Следующая' : 'Добавить документ'} style={{flexShrink:0}}>
+                <span className="pg">{hasDoc ? `${cur+1}/${pages.length}` : '0/0'}</span>
+                <button onClick={()=>{ if(canNext) setCur(i=>Math.min(pages.length-1, i+1)); else pickDocument() }} title={canNext ? 'Следующая' : 'Добавить документ'}>
                   {canNext
                     ? <img src={icPrev} alt="Next" style={{ transform:'rotate(180deg)' }} />
                     : <img src={icPlus} alt="+" />
@@ -1176,7 +1139,7 @@ export default function Editor(){
                 </button>
               </div>
 
-              <button className={`fab ${(!hasDoc)?'disabled':''}`} onClick={()=>{ if(!hasDoc) return; setMenuDownloadOpen(o=>!o) }} title="Скачать" style={{flexShrink:0}}>
+              <button className={`fab ${(!hasDoc)?'disabled':''}`} onClick={()=>{ if(!hasDoc) return; setMenuDownloadOpen(o=>!o) }} title="Скачать">
                 <img src={icDownload} alt="↓" />
               </button>
             </div>
@@ -1256,9 +1219,9 @@ export default function Editor(){
             <button className="modal-x" onClick={()=>setPayOpen(false)}>×</button>
             <h3 className="modal-title">Чтобы выгрузить документ придётся немного заплатить</h3>
             <div className="pay-grid">
-              <button className={`pay-card ${plan==='single'?'active':''}`} onClick={()=>setPlan('single')} type="button"><img className="pay-ill" src={plan1} alt="" /><div className="pay-price">99 ₽</div><div className="pay-sub">один (этот) документ</div></button>
-              <button className={`pay-card ${plan==='month'?'active':''}`} onClick={()=>setPlan('month')} type="button"><img className="pay-ill" src={plan2} alt="" /><div className="pay-price">399 ₽</div><div className="pay-sub">безлимит на месяц</div></button>
-              <button className={`pay-card ${plan==='year'?'active':''}`} onClick={()=>setPlan('year')} type="button"><img className="pay-ill" src={plan3} alt="" /><div className="pay-price">3999 ₽</div><div className="pay-sub">безлимит на год</div></button>
+              <button className={`pay-card ${plan==='single'?'active':''}`} onClick={()=>setPlan('single')} type="button"><img className="pay-ill" src={plan1} alt="" /><div className="pay-price">{prices.single} ₽</div><div className="pay-sub">один (этот) документ</div></button>
+              <button className={`pay-card ${plan==='month'?'active':''}`} onClick={()=>setPlan('month')} type="button"><img className="pay-ill" src={plan2} alt="" /><div className="pay-price">{prices.month} ₽</div><div className="pay-sub">безлимит на месяц</div></button>
+              <button className={`pay-card ${plan==='year'?'active':''}`} onClick={()=>setPlan('year')} type="button"><img className="pay-ill" src={plan3} alt="" /><div className="pay-price">{prices.year} ₽</div><div className="pay-sub">безлимит на год</div></button>
             </div>
             <div className={`pay-controls ${promoError?'error':''}`}>
               <div className="promo">

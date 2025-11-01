@@ -1,4 +1,5 @@
 // Загрузка внешних скриптов/стилей с кэшем и ожиданием готовности
+// (оставлено без изменений; используется в ряде компонентов)
 const cache = new Map();
 const styleCache = new Map();
 
@@ -73,7 +74,7 @@ async function loadCk(url) {
 
 // CKEditor 4.22.1 standard: локально по /static, затем CDN
 export async function ensureCKE422() {
-  if (window.CKEDITOR && window.CKEDITOR.status === 'loaded' && !lt(window.CKEDITOR.version, '4.22.1')) return;
+  if (window.CKEDITOR && window.CKEDITOR.status === 'loaded' && !lt(window.CKITOR?.version || window.CKEDITOR.version, '4.22.1')) return;
   const localStatic = `${window.location.origin}/static/vendor/ckeditor/ckeditor.js`;
   const variants = [
     localStatic,

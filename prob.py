@@ -7,7 +7,7 @@ def print_project_structure(path, file, indent=0):
 
         for index, entry in enumerate(entries):
             full_path = os.path.join(path, entry)
-            if entry in ['__pycache__', '.git']:
+            if entry in ['__pycache__', '.git','migrations','node_modules','public','venv']:
                 continue
 
             # Определяем символы для отображения вложенности

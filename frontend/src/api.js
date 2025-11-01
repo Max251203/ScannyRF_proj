@@ -1,3 +1,5 @@
+// ----------------------------- API core helpers -----------------------------
+
 // Базовый URL API
 const API = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000/api';
 
@@ -96,6 +98,8 @@ function emitUser(u) {
 function emitBilling(s) {
   window.dispatchEvent(new CustomEvent('billing:update', { detail: s || null }));
 }
+
+// ----------------------------- API -----------------------------
 
 export const AuthAPI = {
   getApiBase() { return API; },
@@ -216,6 +220,16 @@ export const AuthAPI = {
     return requestAuthed('/billing/status/');
   },
 
+  // Публичные цены (для гостей и в целом для динамики на лендинге)
+  async getPublicPrices() {
+    const d = await request('/billing/public/');
+    return {
+      single: Number(d?.price_single ?? 99),
+      month: Number(d?.price_month ?? 399),
+      year: Number(d?.price_year ?? 3999),
+    };
+  },
+
   async recordDownload(kind, pages, doc_name, mode = 'free') {
     if (!localStorage.getItem('access')) return null;
     try {
@@ -226,12 +240,12 @@ export const AuthAPI = {
       });
       emitBilling(s);
       return s;
-    } catch (e) {
+    } catch {
       return null;
     }
   },
 
-  // История загрузок (временное хранилище)
+  // История загрузок (временное хранилище, хранится на бэкенде)
   async recordUpload(client_id, doc_name, pages) {
     if (!localStorage.getItem('access')) return null;
     try {
@@ -240,7 +254,6 @@ export const AuthAPI = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ client_id, doc_name, pages }),
       });
-      // обновим статус биллинга, чтобы в истории сразу появилась запись
       try { emitBilling(await this.getBillingStatus()); } catch {}
       return s;
     } catch {
@@ -285,20 +298,32 @@ export const AuthAPI = {
     return requestAuthed('/billing/config/');
   },
 
-  setBillingConfig(free_daily_quota) {
-    return requestAuthed('/billing/config/', {
+  // ВАЖНО: после изменения конфигурации — эмитим billing:update, чтобы цены/лимиты обновились везде
+  async setBillingConfig(payload) {
+    const data = await requestAuthed('/billing/config/', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ free_daily_quota }),
+      body: JSON.stringify(payload),
     });
+    // Пытаемся получить свежий статус биллинга (свободные лимиты и т.д.), если не выйдет — шлём то, что вернул PUT
+    try {
+      const st = await this.getBillingStatus();
+      emitBilling(st);
+    } catch {
+      emitBilling({
+        // Прокинем то, что точно нужно для динамических цен/TTL:
+        draft_ttl_hours: Number(data?.draft_ttl_hours ?? 24),
+        price_single: Number(data?.price_single ?? 99),
+        price_month: Number(data?.price_month ?? 399),
+        price_year: Number(data?.price_year ?? 3999),
+        free_daily_quota: Number(data?.free_daily_quota ?? 3),
+      });
+    }
+    return data;
   },
 
   setDraftTTL(draft_ttl_hours) {
-    return requestAuthed('/billing/config/', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ draft_ttl_hours }),
-    });
+    return this.setBillingConfig({ draft_ttl_hours });
   },
 
   getPromos() {
@@ -369,6 +394,21 @@ export const AuthAPI = {
   },
   adminDeleteDefault(id) {
     return requestAuthed(`/library/default-signs/${id}/`, { method: 'DELETE' });
+  },
+
+  // ----- Черновик документа (серверное хранилище) -----
+  getDraft() {
+    return requestAuthed('/draft/get/');
+  },
+  saveDraft(data) {
+    return requestAuthed('/draft/save/', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ data }),
+    });
+  },
+  clearDraft() {
+    return requestAuthed('/draft/clear/', { method: 'POST' });
   },
 
   // ----- Автосессия при старте приложения -----

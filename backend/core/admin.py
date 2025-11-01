@@ -8,6 +8,7 @@ from .models import (
     GlobalSignImage,
     HiddenDefaultSign,
     Upload,
+    DocumentDraft,
 )
 
 
@@ -27,17 +28,27 @@ class OperationAdmin(admin.ModelAdmin):
 
 @admin.register(BillingConfig)
 class BillingConfigAdmin(admin.ModelAdmin):
-    list_display = ('id', 'free_daily_quota', 'draft_ttl_hours')
+    list_display = (
+        'id',
+        'free_daily_quota',
+        'draft_ttl_hours',
+        'price_single',
+        'price_month',
+        'price_year',
+    )
     actions = ['make_default']
 
     def has_add_permission(self, request):
         return not BillingConfig.objects.exists()
 
-    @admin.action(description='Сделать дефолтными значениями (quota=3, TTL=24ч)')
+    @admin.action(description='Сделать дефолтными значениями (quota=3, TTL=24ч, цены 99/399/3999)')
     def make_default(self, request, queryset):
         for obj in queryset:
             obj.free_daily_quota = 3
             obj.draft_ttl_hours = 24
+            obj.price_single = 99
+            obj.price_month = 399
+            obj.price_year = 3999
             obj.save()
 
 
@@ -72,3 +83,14 @@ class UploadAdmin(admin.ModelAdmin):
     list_display = ('id', 'user', 'doc_name', 'pages', 'client_id', 'created_at', 'auto_delete_at', 'deleted')
     list_filter = ('deleted',)
     search_fields = ('user__email', 'user__username', 'doc_name', 'client_id')
+
+
+@admin.register(DocumentDraft)
+class DocumentDraftAdmin(admin.ModelAdmin):
+    list_display = ('id', 'user', 'updated_at', 'expires_at', 'is_expired_display')
+    search_fields = ('user__email', 'user__username')
+
+    def is_expired_display(self, obj):
+        return obj.is_expired()
+    is_expired_display.boolean = True
+    is_expired_display.short_description = 'Просрочен'

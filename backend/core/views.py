@@ -18,6 +18,7 @@ from .models import (
     GlobalSignImage,
     HiddenDefaultSign,
     Upload,
+    DocumentDraft,  # <-- добавили
 )
 
 # ---------- Ключевая ставка ЦБ ----------
@@ -51,13 +52,40 @@ class KeyRateView(APIView):
 
 # ---------- Вспомогательные ----------
 def _get_quota():
-    cfg, _ = BillingConfig.objects.get_or_create(pk=1, defaults={'free_daily_quota': 3, 'draft_ttl_hours': 24})
+    cfg, _ = BillingConfig.objects.get_or_create(pk=1, defaults={
+        'free_daily_quota': 3,
+        'draft_ttl_hours': 24,
+        'price_single': 99,
+        'price_month': 399,
+        'price_year': 3999,
+    })
     return int(cfg.free_daily_quota or 0)
 
 
 def _get_ttl_hours():
-    cfg, _ = BillingConfig.objects.get_or_create(pk=1, defaults={'free_daily_quota': 3, 'draft_ttl_hours': 24})
+    cfg, _ = BillingConfig.objects.get_or_create(pk=1, defaults={
+        'free_daily_quota': 3,
+        'draft_ttl_hours': 24,
+        'price_single': 99,
+        'price_month': 399,
+        'price_year': 3999,
+    })
     return max(0, int(cfg.draft_ttl_hours or 0))
+
+
+def _get_prices_dict():
+    cfg, _ = BillingConfig.objects.get_or_create(pk=1, defaults={
+        'free_daily_quota': 3,
+        'draft_ttl_hours': 24,
+        'price_single': 99,
+        'price_month': 399,
+        'price_year': 3999,
+    })
+    return {
+        "price_single": int(cfg.price_single or 0),
+        "price_month": int(cfg.price_month or 0),
+        "price_year": int(cfg.price_year or 0),
+    }
 
 
 def _billing_status(user):
@@ -92,6 +120,8 @@ def _billing_status(user):
         "uploads": list(uploads),
         # TTL (часы) для временного хранилища
         "draft_ttl_hours": _get_ttl_hours(),
+        # публичные цены (можно подсвечивать в UI)
+        **_get_prices_dict(),
     }
 
 
@@ -131,20 +161,41 @@ class BillingRecordView(APIView):
         return Response(_billing_status(request.user))
 
 
-# ---------- Конфигурация биллинга (админ) ----------
+# ---------- Конфигурация биллинга ----------
 class BillingConfigView(APIView):
     permission_classes = [permissions.IsAdminUser]
 
     def get(self, request):
-        cfg, _ = BillingConfig.objects.get_or_create(pk=1, defaults={'free_daily_quota': 3, 'draft_ttl_hours': 24})
-        return Response({"free_daily_quota": cfg.free_daily_quota, "draft_ttl_hours": cfg.draft_ttl_hours})
+        cfg, _ = BillingConfig.objects.get_or_create(pk=1, defaults={
+            'free_daily_quota': 3,
+            'draft_ttl_hours': 24,
+            'price_single': 99,
+            'price_month': 399,
+            'price_year': 3999,
+        })
+        return Response({
+            "free_daily_quota": cfg.free_daily_quota,
+            "draft_ttl_hours": cfg.draft_ttl_hours,
+            "price_single": cfg.price_single,
+            "price_month": cfg.price_month,
+            "price_year": cfg.price_year,
+        })
 
     def put(self, request):
-        cfg, _ = BillingConfig.objects.get_or_create(pk=1, defaults={'free_daily_quota': 3, 'draft_ttl_hours': 24})
+        cfg, _ = BillingConfig.objects.get_or_create(pk=1, defaults={
+            'free_daily_quota': 3,
+            'draft_ttl_hours': 24,
+            'price_single': 99,
+            'price_month': 399,
+            'price_year': 3999,
+        })
 
-        # оба поля — опционально
+        # опциональные поля
         fval = request.data.get('free_daily_quota', None)
         tval = request.data.get('draft_ttl_hours', None)
+        p_single = request.data.get('price_single', None)
+        p_month = request.data.get('price_month', None)
+        p_year = request.data.get('price_year', None)
 
         if fval is not None:
             try:
@@ -164,8 +215,48 @@ class BillingConfigView(APIView):
             except Exception:
                 return Response({'detail': 'draft_ttl_hours должен быть неотрицательным числом'}, status=400)
 
+        # цены — неотрицательные целые
+        def _set_price(name, val):
+            try:
+                ival = int(val)
+                if ival < 0:
+                    raise ValueError
+                setattr(cfg, name, ival)
+                return None
+            except Exception:
+                return Response({'detail': f'{name} должен быть неотрицательным числом'}, status=400)
+
+        if p_single is not None:
+            bad = _set_price('price_single', p_single)
+            if bad:
+                return bad
+        if p_month is not None:
+            bad = _set_price('price_month', p_month)
+            if bad:
+                return bad
+        if p_year is not None:
+            bad = _set_price('price_year', p_year)
+            if bad:
+                return bad
+
         cfg.save()
-        return Response({"free_daily_quota": cfg.free_daily_quota, "draft_ttl_hours": cfg.draft_ttl_hours})
+        return Response({
+            "free_daily_quota": cfg.free_daily_quota,
+            "draft_ttl_hours": cfg.draft_ttl_hours,
+            "price_single": cfg.price_single,
+            "price_month": cfg.price_month,
+            "price_year": cfg.price_year,
+        })
+
+
+class PublicBillingConfigView(APIView):
+    """
+    Публичные цены для фронтенда (AllowAny), чтобы динамически показывать стоимость.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        return Response(_get_prices_dict())
 
 
 # ---------- Промокоды (админ CRUD + проверка) ----------
@@ -472,6 +563,56 @@ class UploadDeleteView(APIView):
         now = timezone.now()
         updated = qs.update(deleted=True, deleted_at=now)
         return Response({'updated': int(updated)})
+
+
+# ---------- Серверное хранилище черновика документа ----------
+class DraftGetView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        d = getattr(request.user, 'document_draft', None)
+        if not d:
+            return Response({"exists": False})
+        # Если протух — удаляем и возвращаем отсутствие
+        if d.is_expired():
+            d.delete()
+            return Response({"exists": False})
+        return Response({
+            "exists": True,
+            "updated_at": d.updated_at.isoformat(),
+            "expires_at": d.expires_at.isoformat(),
+            "data": d.data,
+        })
+
+
+class DraftSaveView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        data = request.data.get('data', None)
+        if not isinstance(data, dict):
+            return Response({'detail': 'Ожидается объект data'}, status=400)
+        ttl_h = _get_ttl_hours()
+        exp = timezone.now() + timedelta(hours=ttl_h)
+        d, _ = DocumentDraft.objects.update_or_create(
+            user=request.user,
+            defaults={'data': data, 'expires_at': exp}
+        )
+        return Response({
+            "saved": True,
+            "updated_at": d.updated_at.isoformat(),
+            "expires_at": d.expires_at.isoformat(),
+        })
+
+
+class DraftClearView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        d = getattr(request.user, 'document_draft', None)
+        if d:
+            d.delete()
+        return Response({"ok": True})
 
 
 # backend/core/views.py (в конец файла)

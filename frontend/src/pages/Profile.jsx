@@ -19,39 +19,6 @@ function PasswordField({ value, onChange, placeholder, id }) {
   )
 }
 
-const DRAFT_KEY = 'scanny_last_doc'
-function readDraft() {
-  try {
-    const raw = localStorage.getItem(DRAFT_KEY)
-    if (!raw) return null
-    const d = JSON.parse(raw)
-    if (!d || !d.expiresAt) return null
-    if (Date.now() >= d.expiresAt) {
-      localStorage.removeItem(DRAFT_KEY)
-      window.dispatchEvent(new CustomEvent('tempdoc:update'))
-      return null
-    }
-    return d
-  } catch {
-    return null
-  }
-}
-
-// Нормализация имени документа (как в Editor.sanitizeName),
-function normalizeName(s) {
-  try {
-    const out = (s || '')
-      .normalize('NFKC')
-      .replace(/[^\p{L}\p{N}._-]+/gu, '-')
-      .replace(/-+/g, '-')
-      .replace(/^[-_.]+|[-_.]+$/g, '')
-      .slice(0, 64)
-    return out
-  } catch {
-    return (s || '').trim()
-  }
-}
-
 export default function Profile(){
   const [user,setUser]=useState(()=>JSON.parse(localStorage.getItem('user')||'null'))
   const [tab,setTab]=useState('info')
@@ -62,26 +29,29 @@ export default function Profile(){
     try { setBilling(await AuthAPI.getBillingStatus()) } catch {}
   }
 
-  const [draft,setDraft] = useState(readDraft())
-
   useEffect(()=>{ if(!user){ AuthAPI.me().then(u=>setUser(u)).catch(()=>{}) }},[])
   useEffect(()=>{ reloadBilling() },[])
 
   useEffect(() => {
     const onUpd = (e) => setUser(e.detail)
     const onBill = (e) => setBilling(e.detail)
-    const onTemp = () => setDraft(readDraft())
     window.addEventListener('user:update', onUpd)
     window.addEventListener('billing:update', onBill)
-    window.addEventListener('tempdoc:update', onTemp)
-    const id = setInterval(onTemp, 1000)
-    return () => { window.removeEventListener('user:update', onUpd); window.removeEventListener('billing:update', onBill); window.removeEventListener('tempdoc:update', onTemp); clearInterval(id) }
+    return () => {
+      window.removeEventListener('user:update', onUpd)
+      window.removeEventListener('billing:update', onBill)
+    }
   }, [])
 
   const isAdmin = !!user?.is_staff
   useEffect(() => { if (!isAdmin && (tab === 'users' || tab === 'defaults')) setTab('info') }, [isAdmin, tab])
 
+  // ----- Админ: квота и цены -----
   const [freeQuota, setFreeQuota] = useState(3)
+  const [priceSingle, setPriceSingle] = useState(99)
+  const [priceMonth, setPriceMonth] = useState(399)
+  const [priceYear, setPriceYear] = useState(3999)
+
   const [promos, setPromos] = useState([])
   const [promoOpen, setPromoOpen] = useState(false)
   const [editPromo, setEditPromo] = useState(null)
@@ -91,17 +61,30 @@ export default function Profile(){
     try {
       const cfg = await AuthAPI.getBillingConfig()
       setFreeQuota(Number(cfg?.free_daily_quota ?? 3))
+      setPriceSingle(Number(cfg?.price_single ?? 99))
+      setPriceMonth(Number(cfg?.price_month ?? 399))
+      setPriceYear(Number(cfg?.price_year ?? 3999))
       const list = await AuthAPI.getPromos()
       setPromos(Array.isArray(list) ? list : [])
     } catch {}
   }
   useEffect(() => { if (isAdmin && tab === 'plan') loadAdminBilling() }, [isAdmin, tab])
 
-  const saveQuota = async () => {
+  const saveBilling = async () => {
     try {
-      const v = Number(freeQuota)
-      if (!Number.isFinite(v) || v < 0) { toast('Введите корректное число', 'error'); return }
-      await AuthAPI.setBillingConfig(v)
+      const fq = Number(freeQuota)
+      const ps = Number(priceSingle)
+      const pm = Number(priceMonth)
+      const py = Number(priceYear)
+      if (!Number.isFinite(fq) || fq < 0) { toast('Введите корректное число для квоты', 'error'); return }
+      if (![ps, pm, py].every(v => Number.isFinite(v) && v >= 0)) { toast('Цены должны быть неотрицательными числами', 'error'); return }
+
+      await AuthAPI.setBillingConfig({
+        free_daily_quota: fq,
+        price_single: ps,
+        price_month: pm,
+        price_year: py
+      })
       toast('Сохранено', 'success')
       reloadBilling()
       await loadAdminBilling()
@@ -124,14 +107,20 @@ export default function Profile(){
       </div>
 
       {tab==='info' && <InfoSection user={user} onUpdated={(u)=>{ setUser(u); window.dispatchEvent(new CustomEvent('user:update',{detail:u})) }} />}
-      {tab==='history' && <HistorySection billing={billing} draft={draft} isAdmin={isAdmin} onChanged={()=>reloadBilling()} />}
+      {tab==='history' && <HistorySection billing={billing} isAdmin={isAdmin} onChanged={()=>reloadBilling()} />}
       {tab==='plan' && (
         <PlanSection
           billing={billing}
           isAdmin={isAdmin}
           freeQuota={freeQuota}
           setFreeQuota={setFreeQuota}
-          onSaveQuota={saveQuota}
+          priceSingle={priceSingle}
+          priceMonth={priceMonth}
+          priceYear={priceYear}
+          setPriceSingle={setPriceSingle}
+          setPriceMonth={setPriceMonth}
+          setPriceYear={setPriceYear}
+          onSaveBilling={saveBilling}
           promos={promos}
           onCreatePromo={openCreatePromo}
           onEditPromo={openEditPromo}
@@ -153,7 +142,14 @@ export default function Profile(){
   )
 }
 
-function PlanSection({ billing, isAdmin, freeQuota, setFreeQuota, onSaveQuota, promos, onCreatePromo, onEditPromo, onDeletePromo }){
+function PlanSection({
+  billing, isAdmin,
+  freeQuota, setFreeQuota,
+  priceSingle, priceMonth, priceYear,
+  setPriceSingle, setPriceMonth, setPriceYear,
+  onSaveBilling,
+  promos, onCreatePromo, onEditPromo, onDeletePromo
+}){
   const total = billing?.free_total ?? 3
   const left = billing?.free_left ?? 3
   const hasSub = !!billing?.subscription
@@ -178,16 +174,31 @@ function PlanSection({ billing, isAdmin, freeQuota, setFreeQuota, onSaveQuota, p
 
       {isAdmin && (
         <>
-          <div className="card" style={{marginBottom:16}}>
+          <div className="card admin-form" style={{marginBottom:16}}>
             <h3 style={{marginTop:0}}>Настройки тарифа</h3>
-            <div className="two-col" style={{alignItems:'end'}}>
-              <div>
-                <label className="subhead">Количество бесплатных страниц в сутки</label>
-                <input className="text-input admin-input" type="number" min="0" value={freeQuota} onChange={e=>setFreeQuota(e.target.value)} />
+
+            <div className="field">
+              <label className="subhead with-colon">Количество бесплатных страниц в сутки</label>
+              <input className="text-input admin-input" type="number" min="0" value={freeQuota} onChange={e=>setFreeQuota(e.target.value)} />
+            </div>
+
+            <div className="form-stack">
+              <div className="field">
+                <label className="subhead with-colon">Цена — один документ, ₽</label>
+                <input className="text-input admin-input" type="number" min="0" value={priceSingle} onChange={e=>setPriceSingle(e.target.value)} />
               </div>
-              <div>
-                <button className="btn" onClick={onSaveQuota}><span className="label">Сохранить</span></button>
+              <div className="field">
+                <label className="subhead with-colon">Цена — безлимит на месяц, ₽</label>
+                <input className="text-input admin-input" type="number" min="0" value={priceMonth} onChange={e=>setPriceMonth(e.target.value)} />
               </div>
+              <div className="field">
+                <label className="subhead with-colon">Цена — безлимит на год, ₽</label>
+                <input className="text-input admin-input" type="number" min="0" value={priceYear} onChange={e=>setPriceYear(e.target.value)} />
+              </div>
+            </div>
+
+            <div className="form-actions">
+              <button className="btn" onClick={onSaveBilling}><span className="label">Сохранить</span></button>
             </div>
           </div>
 
@@ -217,12 +228,11 @@ function PlanSection({ billing, isAdmin, freeQuota, setFreeQuota, onSaveQuota, p
   )
 }
 
-function HistorySection({ billing, draft, isAdmin, onChanged }){
+function HistorySection({ billing, isAdmin, onChanged }){
   const [now, setNow] = useState(Date.now())
   const [ttlHours, setTtlHours] = useState(() => Number(billing?.draft_ttl_hours ?? 24))
 
   useEffect(()=>{ setTtlHours(Number(billing?.draft_ttl_hours ?? 24)) }, [billing?.draft_ttl_hours])
-
   useEffect(()=>{ const id=setInterval(()=>setNow(Date.now()),1000); return ()=>clearInterval(id) },[])
 
   const uploads = Array.isArray(billing?.uploads) ? billing.uploads : []
@@ -253,7 +263,7 @@ function HistorySection({ billing, draft, isAdmin, onChanged }){
       {isAdmin && (
         <div className="two-col" style={{alignItems:'end', marginBottom: 10}}>
           <div>
-            <label className="subhead">Автоудаление временных документов через (часы)</label>
+            <label className="subhead with-colon">Автоудаление временных документов через (часы)</label>
             <input className="text-input admin-input" type="number" min="0" value={ttlHours} onChange={e=>setTtlHours(e.target.value)} />
           </div>
           <div>
