@@ -79,6 +79,7 @@ function b64ToU8(b64){
 export default function Editor(){
   const [docId, setDocId] = useState(null)
   const [fileName, setFileName] = useState('')
+
   // page: {id, elId, canvas, bgObj, landscape, meta}
   // meta:
   //  - image: { type:'image', src, w, h, mime }
@@ -132,12 +133,20 @@ export default function Editor(){
   const [undoStack, setUndoStack] = useState([])
   const canUndo = undoStack.length>0
 
+  // ----- Рефы, чтобы сериализация всегда видела АКТУАЛЬНОЕ состояние -----
+  const pagesRef = useRef(pages)
+  const docIdRef = useRef(docId)
+  const fileNameRef = useRef(fileName)
+  useEffect(()=>{ pagesRef.current = pages }, [pages])
+  useEffect(()=>{ docIdRef.current = docId }, [docId])
+  useEffect(()=>{ fileNameRef.current = fileName }, [fileName])
+
   // ----- Автосохранение черновика на сервер -----
   const saveDebounceRef = useRef(0)
-  function scheduleSaveDraft(){
+  function scheduleSaveDraft(delay=600){
     if(!hasDoc) return
     window.clearTimeout(saveDebounceRef.current)
-    saveDebounceRef.current = window.setTimeout(()=>{ saveDraftNow().catch(()=>{}) }, 600)
+    saveDebounceRef.current = window.setTimeout(()=>{ saveDraftNow().catch(()=>{}) }, delay)
   }
   async function saveDraftNow(){
     if(!hasDoc) return
@@ -146,6 +155,24 @@ export default function Editor(){
       await AuthAPI.saveDraft(s)
     } catch {}
   }
+
+  // Флаш при скрытии вкладки/уходе со страницы
+  useEffect(()=>{
+    const onVis = () => { if (document.hidden) saveDraftNow().catch(()=>{}) }
+    const onHide = () => { saveDraftNow().catch(()=>{}) }
+    window.addEventListener('visibilitychange', onVis)
+    window.addEventListener('pagehide', onHide)
+    return () => {
+      window.removeEventListener('visibilitychange', onVis)
+      window.removeEventListener('pagehide', onHide)
+    }
+  }, [hasDoc])
+
+  // Флаш при размонтировании (смена страницы)
+  useEffect(() => {
+    return () => { try { saveDraftNow() } catch {} }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   useEffect(()=>{
     if(isAuthed){
@@ -339,10 +366,17 @@ export default function Editor(){
     c.on('selection:created', onSelectionChanged)
     c.on('selection:updated', onSelectionChanged)
     c.on('selection:cleared', ()=>setPanelOpen(false))
-    // авто-сохранение по изменениям объектов
-    c.on('object:added', scheduleSaveDraft)
-    c.on('object:modified', scheduleSaveDraft)
-    c.on('object:removed', scheduleSaveDraft)
+
+    // Больше событий — больше шансов не потерять изменения
+    c.on('object:added', ()=>scheduleSaveDraft(700))
+    c.on('object:modified', ()=>scheduleSaveDraft(500))
+    c.on('object:removed', ()=>scheduleSaveDraft(400))
+    c.on('object:moving',  ()=>scheduleSaveDraft(700))
+    c.on('object:scaling', ()=>scheduleSaveDraft(700))
+    c.on('object:rotating',()=>scheduleSaveDraft(700))
+    // для ввода текста в Textbox
+    try{ c.on('text:changed', ()=>scheduleSaveDraft(700)) }catch{}
+
     installDeleteControl()
     return c
   }
@@ -372,7 +406,7 @@ export default function Editor(){
         if (window.confirm('Удалить объект со страницы?')) {
           cv.remove(t); cv.discardActiveObject(); cv.requestRenderAll()
           toast('Объект удалён','success')
-          scheduleSaveDraft()
+          scheduleSaveDraft(300)
         }
         return true
       },
@@ -398,7 +432,7 @@ export default function Editor(){
     // удаляем черновик на сервере
     try { if (localStorage.getItem('access')) await AuthAPI.clearDraft() } catch {}
     // пометить все загрузки по client_id как удалённые — теперь client_id восстанавливается из черновика
-    try { if (docId) await AuthAPI.deleteUploadsByClient(docId) } catch {}
+    try { if (docIdRef.current) await AuthAPI.deleteUploadsByClient(docIdRef.current) } catch {}
     setDocId(null)
     toast('Документ удалён','success')
   }
@@ -410,7 +444,8 @@ export default function Editor(){
     setPages(prev=>prev.filter((_,i)=>i!==idx))
     setCur(i=>Math.max(0, idx-1))
     setUndoStack(stk=>stk.filter(x=>!(x.page===idx)))
-    scheduleSaveDraft()
+    // дожидаемся применения setState перед сериализацией
+    setTimeout(()=>scheduleSaveDraft(400), 0)
     toast('Страница удалена','success')
   }
 
@@ -428,18 +463,30 @@ export default function Editor(){
         const tb=new F.Textbox(obj.text||'',{
           left:(obj.left||0)*cvDst.getWidth()/cvSrc.getWidth(),
           top:(obj.top||0)*cvDst.getHeight()/cvSrc.getHeight(),
-          fontFamily:obj.fontFamily||'Arial', fontStyle:obj.fontStyle||'normal', fontWeight:obj.fontWeight||'normal',
-          fill:obj.fill||'#000', fontSize:Math.max(6,(obj.fontSize||42)*cvDst.getHeight()/cvSrc.getHeight()),
-          angle:obj.angle||0, selectable:true
+          fontFamily:obj.fontFamily||'Arial',
+          fontStyle:obj.fontStyle||'normal',
+          fontWeight:obj.fontWeight||'normal',
+          fill:obj.fill||'#000',
+          fontSize:Math.max(6,(obj.fontSize||42)*cvDst.getHeight()/cvSrc.getHeight()),
+          angle:obj.angle||0,
+          selectable:true,
+          width: Math.max(20, (obj.width||200)*cvDst.getWidth()/cvSrc.getWidth()),
+          textAlign: obj.textAlign || 'left',
+          scaleX: obj.scaleX || 1,
+          scaleY: obj.scaleY || 1,
         })
-        tb.set({ scaleX:1, scaleY:1 })
         tb.__scannyId=uniqueObjId()
         ensureDeleteControlFor(tb)
         cvDst.add(tb); cvDst.requestRenderAll(); clones.push({page:i,id:tb.__scannyId})
       }else if(obj.type==='image'){
         const src=(obj._originalElement?.src||obj._element?.src)
         const imgEl=await loadImageEl(src)
-        const im=new F.Image(imgEl,{angle:obj.angle||0,selectable:true})
+        const im=new F.Image(imgEl,{
+          angle:obj.angle||0,
+          selectable:true,
+          flipX: !!obj.flipX,
+          flipY: !!obj.flipY,
+        })
         const dispW=obj.getScaledWidth(), dispH=obj.getScaledHeight()
         const targetW=dispW*cvDst.getWidth()/cvSrc.getWidth(), targetH=dispH*cvDst.getHeight()/cvSrc.getHeight()
         const baseW=(im.width||1), baseH=(im.height||1)
@@ -454,7 +501,7 @@ export default function Editor(){
         cvDst.add(im); cvDst.requestRenderAll(); clones.push({page:i,id:im.__scannyId})
       }
     }
-    if(clones.length){ setUndoStack(stk=>[...stk,{type:'apply_all',clones}]); scheduleSaveDraft(); toast('Объект продублирован на все страницы','success') }
+    if(clones.length){ setUndoStack(stk=>[...stk,{type:'apply_all',clones}]); scheduleSaveDraft(400); toast('Объект продублирован на все страницы','success') }
   }
 
   function pickDocument(){ docFileRef.current?.click() }
@@ -466,11 +513,11 @@ export default function Editor(){
     setLoading(true)
     try{
       // гарантируем наличие client_id
-      let curDocId = docId
+      let curDocId = docIdRef.current
       if (!curDocId) { curDocId = randDocId(); setDocId(curDocId) }
 
       let addedPages = 0
-      let initialName = fileName
+      let initialName = fileNameRef.current
 
       for(const f of files){
         const ext=(f.name.split('.').pop()||'').toLowerCase()
@@ -496,11 +543,11 @@ export default function Editor(){
         }
       }
 
-      scheduleSaveDraft()
+      scheduleSaveDraft(400)
       // записываем «загрузку» в историю
       try{
         if (isAuthed && addedPages>0) {
-          const nm = sanitizeName(initialName || fileName || genDefaultName())
+          const nm = sanitizeName(initialName || fileNameRef.current || genDefaultName())
           await AuthAPI.recordUpload(curDocId, nm, addedPages)
         }
       }catch{}
@@ -525,11 +572,11 @@ export default function Editor(){
     // eslint-disable-next-line no-undef
     const img=new fabric.Image(imgEl,{ selectable:false, evented:false })
     placeBgObject(cv,page,img)
-    scheduleSaveDraft()
+    scheduleSaveDraft(400)
     return page
   }
 
-    async function addPageFromImage(dataUrl, w, h, mime='image/png'){
+  async function addPageFromImage(dataUrl, w, h, mime='image/png'){
     await createPageFromImage(dataUrl, w, h, mime, false)
     return 1
   }
@@ -567,7 +614,7 @@ export default function Editor(){
         await setPageBackgroundFromImage(cur, slices[0]||canv.toDataURL('image/png'))
         page.meta = { type:'raster', src: slices[0]||canv.toDataURL('image/png'), w: PAGE_W, h: PAGE_H }
       }else toast('Этот формат не поддерживается','error')
-      scheduleSaveDraft()
+      scheduleSaveDraft(400)
     }catch(e){ toast(e.message||'Не удалось назначить страницу','error') }
     finally{ setLoading(false) }
   }
@@ -603,7 +650,7 @@ export default function Editor(){
       // eslint-disable-next-line no-undef
       const img=new fabric.Image(imgEl,{ selectable:false, evented:false })
       placeBgObject(cv,page,img)
-      scheduleSaveDraft()
+      scheduleSaveDraft(400)
     }
     return total
   }
@@ -720,7 +767,7 @@ export default function Editor(){
         img.__scannyId = uniqueObjId(); ensureDeleteControlFor(img)
         cv.add(img); cv.setActiveObject(img); cv.requestRenderAll()
         setUndoStack(stk => [...stk, { type: 'add_one', page: cur, id: img.__scannyId }])
-        scheduleSaveDraft()
+        scheduleSaveDraft(400)
       } else {
         await AuthAPI.addSign({ kind: cropType, data_url: dataUrl })
         loadLibrary()
@@ -755,7 +802,7 @@ export default function Editor(){
         img.__scannyId=uniqueObjId(); ensureDeleteControlFor(img)
         cv.add(img); cv.setActiveObject(img); cv.requestRenderAll()
         setUndoStack(stk=>[...stk,{type:'add_one',page:cur,id:img.__scannyId}])
-        scheduleSaveDraft()
+        scheduleSaveDraft(400)
       })
     })
   }
@@ -779,14 +826,26 @@ export default function Editor(){
     await ensureFabric()
     const page=pages[cur]; const cv=await ensureCanvas(page)
     // eslint-disable-next-line no-undef
-    const tb=new fabric.Textbox('Вставьте текст',{ left:Math.round(cv.getWidth()*0.1), top:Math.round(cv.getHeight()*0.15), fontSize:48, fill:'#000000', fontFamily:'Arial', fontWeight:'bold' })
+    const tb=new fabric.Textbox('Вставьте текст',{
+      left:Math.round(cv.getWidth()*0.1),
+      top:Math.round(cv.getHeight()*0.15),
+      fontSize:48, fill:'#000000',
+      fontFamily:'Arial', fontWeight:'bold',
+      width: Math.round(cv.getWidth()*0.6),
+      textAlign: 'left',
+    })
     tb.__scannyId=uniqueObjId()
     ensureDeleteControlFor(tb)
     cv.add(tb); cv.setActiveObject(tb); cv.requestRenderAll(); setPanelOpen(true)
     setUndoStack(stk=>[...stk,{type:'add_one',page:cur,id:tb.__scannyId}])
-    scheduleSaveDraft()
+    scheduleSaveDraft(400)
   }
-  async function applyPanel(){ const page=pages[cur]; const cv=page?.canvas; if(!cv) return; const obj=cv.getActiveObject(); if(!obj||obj.type!=='textbox') return; obj.set({ fontFamily:font, fontSize:fontSize, fontWeight:bold?'bold':'normal', fontStyle:italic?'italic':'normal', fill:color }); cv.requestRenderAll(); scheduleSaveDraft() }
+  async function applyPanel(){
+    const page=pages[cur]; const cv=page?.canvas; if(!cv) return; const obj=cv.getActiveObject(); if(!obj||obj.type!=='textbox') return;
+    obj.set({ fontFamily:font, fontSize:fontSize, fontWeight:bold?'bold':'normal', fontStyle:italic?'italic':'normal', fill:color })
+    cv.requestRenderAll()
+    scheduleSaveDraft(400)
+  }
   useEffect(()=>{ if(panelOpen) applyPanel() },[font,fontSize,bold,italic,color])
 
   async function rotatePage(){
@@ -795,7 +854,7 @@ export default function Editor(){
     page.landscape = !page.landscape
     fitCanvasForPage(page)
     adjustBgObject(page)
-    scheduleSaveDraft()
+    scheduleSaveDraft(400)
   }
 
   function undo(){
@@ -803,36 +862,73 @@ export default function Editor(){
     if(last.type==='add_one'){ const p=pages[last.page], cv=p?.canvas; if(cv){ const obj=cv.getObjects().find(o=>o.__scannyId===last.id); if(obj){ cv.remove(obj); cv.discardActiveObject(); cv.requestRenderAll() } } }
     else if(last.type==='apply_all'){ last.clones.forEach(({page,id})=>{ const p=pages[page], cv=p?.canvas; if(cv){ const obj=cv.getObjects().find(o=>o.__scannyId===id); if(obj){ cv.remove(obj) } cv.requestRenderAll() } }) }
     setUndoStack(stk)
-    scheduleSaveDraft()
+    scheduleSaveDraft(400)
   }
 
-  function baseName(){ const nm=(fileName||'').trim(); if(!nm){ toast('Введите название файла вверху','error'); return null } return sanitizeName(nm) }
+  function baseName(){ const nm=(fileNameRef.current||'').trim(); if(!nm){ toast('Введите название файла вверху','error'); return null } return sanitizeName(nm) }
   function freeLeft(){ return billing?.free_left ?? 0 }
+
+  // Получаем стабильный src (data:) для overlay-изображений (если было blob:)
+  async function ensureSerializableSrcForImage(obj){
+    const src = (obj._originalElement?.src || obj._element?.src || '')
+    if (src && !src.startsWith('blob:')) return src
+    try{
+      const imgEl = obj._originalElement || obj._element
+      const w = imgEl?.naturalWidth || imgEl?.width || obj.width || 1
+      const h = imgEl?.naturalHeight || imgEl?.height || obj.height || 1
+      const c = document.createElement('canvas')
+      c.width = w; c.height = h
+      const ctx = c.getContext('2d')
+      ctx.drawImage(imgEl, 0, 0, w, h)
+      return c.toDataURL('image/png')
+    }catch{
+      return src || ''
+    }
+  }
 
   // ----- Сериализация/восстановление черновика c client_id и объектами -----
   async function serializeDocument(){
+    const pagesLocal = pagesRef.current || []
     const outPages = []
-    for (let i=0; i<pages.length; i++){
-      const p = pages[i]
+    for (let i=0; i<pagesLocal.length; i++){
+      const p = pagesLocal[i]
       const cv = await ensureCanvas(p)
       const meta = p.meta || {}
-      const overlays = (cv.getObjects()||[]).filter(o=>o!==p.bgObj).map(o=>{
+      const rawObjs = (cv.getObjects()||[]).filter(o=>o!==p.bgObj)
+      const overlays = []
+      for (const o of rawObjs){
         if (o.type === 'textbox') {
-          return {
-            t:'tb', text:o.text||'', left:o.left||0, top:o.top||0, scaleX:1, scaleY:1,
-            angle:o.angle||0, fontFamily:o.fontFamily||'Arial', fontSize:o.fontSize||42, fontStyle:o.fontStyle||'normal', fontWeight:o.fontWeight||'normal', fill:o.fill||'#000'
-          }
+          overlays.push({
+            t:'tb',
+            text:o.text||'',
+            left:o.left||0,
+            top:o.top||0,
+            angle:o.angle||0,
+            fontFamily:o.fontFamily||'Arial',
+            fontSize:o.fontSize||42,
+            fontStyle:o.fontStyle||'normal',
+            fontWeight:o.fontWeight||'normal',
+            fill:o.fill||'#000',
+            width: Math.round(o.width || 200),
+            textAlign: o.textAlign || 'left',
+            scaleX: o.scaleX || 1,
+            scaleY: o.scaleY || 1,
+          })
         } else if (o.type === 'image') {
-          const src = (o._originalElement?.src || o._element?.src || '')
-          const baseW = o._originalElement?.naturalWidth || o._originalElement?.width || o.width || 1
-          const baseH = o._originalElement?.naturalHeight || o._originalElement?.height || o.height || 1
-          const dispW = o.getScaledWidth()
-          const dispH = o.getScaledHeight()
-          const sUni = Math.min(dispW/(baseW||1), dispH/(baseH||1))
-          return { t:'im', src, left:o.left||0, top:o.top||0, scaleX:sUni, scaleY:sUni, angle:o.angle||0 }
+          const src = await ensureSerializableSrcForImage(o)
+          overlays.push({
+            t:'im',
+            src,
+            left:o.left||0,
+            top:o.top||0,
+            scaleX:o.scaleX||1,
+            scaleY:o.scaleY||1,
+            angle:o.angle||0,
+            flipX: !!o.flipX,
+            flipY: !!o.flipY,
+          })
         }
-        return null
-      }).filter(Boolean)
+      }
 
       if (meta.type === 'pdf' && meta.bytes) {
         outPages.push({ type:'pdf', index: meta.index||0, bytes_b64: u8ToB64(meta.bytes), landscape: !!p.landscape, overlays })
@@ -843,7 +939,7 @@ export default function Editor(){
         outPages.push({ type:'raster', src:url, w:cv.getWidth()*2, h:cv.getHeight()*2, mime:'image/png', landscape: !!p.landscape, overlays })
       }
     }
-    return { client_id: docId || null, name: fileName || genDefaultName(), pages: outPages }
+    return { client_id: docIdRef.current || null, name: fileNameRef.current || genDefaultName(), pages: outPages }
   }
 
   async function restoreDocumentFromDraft(draft){
@@ -899,14 +995,25 @@ export default function Editor(){
         for (const o of overlays){
           if (o.t === 'tb'){
             // eslint-disable-next-line no-undef
-            const tb=new fabric.Textbox(o.text||'',{ left:o.left||0, top:o.top||0, angle:o.angle||0, fontFamily:o.fontFamily||'Arial', fontSize:o.fontSize||42, fontStyle:o.fontStyle||'normal', fontWeight:o.fontWeight||'normal', fill:o.fill||'#000' })
+            const tb=new fabric.Textbox(o.text||'',{
+              left:o.left||0, top:o.top||0, angle:o.angle||0,
+              fontFamily:o.fontFamily||'Arial', fontSize:o.fontSize||42,
+              fontStyle:o.fontStyle||'normal', fontWeight:o.fontWeight||'normal',
+              fill:o.fill||'#000',
+              width: Math.max(20, Number(o.width||200)),
+              textAlign: o.textAlign || 'left',
+              scaleX: Number(o.scaleX||1),
+              scaleY: Number(o.scaleY||1),
+            })
             tb.__scannyId=uniqueObjId(); ensureDeleteControlFor(tb); cv.add(tb)
           } else if (o.t === 'im' && o.src){
             const imgEl = await loadImageEl(o.src)
             // eslint-disable-next-line no-undef
-            const im = new fabric.Image(imgEl,{ left:o.left||0, top:o.top||0, angle:o.angle||0 })
-            const sUni = Number(o.scaleX || o.scaleY || 1)
-            im.set({ scaleX:sUni, scaleY:sUni })
+            const im = new fabric.Image(imgEl,{
+              left:o.left||0, top:o.top||0, angle:o.angle||0,
+              flipX: !!o.flipX, flipY: !!o.flipY,
+              scaleX: Number(o.scaleX||1), scaleY: Number(o.scaleY||1),
+            })
             im.__scannyId=uniqueObjId(); ensureDeleteControlFor(im); cv.add(im)
           }
         }
@@ -917,333 +1024,364 @@ export default function Editor(){
     }
   }
 
-  // ----- Экспорт оверлея как PNG с повышенной чёткостью -----
-  async function exportOverlayAsPNGBytes(page, cv, targetW, targetH){
-    if (!cv) return null
-    const objs = cv.getObjects() || []
-    const hasOverlay = objs.some(o => o !== page.bgObj)
-    if (!hasOverlay) return null
-    const wasBGVisible = !!page.bgObj?.visible
-    const prevBGColor = cv.backgroundColor
-    try{
-      if (page.bgObj) page.bgObj.visible = false
-      cv.setBackgroundColor('rgba(0,0,0,0)', cv.requestRenderAll.bind(cv))
-      cv.discardActiveObject(); cv.requestRenderAll()
-      const mul = computeMultiplierForOverlay(cv, page, targetW, targetH)
-      const url = cv.toDataURL({ format:'png', multiplier: mul })
-      const r = await fetch(url); const ab = await r.arrayBuffer()
-      return new Uint8Array(ab)
-    } finally {
-      if (page.bgObj) page.bgObj.visible = wasBGVisible
-      cv.setBackgroundColor(prevBGColor || '#fff', cv.requestRenderAll.bind(cv))
-      cv.requestRenderAll()
+  // src/pages/Editor.jsx (продолжение файла)
+
+// ----- Экспорт оверлея как PNG с повышенной чёткостью -----
+async function exportOverlayAsPNGBytes(page, cv, targetW, targetH){
+  if (!cv) return null
+  const objs = cv.getObjects() || []
+  const hasOverlay = objs.some(o => o !== page.bgObj)
+  if (!hasOverlay) return null
+  const wasBGVisible = !!page.bgObj?.visible
+  const prevBGColor = cv.backgroundColor
+  try{
+    if (page.bgObj) page.bgObj.visible = false
+    cv.setBackgroundColor('rgba(0,0,0,0)', cv.requestRenderAll.bind(cv))
+    cv.discardActiveObject(); cv.requestRenderAll()
+    const mul = computeMultiplierForOverlay(cv, page, targetW, targetH)
+    const url = cv.toDataURL({ format:'png', multiplier: mul })
+    const r = await fetch(url); const ab = await r.arrayBuffer()
+    return new Uint8Array(ab)
+  } finally {
+    if (page.bgObj) page.bgObj.visible = wasBGVisible
+    cv.setBackgroundColor(prevBGColor || '#fff', cv.requestRenderAll.bind(cv))
+    cv.requestRenderAll()
+  }
+}
+
+async function exportJPG(){
+  try{
+    if(!hasDoc) return
+    const bn=baseName(); if(!bn) return
+    const count=pages.length
+    if(freeLeft()<count){ setPlan('single'); setPayOpen(true); return }
+    await ensureJSZip()
+    // eslint-disable-next-line no-undef
+    const zip=new JSZip()
+    for(let i=0;i<pages.length;i++){
+      const p=pages[i], cv=await ensureCanvas(p)
+      let mult = 3
+      if (p.bgObj && p.meta && (p.meta.type==='image' || p.meta.type==='raster')) {
+        const s = Math.max(1e-6, p.bgObj.scaleX || p.bgObj.scaleY || 1)
+        mult = Math.max(mult, Math.min(6, Math.ceil(1 / s)))
+      } else if (p.meta?.type === 'pdf') {
+        mult = Math.max(mult, 4)
+      }
+      const url=cv.toDataURL({format:'jpeg',quality:0.95, multiplier: mult})
+      const res=await fetch(url), blob=await res.blob()
+      zip.file(`${bn}-p${i+1}.jpg`,blob)
+    }
+    const out=await zip.generateAsync({type:'blob'})
+    const a=document.createElement('a'); const href=URL.createObjectURL(out); a.href=href; a.download=`${bn}.zip`; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(href),1500)
+    try{ AuthAPI.recordDownload('jpg', pages.length, bn, 'free').catch(()=>{}) }catch{}
+    toast(`Скачано страниц: ${count}`,'info')
+  }catch(e){ console.error(e); toast(e.message||'Не удалось выгрузить JPG','error') }
+}
+
+async function exportPDF(){
+  try{
+    if(!hasDoc) return
+    const bn=baseName(); if(!bn) return
+    const count=pages.length
+    if(freeLeft()<count){ setPlan('single'); setPayOpen(true); return }
+    const PDFLib = await ensurePDFLib()
+    const out = await PDFLib.PDFDocument.create()
+    for (let i=0;i<pages.length;i++){
+      const p = pages[i]; const cv = await ensureCanvas(p)
+      if (p.meta?.type === 'pdf') {
+        const srcDoc = await PDFLib.PDFDocument.load(p.meta.bytes)
+        const [copied] = await out.copyPages(srcDoc, [p.meta.index])
+        const pageRef = out.addPage(copied)
+        const { width, height } = pageRef.getSize()
+        const overlayBytes = await exportOverlayAsPNGBytes(p, cv, Math.round(width), Math.round(height))
+        if (overlayBytes) {
+          const png = await out.embedPng(overlayBytes)
+          pageRef.drawImage(png, { x:0, y:0, width, height })
+        }
+      } else if (p.meta?.type === 'image' || p.meta?.type === 'raster') {
+        const iw = Math.max(1, p.meta.w || PAGE_W), ih = Math.max(1, p.meta.h || PAGE_H)
+        const pageRef = out.addPage([iw, ih])
+        const bytes = new Uint8Array(await (await fetch(p.meta.src)).arrayBuffer())
+        let img
+        try{
+          img = p.meta.mime && /jpe?g/i.test(p.meta.mime)
+            ? await out.embedJpg(bytes)
+            : await out.embedPng(bytes)
+        }catch{
+          img = await out.embedPng(bytes)
+        }
+        pageRef.drawImage(img, { x:0, y:0, width:iw, height:ih })
+        const overlayBytes = await exportOverlayAsPNGBytes(p, cv, iw, ih)
+        if (overlayBytes) {
+          const png = await out.embedPng(overlayBytes)
+          pageRef.drawImage(png, { x:0, y:0, width:iw, height:ih })
+        }
+      } else {
+        const w = cv.getWidth(), h = cv.getHeight()
+        const mul = 3
+        const url = cv.toDataURL({ format:'png', multiplier: mul })
+        const bytes = new Uint8Array(await (await fetch(url)).arrayBuffer())
+        const pageRef = out.addPage([w*mul, h*mul])
+        const png = await out.embedPng(bytes)
+        pageRef.drawImage(png, { x:0, y:0, width:w*mul, height:h*mul })
+      }
+    }
+    const pdfBytes = await out.save()
+    const blob = new Blob([pdfBytes], { type: 'application/pdf' })
+    const a=document.createElement('a'); const href=URL.createObjectURL(blob); a.href=href; a.download=`${bn}.pdf`; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(href),1500)
+    try{ AuthAPI.recordDownload('pdf', pages.length, bn, 'free').catch(()=>{}) }catch{}
+    toast(`Скачано страниц: ${count}`,'info')
+  }catch(e){ console.error(e); toast(e.message||'Не удалось выгрузить PDF','error') }
+}
+
+function onCanvasDrop(e){
+  e.preventDefault(); const dt=e.dataTransfer; if(!dt) return
+  const types=Array.from(dt.types||[])
+  if(types.includes('application/x-sign-url')){ const url=dt.getData('application/x-sign-url'); if(url&&url!=='add') placeFromLib(url); return }
+  const fs=Array.from(dt.files||[]); if(fs.length) handleFiles(fs)
+}
+
+async function applyPromo(){
+  try{
+    if(!promo){ setPromoPercent(0); setPromoError(''); return }
+    const res=await AuthAPI.validatePromo(promo)
+    const percent=Number(res?.percent||0)
+    if(percent>0){ setPromoPercent(percent); setPromoError('') }
+    else { setPromoPercent(0); setPromoError('Промокод не найден') }
+  }catch(e){ setPromoPercent(0); setPromoError(e.message||'Ошибка промокода') }
+}
+async function startPurchase(){
+  try{
+    const r=await AuthAPI.startPurchase(plan, promo||'')
+    if(r?.url){ window.open(r.url,'_blank'); setPayOpen(false) }
+    else toast('Не удалось сформировать оплату','error')
+  }catch(e){ toast(e.message||'Ошибка оплаты','error') }
+}
+
+// Сохраняем черновик при переименовании (если есть документ)
+useEffect(()=>{ if(hasDoc) scheduleSaveDraft(600) },[fileName, hasDoc])
+
+// Поддержка удаления по клавише Delete/Backspace (кроме ввода в поля/textarea)
+useEffect(()=>{
+  const onKey=(e)=>{
+    const tag = String(e.target?.tagName || '').toLowerCase()
+    const isTyping = tag==='input' || tag==='textarea' || e.target?.isContentEditable
+    if(isTyping) return
+    if((e.key==='Delete' || e.key==='Backspace') && pages[cur]?.canvas){
+      const cv = pages[cur].canvas
+      const obj = cv.getActiveObject()
+      if(obj){
+        e.preventDefault()
+        cv.remove(obj); cv.discardActiveObject(); cv.requestRenderAll()
+        scheduleSaveDraft(300)
+        toast('Объект удалён','success')
+      }
     }
   }
+  document.addEventListener('keydown', onKey)
+  return ()=>document.removeEventListener('keydown', onKey)
+},[pages, cur])
 
-  async function exportJPG(){
-    try{
-      if(!hasDoc) return
-      const bn=baseName(); if(!bn) return
-      const count=pages.length
-      if(freeLeft()<count){ setPlan('single'); setPayOpen(true); return }
-      await ensureJSZip()
-      // eslint-disable-next-line no-undef
-      const zip=new JSZip()
-      for(let i=0;i<pages.length;i++){
-        const p=pages[i], cv=await ensureCanvas(p)
-        let mult = 3
-        if (p.bgObj && p.meta && (p.meta.type==='image' || p.meta.type==='raster')) {
-          const s = Math.max(1e-6, p.bgObj.scaleX || p.bgObj.scaleY || 1)
-          mult = Math.max(mult, Math.min(6, Math.ceil(1 / s)))
-        } else if (p.meta?.type === 'pdf') {
-          mult = Math.max(mult, 4)
-        }
-        const url=cv.toDataURL({format:'jpeg',quality:0.95, multiplier: mult})
-        const res=await fetch(url), blob=await res.blob()
-        zip.file(`${bn}-p${i+1}.jpg`,blob)
-      }
-      const out=await zip.generateAsync({type:'blob'})
-      const a=document.createElement('a'); const href=URL.createObjectURL(out); a.href=href; a.download=`${bn}.zip`; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(href),1500)
-      try{ AuthAPI.recordDownload('jpg', pages.length, bn, 'free').catch(()=>{}) }catch{}
-      toast(`Скачано страниц: ${count}`,'info')
-    }catch(e){ console.error(e); toast(e.message||'Не удалось выгрузить JPG','error') }
-  }
+// UI
+const hasActive = hasDoc && !!(pages[cur]?.canvas?.getActiveObject())
 
-  async function exportPDF(){
-    try{
-      if(!hasDoc) return
-      const bn=baseName(); if(!bn) return
-      const count=pages.length
-      if(freeLeft()<count){ setPlan('single'); setPayOpen(true); return }
-      const PDFLib = await ensurePDFLib()
-      const out = await PDFLib.PDFDocument.create()
-      for (let i=0;i<pages.length;i++){
-        const p = pages[i]; const cv = await ensureCanvas(p)
-        if (p.meta?.type === 'pdf') {
-          const srcDoc = await PDFLib.PDFDocument.load(p.meta.bytes)
-          const [copied] = await out.copyPages(srcDoc, [p.meta.index])
-          const pageRef = out.addPage(copied)
-          const { width, height } = pageRef.getSize()
-          const overlayBytes = await exportOverlayAsPNGBytes(p, cv, Math.round(width), Math.round(height))
-          if (overlayBytes) {
-            const png = await out.embedPng(overlayBytes)
-            pageRef.drawImage(png, { x:0, y:0, width, height })
-          }
-        } else if (p.meta?.type === 'image' || p.meta?.type === 'raster') {
-          const iw = Math.max(1, p.meta.w || PAGE_W), ih = Math.max(1, p.meta.h || PAGE_H)
-          const pageRef = out.addPage([iw, ih])
-          const bytes = new Uint8Array(await (await fetch(p.meta.src)).arrayBuffer())
-          let img
-          try{
-            img = p.meta.mime && /jpe?g/i.test(p.meta.mime)
-              ? await out.embedJpg(bytes)
-              : await out.embedPng(bytes)
-          }catch{
-            img = await out.embedPng(bytes)
-          }
-          pageRef.drawImage(img, { x:0, y:0, width:iw, height:ih })
-          const overlayBytes = await exportOverlayAsPNGBytes(p, cv, iw, ih)
-          if (overlayBytes) {
-            const png = await out.embedPng(overlayBytes)
-            pageRef.drawImage(png, { x:0, y:0, width:iw, height:ih })
-          }
-        } else {
-          const w = cv.getWidth(), h = cv.getHeight()
-          const mul = 3
-          const url = cv.toDataURL({ format:'png', multiplier: mul })
-          const bytes = new Uint8Array(await (await fetch(url)).arrayBuffer())
-          const pageRef = out.addPage([w*mul, h*mul])
-          const png = await out.embedPng(bytes)
-          pageRef.drawImage(png, { x:0, y:0, width:w*mul, height:h*mul })
-        }
-      }
-      const pdfBytes = await out.save()
-      const blob = new Blob([pdfBytes], { type: 'application/pdf' })
-      const a=document.createElement('a'); const href=URL.createObjectURL(blob); a.href=href; a.download=`${bn}.pdf`; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(href),1500)
-      try{ AuthAPI.recordDownload('pdf', pages.length, bn, 'free').catch(()=>{}) }catch{}
-      toast(`Скачано страниц: ${count}`,'info')
-    }catch(e){ console.error(e); toast(e.message||'Не удалось выгрузить PDF','error') }
-  }
-
-  function onCanvasDrop(e){
-    e.preventDefault(); const dt=e.dataTransfer; if(!dt) return
-    const types=Array.from(dt.types||[])
-    if(types.includes('application/x-sign-url')){ const url=dt.getData('application/x-sign-url'); if(url&&url!=='add') placeFromLib(url); return }
-    const fs=Array.from(dt.files||[]); if(fs.length) handleFiles(fs)
-  }
-
-  async function applyPromo(){
-    try{
-      if(!promo){ setPromoPercent(0); setPromoError(''); return }
-      const res=await AuthAPI.validatePromo(promo)
-      const percent=Number(res?.percent||0)
-      if(percent>0){ setPromoPercent(percent); setPromoError('') }
-      else { setPromoPercent(0); setPromoError('Промокод не найден') }
-    }catch(e){ setPromoPercent(0); setPromoError(e.message||'Ошибка промокода') }
-  }
-  async function startPurchase(){
-    try{
-      const r=await AuthAPI.startPurchase(plan, promo||'')
-      if(r?.url){ window.open(r.url,'_blank'); setPayOpen(false) }
-      else toast('Не удалось сформировать оплату','error')
-    }catch(e){ toast(e.message||'Ошибка оплаты','error') }
-  }
-
-  return (
-    <div className="doc-editor page">
-      <div className="ed-top" style={{display: isMobile && hasDoc ? undefined : 'none'}}>
-        <button className="ed-menu-btn" aria-label="Ещё" onClick={()=>setMenuMoreOpen(o=>!o)}><img src={icMore} alt=""/></button>
-        <div className="ed-docid" style={{flex:1,padding:'0 8px'}}><input className="ed-filename" placeholder="Название файла при скачивании" value={fileName} onChange={e=>setFileName(sanitizeName(e.target.value))}/></div>
-        <div className="ed-top-right"></div>
-        {menuMoreOpen && (
-          <div className="ed-menu" ref={moreRef}>
-            <button onClick={rotatePage}><img src={icRotate} alt="" style={{width:18,height:18,marginRight:8}}/>Повернуть страницу</button>
-            <button className={pages.length>1?'':'disabled'} onClick={()=>removePage()}><img src={icDelete} alt="" style={{width:18,height:18,marginRight:8}}/>Удалить страницу</button>
-            <button className={hasDoc?'':'disabled'} onClick={removeDocument}><img src={icDelete} alt="" style={{width:18,height:18,marginRight:8}}/>Удалить документ</button>
-          </div>
-        )}
-      </div>
-
-      {panelOpen && (
-        <div className="ed-toolbar">
-          <select value={font} onChange={e=>setFont(e.target.value)}>{FONTS.map(f=><option key={f} value={f}>{f}</option>)}</select>
-          <div className="sep"/><button onClick={()=>setFontSize(s=>Math.max(6,s-2))}>−</button><span className="val">{fontSize}</span><button onClick={()=>setFontSize(s=>Math.min(300,s+2))}>+</button>
-          <div className="sep"/><input type="color" value={color} onChange={e=>setColor(e.target.value)} title="Цвет текста"/>
-          <button className={bold?'toggled':''} onClick={()=>setBold(b=>!b)}><b>B</b></button>
-          <button className={italic?'toggled':''} onClick={()=>setItalic(i=>!i)}><i>I</i></button>
+return (
+  <div className="doc-editor page">
+    <div className="ed-top" style={{display: isMobile && hasDoc ? undefined : 'none'}}>
+      <button className="ed-menu-btn" aria-label="Ещё" onClick={()=>setMenuMoreOpen(o=>!o)}><img src={icMore} alt=""/></button>
+      <div className="ed-docid" style={{flex:1,padding:'0 8px'}}><input className="ed-filename" placeholder="Название файла при скачивании" value={fileName} onChange={e=>setFileName(sanitizeName(e.target.value))}/></div>
+      <div className="ed-top-right"></div>
+      {menuMoreOpen && (
+        <div className="ed-menu" ref={moreRef}>
+          <button onClick={rotatePage}><img src={icRotate} alt="" style={{width:18,height:18,marginRight:8}}/>Повернуть страницу</button>
+          <button className={pages.length>1?'':'disabled'} onClick={()=>removePage()}><img src={icDelete} alt="" style={{width:18,height:18,marginRight:8}}/>Удалить страницу</button>
+          <button className={hasActive?'':'disabled'} onClick={()=>{ if(hasActive) applyToAllPages() }}><img src={icAddPage} alt="" style={{width:18,height:18,marginRight:8}}/>На все страницы</button>
+          <button className={hasDoc?'':'disabled'} onClick={removeDocument}><img src={icDelete} alt="" style={{width:18,height:18,marginRight:8}}/>Удалить документ</button>
         </div>
       )}
+    </div>
 
-      <div className="ed-body">
-        <aside className="ed-left">
-          <div className="ed-tools">
-            <button className={`ed-tool ${hasDoc?'':'disabled'}`} onClick={addText}><img className="ico" src={icText} alt=""/><span>Добавить текст</span></button>
-            <button className="ed-tool" onClick={pickSignature}><img className="ico" src={icSign} alt=""/><span>Загрузить подпись</span></button>
-          </div>
-          <div className="ed-sign-list">
-            <div className="thumb add" draggable onDragStart={(e)=>startDragSign('add',e)} onClick={pickSignature}><img src={icPlus} alt="+" style={{width:22,height:22,opacity:.6}}/></div>
-            {libLoading && <div style={{gridColumn:'1 / -1',opacity:.7,padding:8}}>Загрузка…</div>}
-            {signLib.map(item=>(
-              <div key={item.id} className="thumb" draggable onDragStart={(e)=>startDragSign(item.url,e)}>
-                <img src={item.url} alt="" onClick={()=>placeFromLib(item.url)} style={{width:'100%',height:'100%',objectFit:'contain',cursor:'pointer'}}/>
-                <button className="thumb-x" onClick={()=>removeFromLib(item)}>×</button>
-              </div>
-            ))}
-          </div>
-        </aside>
+    {panelOpen && (
+      <div className="ed-toolbar">
+        <select value={font} onChange={e=>setFont(e.target.value)}>{FONTS.map(f=><option key={f} value={f}>{f}</option>)}</select>
+        <div className="sep"/><button onClick={()=>setFontSize(s=>Math.max(6,s-2))}>−</button><span className="val">{fontSize}</span><button onClick={()=>setFontSize(s=>Math.min(300,s+2))}>+</button>
+        <div className="sep"/><input type="color" value={color} onChange={e=>setColor(e.target.value)} title="Цвет текста"/>
+        <button className={bold?'toggled':''} onClick={()=>setBold(b=>!b)}><b>B</b></button>
+        <button className={italic?'toggled':''} onClick={()=>setItalic(i=>!i)}><i>I</i></button>
+      </div>
+    )}
 
-        <section className="ed-center">
-          <div className="ed-namebar desktop-only">
-            <input className="ed-filename" placeholder="Название файла при скачивании" value={fileName} onChange={e=>setFileName(sanitizeName(e.target.value))}/>
-          </div>
+    <div className="ed-body">
+      <aside className="ed-left">
+        <div className="ed-tools">
+          <button className={`ed-tool ${hasDoc?'':'disabled'}`} onClick={addText}><img className="ico" src={icText} alt=""/><span>Добавить текст</span></button>
+          <button className="ed-tool" onClick={pickSignature}><img className="ico" src={icSign} alt=""/><span>Загрузить подпись</span></button>
+        </div>
+        <div className="ed-sign-list">
+          <div className="thumb add" draggable onDragStart={(e)=>startDragSign('add',e)} onClick={pickSignature}><img src={icPlus} alt="+" style={{width:22,height:22,opacity:.6}}/></div>
+          {libLoading && <div style={{gridColumn:'1 / -1',opacity:.7,padding:8}}>Загрузка…</div>}
+          {signLib.map(item=>(
+            <div key={item.id} className="thumb" draggable onDragStart={(e)=>startDragSign(item.url,e)}>
+              <img src={item.url} alt="" onClick={()=>placeFromLib(item.url)} style={{width:'100%',height:'100%',objectFit:'contain',cursor:'pointer'}}/>
+              <button className="thumb-x" onClick={()=>removeFromLib(item)}>×</button>
+            </div>
+          ))}
+        </div>
+      </aside>
 
-          <div className="ed-canvas-wrap" ref={canvasWrapRef} onDragOver={(e)=>e.preventDefault()} onDrop={onCanvasDrop}>
-            {pages.map((p,idx)=>(
-              <div key={p.id} className={`ed-canvas ${idx===cur?'active':''}`}>
-                <button className="ed-page-x desktop-only" title="Удалить эту страницу" onClick={()=>removePage(idx)}>×</button>
-                <canvas id={p.elId}/>
-              </div>
-            ))}
-            {!hasDoc && (
-              <div className="ed-dropzone" onClick={pickDocument}>
-                <img src={icDocAdd} alt="" style={{width:140,height:'auto',opacity:.9}}/>
-                <div className="dz-title">Загрузите документы</div>
-                <div className="dz-sub">Можно перетащить их в это поле</div>
-                <div className="dz-types">JPG, JPEG, PNG, PDF, DOC, DOCX, XLS, XLSX</div>
-              </div>
-            )}
-            {loading && <div className="ed-canvas-loading"><div className="spinner" aria-hidden="true"></div>Загрузка…</div>}
-          </div>
+      <section className="ed-center">
+        <div className="ed-namebar desktop-only">
+          <input className="ed-filename" placeholder="Название файла при скачивании" value={fileName} onChange={e=>setFileName(sanitizeName(e.target.value))}/>
+        </div>
 
-          <div className="ed-pages desktop-only">
-            {pages.map((p,i)=>(<div key={p.id} className={`ed-page-btn ${i===cur?'active':''}`} onClick={()=>setCur(i)}>{i+1}</div>))}
-            <button className="ed-page-add" onClick={pickDocument}><img src={icPlus} alt="+"/></button>
-          </div>
-
-          {isMobile && (
-            <div className="ed-bottom mobile-only">
-              <button className={`fab ${hasDoc?'':'disabled'}`} onClick={()=>{ if(!hasDoc){ return } setMenuAddOpen(o=>!o) }} title="Добавить">
-                <img src={icPlus} alt="+" />
-              </button>
-
-              <div className="ed-pager">
-                <button onClick={()=>setCur(i=>Math.max(0, i-1))} disabled={!canPrev} title="Предыдущая">
-                  <img src={icPrev} alt="Prev" />
-                </button>
-                <span className="pg">{hasDoc ? `${cur+1}/${pages.length}` : '0/0'}</span>
-                <button onClick={()=>{ if(canNext) setCur(i=>Math.min(pages.length-1, i+1)); else pickDocument() }} title={canNext ? 'Следующая' : 'Добавить документ'}>
-                  {canNext
-                    ? <img src={icPrev} alt="Next" style={{ transform:'rotate(180deg)' }} />
-                    : <img src={icPlus} alt="+" />
-                  }
-                </button>
-              </div>
-
-              <button className={`fab ${(!hasDoc)?'disabled':''}`} onClick={()=>{ if(!hasDoc) return; setMenuDownloadOpen(o=>!o) }} title="Скачать">
-                <img src={icDownload} alt="↓" />
-              </button>
+        <div className="ed-canvas-wrap" ref={canvasWrapRef} onDragOver={(e)=>e.preventDefault()} onDrop={onCanvasDrop}>
+          {pages.map((p,idx)=>(
+            <div key={p.id} className={`ed-canvas ${idx===cur?'active':''}`}>
+              <button className="ed-page-x desktop-only" title="Удалить эту страницу" onClick={()=>removePage(idx)}>×</button>
+              <canvas id={p.elId}/>
+            </div>
+          ))}
+          {!hasDoc && (
+            <div className="ed-dropzone" onClick={pickDocument}>
+              <img src={icDocAdd} alt="" style={{width:140,height:'auto',opacity:.9}}/>
+              <div className="dz-title">Загрузите документы</div>
+              <div className="dz-sub">Можно перетащить их в это поле</div>
+              <div className="dz-types">JPG, JPEG, PNG, PDF, DOC, DOCX, XLS, XLSX</div>
             </div>
           )}
-        </section>
-
-        <aside className="ed-right">
-          <div className="ed-actions">
-            <button className={`ed-action ${hasDoc?'':''}`} onClick={removeDocument}><img src={icDelete} alt="" style={{width:18,height:18,marginRight:8}}/>Удалить документ</button>
-            <button className={`ed-action ${canUndo?'':'disabled'}`} onClick={undo}><img src={icUndo} alt="" style={{width:18,height:18,marginRight:8}}/>Отменить</button>
-            <button className={`ed-action ${hasDoc?'':'disabled'}`} onClick={rotatePage}><img src={icRotate} alt="" style={{width:18,height:18,marginRight:8}}/>Повернуть страницу</button>
-            <button className={`ed-action ${hasDoc && !!(pages[cur]?.canvas?.getActiveObject()) ? '' : 'disabled'}`} onClick={applyToAllPages}><img src={icAddPage} alt="" style={{width:18,height:18,marginRight:8}}/>На все страницы</button>
-          </div>
-
-          <div className="ed-download">
-            <div className="ed-dl-title">Скачать бесплатно:</div>
-            <div className="ed-dl-row">
-              <button className={`btn btn-lite ${(!hasDoc)?'disabled':''}`} onClick={exportJPG}><img src={icJpgFree} alt="" style={{width:18,height:18,marginRight:8}}/>JPG</button>
-              <button className={`btn btn-lite ${(!hasDoc)?'disabled':''}`} onClick={exportPDF}><img src={icPdfFree} alt="" style={{width:18,height:18,marginRight:8}}/>PDF</button>
-            </div>
-            <div className="ed-dl-title" style={{marginTop:10}}>Купить:</div>
-            <div className="ed-dl-row ed-dl-row-paid">
-              <button className={`btn ${(!hasDoc)?'disabled':''}`} onClick={()=>{ if(hasDoc){ setPlan('single'); setPayOpen(true) } }}><img src={icJpgPaid} alt="" style={{width:18,height:18,marginRight:8}}/>JPG</button>
-              <button className={`btn ${(!hasDoc)?'disabled':''}`} onClick={()=>{ if(hasDoc){ setPlan('single'); setPayOpen(true) } }}><img src={icPdfPaid} alt="" style={{width:18,height:18,marginRight:8}}/>PDF</button>
-            </div>
-          </div>
-        </aside>
-      </div>
-
-      {menuAddOpen && (
-        <div className="ed-sheet" ref={sheetRef}>
-          <button className={hasDoc?'':'disabled'} onClick={()=>{ if(hasDoc){ setMenuAddOpen(false); addText() } }}><img src={icText} alt="" style={{width:18,height:18,marginRight:10}}/>Добавить текст</button>
-          <button onClick={()=>{ setMenuAddOpen(false); pickSignature() }}><img src={icSign} alt="" style={{width:18,height:18,marginRight:10}}/>Добавить подпись/печать</button>
-          <button onClick={()=>{ setMenuAddOpen(false); pickDocument() }}><img src={icDocAdd} alt="" style={{width:18,height:18,marginRight:10}}/>Добавить документ/страницу</button>
+          {loading && <div className="ed-canvas-loading"><div className="spinner" aria-hidden="true"></div>Загрузка…</div>}
         </div>
-      )}
 
-      {menuDownloadOpen && (
-        <div className="ed-sheet" ref={dlRef}>
-          <button className={hasDoc?'':'disabled'} onClick={()=>{ if(hasDoc){ setMenuDownloadOpen(false); setPlan('single'); setPayOpen(true) } }}><img src={icJpgPaid} alt="" style={{width:18,height:18,marginRight:10}}/>Купить JPG</button>
-          <button className={hasDoc?'':'disabled'} onClick={()=>{ if(hasDoc){ setMenuDownloadOpen(false); setPlan('single'); setPayOpen(true) } }}><img src={icPdfPaid} alt="" style={{width:18,height:18,marginRight:10}}/>Купить PDF</button>
-          <button className={hasDoc?'':'disabled'} onClick={()=>{ if(hasDoc){ setMenuDownloadOpen(false); exportJPG() } }}><img src={icJpgFree} alt="" style={{width:18,height:18,marginRight:10}}/>Скачать бесплатно JPG</button>
-          <button className={hasDoc?'':'disabled'} onClick={()=>{ if(hasDoc){ setMenuDownloadOpen(false); exportPDF() } }}><img src={icPdfFree} alt="" style={{width:18,height:18,marginRight:10}}/>Скачать бесплатно PDF</button>
+        <div className="ed-pages desktop-only">
+          {pages.map((p,i)=>(<div key={p.id} className={`ed-page-btn ${i===cur?'active':''}`} onClick={()=>setCur(i)}>{i+1}</div>))}
+          <button className="ed-page-add" onClick={pickDocument}><img src={icPlus} alt="+"/></button>
         </div>
-      )}
 
-      {(menuAddOpen || menuDownloadOpen || menuMoreOpen) && <div className="ed-dim" onClick={()=>{ setMenuAddOpen(false); setMenuDownloadOpen(false); setMenuMoreOpen(false) }}/>}
-      {cropOpen && (
-        <div className="modal-overlay" onClick={()=>setCropOpen(false)}>
-          <div className="modal crop-modal" onClick={e=>e.stopPropagation()}>
-            <button className="modal-x" onClick={()=>setCropOpen(false)}>×</button>
-            <h3 className="modal-title">1. Выделите область</h3>
-            <div className="crop-row">
-              <select value={cropType} onChange={e=>setCropType(e.target.value)}>
-                <option value="signature">подпись</option>
-                <option value="sig_seal">подпись + печать</option>
-                <option value="round_seal">круглая печать</option>
-              </select>
+        {isMobile && (
+          <div className="ed-bottom mobile-only">
+            {/* ЛЕВАЯ FAB — теперь иконка добавления документа (doc-add) */}
+            <button className={`fab ${hasDoc?'':'disabled'}`} onClick={()=>{ if(!hasDoc){ return } setMenuAddOpen(o=>!o) }} title="Добавить">
+              <img src={icDocAdd} alt="Добавить" />
+            </button>
+
+            <div className="ed-pager">
+              <button onClick={()=>setCur(i=>Math.max(0, i-1))} disabled={!canPrev} title="Предыдущая">
+                <img src={icPrev} alt="Prev" />
+              </button>
+              <span className="pg">{hasDoc ? `${cur+1}/${pages.length}` : '0/0'}</span>
+              <button onClick={()=>{ if(canNext) setCur(i=>Math.min(pages.length-1, i+1)); else pickDocument() }} title={canNext ? 'Следующая' : 'Добавить документ'}>
+                {canNext
+                  ? <img src={icPrev} alt="Next" style={{ transform:'rotate(180deg)' }} />
+                  : <img src={icPlus} alt="+" />
+                }
+              </button>
             </div>
-            <div className="crop-area"><img ref={cropImgRef} src={cropSrc} alt="" style={{maxWidth:'100%',maxHeight:'46vh'}}/></div>
-            <div className="crop-controls">
-              <h4>2. Настройте прозрачность фона:</h4>
-              <div className="thr-row">
-                <input type="range" min="0" max="100" value={cropThresh} onChange={e=>setCropThresh(Number(e.target.value))}/>
-                <input type="number" min="0" max="100" value={cropThresh} onChange={e=>{ const v=Math.max(0,Math.min(100,Number(e.target.value)||0)); setCropThresh(v) }}/>
-                <span>%</span>
-              </div>
-              <button className="btn" onClick={cropConfirm}><span className="label">Готово</span></button>
-            </div>
+
+            <button className={`fab ${(!hasDoc)?'disabled':''}`} onClick={()=>{ if(!hasDoc) return; setMenuDownloadOpen(o=>!o) }} title="Скачать">
+              <img src={icDownload} alt="↓" />
+            </button>
+          </div>
+        )}
+      </section>
+
+      <aside className="ed-right">
+        <div className="ed-actions">
+          <button className={`ed-action ${hasDoc?'':''}`} onClick={removeDocument}><img src={icDelete} alt="" style={{width:18,height:18,marginRight:8}}/>Удалить документ</button>
+          <button className={`ed-action ${canUndo?'':'disabled'}`} onClick={undo}><img src={icUndo} alt="" style={{width:18,height:18,marginRight:8}}/>Отменить</button>
+          <button className={`ed-action ${hasDoc?'':'disabled'}`} onClick={rotatePage}><img src={icRotate} alt="" style={{width:18,height:18,marginRight:8}}/>Повернуть страницу</button>
+          <button className={`ed-action ${hasDoc && !!(pages[cur]?.canvas?.getActiveObject()) ? '' : 'disabled'}`} onClick={applyToAllPages}><img src={icAddPage} alt="" style={{width:18,height:18,marginRight:8}}/>На все страницы</button>
+        </div>
+
+        <div className="ed-download">
+          <div className="ed-dl-title">Скачать бесплатно:</div>
+          <div className="ed-dl-row">
+            <button className={`btn btn-lite ${(!hasDoc)?'disabled':''}`} onClick={exportJPG}><img src={icJpgFree} alt="" style={{width:18,height:18,marginRight:8}}/>JPG</button>
+            <button className={`btn btn-lite ${(!hasDoc)?'disabled':''}`} onClick={exportPDF}><img src={icPdfFree} alt="" style={{width:18,height:18,marginRight:8}}/>PDF</button>
+          </div>
+          <div className="ed-dl-title" style={{marginTop:10}}>Купить:</div>
+          <div className="ed-dl-row ed-dl-row-paid">
+            <button className={`btn ${(!hasDoc)?'disabled':''}`} onClick={()=>{ if(hasDoc){ setPlan('single'); setPayOpen(true) } }}><img src={icJpgPaid} alt="" style={{width:18,height:18,marginRight:8}}/>JPG</button>
+            <button className={`btn ${(!hasDoc)?'disabled':''}`} onClick={()=>{ if(hasDoc){ setPlan('single'); setPayOpen(true) } }}><img src={icPdfPaid} alt="" style={{width:18,height:18,marginRight:8}}/>PDF</button>
           </div>
         </div>
-      )}
-
-      {payOpen && (
-        <div className="modal-overlay" onClick={()=>setPayOpen(false)}>
-          <div className="modal pay-modal" onClick={e=>e.stopPropagation()}>
-            <button className="modal-x" onClick={()=>setPayOpen(false)}>×</button>
-            <h3 className="modal-title">Чтобы выгрузить документ придётся немного заплатить</h3>
-            <div className="pay-grid">
-              <button className={`pay-card ${plan==='single'?'active':''}`} onClick={()=>setPlan('single')} type="button"><img className="pay-ill" src={plan1} alt="" /><div className="pay-price">{prices.single} ₽</div><div className="pay-sub">один (этот) документ</div></button>
-              <button className={`pay-card ${plan==='month'?'active':''}`} onClick={()=>setPlan('month')} type="button"><img className="pay-ill" src={plan2} alt="" /><div className="pay-price">{prices.month} ₽</div><div className="pay-sub">безлимит на месяц</div></button>
-              <button className={`pay-card ${plan==='year'?'active':''}`} onClick={()=>setPlan('year')} type="button"><img className="pay-ill" src={plan3} alt="" /><div className="pay-price">{prices.year} ₽</div><div className="pay-sub">безлимит на год</div></button>
-            </div>
-            <div className={`pay-controls ${promoError?'error':''}`}>
-              <div className="promo">
-                <label className="field-label">Промокод</label>
-                <div className="promo-row">
-                  <input value={promo} onChange={e=>{ setPromo(e.target.value); setPromoError('') }} placeholder="Введите промокод"/>
-                  {promo && <button className="promo-clear" onClick={()=>{ setPromo(''); setPromoError(''); setPromoPercent(0) }}>×</button>}
-                </div>
-                {promoError && <div className="promo-err">{promoError}</div>}
-              </div>
-              <div className="pay-buttons">
-                <button className="btn btn-lite" onClick={applyPromo}><span className="label">Активировать</span></button>
-                <button className="btn" onClick={startPurchase}><span className="label">Оплатить {price} ₽</span></button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      <input ref={docFileRef} type="file" accept={ACCEPT_DOC} hidden multiple onChange={onPickDocument}/>
-      <input ref={bgFileRef} type="file" accept={ACCEPT_DOC} hidden onChange={onPickBgFile}/>
-      <input ref={signFileRef} type="file" accept=".png,.jpg,.jpeg" hidden onChange={onPickSignature}/>
+      </aside>
     </div>
-  )
+
+    {menuAddOpen && (
+      <div className="ed-sheet" ref={sheetRef}>
+        <button className={hasDoc?'':'disabled'} onClick={()=>{ if(hasDoc){ setMenuAddOpen(false); addText() } }}><img src={icText} alt="" style={{width:18,height:18,marginRight:10}}/>Добавить текст</button>
+        <button onClick={()=>{ setMenuAddOpen(false); pickSignature() }}><img src={icSign} alt="" style={{width:18,height:18,marginRight:10}}/>Добавить подпись/печать</button>
+        <button onClick={()=>{ setMenuAddOpen(false); pickDocument() }}><img src={icDocAdd} alt="" style={{width:18,height:18,marginRight:10}}/>Добавить документ/страницу</button>
+      </div>
+    )}
+
+    {menuDownloadOpen && (
+      <div className="ed-sheet" ref={dlRef}>
+        <button className={hasDoc?'':'disabled'} onClick={()=>{ if(hasDoc){ setMenuDownloadOpen(false); setPlan('single'); setPayOpen(true) } }}><img src={icJpgPaid} alt="" style={{width:18,height:18,marginRight:10}}/>Купить JPG</button>
+        <button className={hasDoc?'':'disabled'} onClick={()=>{ if(hasDoc){ setMenuDownloadOpen(false); setPlan('single'); setPayOpen(true) } }}><img src={icPdfPaid} alt="" style={{width:18,height:18,marginRight:10}}/>Купить PDF</button>
+        <button className={hasDoc?'':'disabled'} onClick={()=>{ if(hasDoc){ setMenuDownloadOpen(false); exportJPG() } }}><img src={icJpgFree} alt="" style={{width:18,height:18,marginRight:10}}/>Скачать бесплатно JPG</button>
+        <button className={hasDoc?'':'disabled'} onClick={()=>{ if(hasDoc){ setMenuDownloadOpen(false); exportPDF() } }}><img src={icPdfFree} alt="" style={{width:18,height:18,marginRight:10}}/>Скачать бесплатно PDF</button>
+      </div>
+    )}
+
+    {(menuAddOpen || menuDownloadOpen || menuMoreOpen) && <div className="ed-dim" onClick={()=>{ setMenuAddOpen(false); setMenuDownloadOpen(false); setMenuMoreOpen(false) }}/>}
+    {cropOpen && (
+      <div className="modal-overlay" onClick={()=>setCropOpen(false)}>
+        <div className="modal crop-modal" onClick={e=>e.stopPropagation()}>
+          <button className="modal-x" onClick={()=>setCropOpen(false)}>×</button>
+          <h3 className="modal-title">1. Выделите область</h3>
+          <div className="crop-row">
+            <select value={cropType} onChange={e=>setCropType(e.target.value)}>
+              <option value="signature">подпись</option>
+              <option value="sig_seal">подпись + печать</option>
+              <option value="round_seal">круглая печать</option>
+            </select>
+          </div>
+          <div className="crop-area"><img ref={cropImgRef} src={cropSrc} alt="" style={{maxWidth:'100%',maxHeight:'46vh'}}/></div>
+          <div className="crop-controls">
+            <h4>2. Настройте прозрачность фона:</h4>
+            <div className="thr-row">
+              <input type="range" min="0" max="100" value={cropThresh} onChange={e=>setCropThresh(Number(e.target.value))}/>
+              <input type="number" min="0" max="100" value={cropThresh} onChange={e=>{ const v=Math.max(0,Math.min(100,Number(e.target.value)||0)); setCropThresh(v) }}/>
+              <span>%</span>
+            </div>
+            <button className="btn" onClick={cropConfirm}><span className="label">Готово</span></button>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {payOpen && (
+      <div className="modal-overlay" onClick={()=>setPayOpen(false)}>
+        <div className="modal pay-modal" onClick={e=>e.stopPropagation()}>
+          <button className="modal-x" onClick={()=>setPayOpen(false)}>×</button>
+          <h3 className="modal-title">Чтобы выгрузить документ придётся немного заплатить</h3>
+          <div className="pay-grid">
+            <button className={`pay-card ${plan==='single'?'active':''}`} onClick={()=>setPlan('single')} type="button"><img className="pay-ill" src={plan1} alt="" /><div className="pay-price">{prices.single} ₽</div><div className="pay-sub">один (этот) документ</div></button>
+            <button className={`pay-card ${plan==='month'?'active':''}`} onClick={()=>setPlan('month')} type="button"><img className="pay-ill" src={plan2} alt="" /><div className="pay-price">{prices.month} ₽</div><div className="pay-sub">безлимит на месяц</div></button>
+            <button className={`pay-card ${plan==='year'?'active':''}`} onClick={()=>setPlan('year')} type="button"><img className="pay-ill" src={plan3} alt="" /><div className="pay-price">{prices.year} ₽</div><div className="pay-sub">безлимит на год</div></button>
+          </div>
+          <div className={`pay-controls ${promoError?'error':''}`}>
+            <div className="promo">
+              <label className="field-label">Промокод</label>
+              <div className="promo-row">
+                <input value={promo} onChange={e=>{ setPromo(e.target.value); setPromoError('') }} placeholder="Введите промокод"/>
+                {promo && <button className="promo-clear" onClick={()=>{ setPromo(''); setPromoError(''); setPromoPercent(0) }}>×</button>}
+              </div>
+              {promoError && <div className="promo-err">{promoError}</div>}
+            </div>
+            <div className="pay-buttons">
+              <button className="btn btn-lite" onClick={applyPromo}><span className="label">Активировать</span></button>
+              <button className="btn" onClick={startPurchase}><span className="label">Оплатить {price} ₽</span></button>
+            </div>
+          </div>
+        </div>
+      </div>
+    )}
+
+    <input ref={docFileRef} type="file" accept={ACCEPT_DOC} hidden multiple onChange={onPickDocument}/>
+    <input ref={bgFileRef} type="file" accept={ACCEPT_DOC} hidden onChange={onPickBgFile}/>
+    <input ref={signFileRef} type="file" accept=".png,.jpg,.jpeg" hidden onChange={onPickSignature}/>
+  </div>
+)
 }

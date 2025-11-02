@@ -1,5 +1,5 @@
+// src/utils/scriptLoader.js
 // Загрузка внешних скриптов/стилей с кэшем и ожиданием готовности
-// (оставлено без изменений; используется в ряде компонентов)
 const cache = new Map();
 const styleCache = new Map();
 
@@ -45,7 +45,7 @@ function parseVer(v = '') {
   const m = String(v).match(/^(\d+)\.(\d+)\.(\d+)/);
   return m ? [parseInt(m[1],10), parseInt(m[2],10), parseInt(m[3],10)] : [0,0,0];
 }
-function lt(v, req='4.22.1') {
+function lt(v, req='4.25.1') {
   const a = parseVer(v), b = parseVer(req);
   if (a[0] !== b[0]) return a[0] < b[0];
   if (a[1] !== b[1]) return a[1] < b[1];
@@ -67,25 +67,26 @@ async function loadCk(url) {
   await waitFor(() => ready || (window.CKEDITOR && window.CKEDITOR.status === 'loaded'), 8000, 50);
   if (!window.CKEDITOR) throw new Error('CKEditor не инициализировался');
   const ver = window.CKEDITOR.version || '';
-  if (lt(ver, '4.22.1')) throw new Error(`Ожидалась 4.22.1, загружена ${ver}`);
+  if (lt(ver, '4.25.1')) throw new Error(`Ожидалась 4.25.1, загружена ${ver}`);
   try { window.CKEDITOR.basePath = base; } catch {}
   return true;
 }
 
-// CKEditor 4.22.1 standard: локально по /static, затем CDN
+// CKEditor 4.25.1-lts standard: локально по /static, затем CDN
 export async function ensureCKE422() {
-  if (window.CKEDITOR && window.CKEDITOR.status === 'loaded' && !lt(window.CKITOR?.version || window.CKEDITOR.version, '4.22.1')) return;
+  // если уже загружен и подходящей версии — выходим
+  if (window.CKEDITOR && window.CKEDITOR.status === 'loaded' && !lt(window.CKEDITOR.version || '', '4.25.1')) return;
   const localStatic = `${window.location.origin}/static/vendor/ckeditor/ckeditor.js`;
   const variants = [
     localStatic,
-    'https://cdn.ckeditor.com/4.22.1/standard/ckeditor.js',
-    'https://cdnjs.cloudflare.com/ajax/libs/ckeditor/4.22.1/ckeditor.js',
+    'https://cdn.ckeditor.com/4.25.1-lts/standard/ckeditor.js',
+    'https://cdnjs.cloudflare.com/ajax/libs/ckeditor/4.25.1/ckeditor.js',
   ];
   let lastErr = null;
   for (const url of variants) {
     try { await loadCk(url); return; } catch (e) { lastErr = e; }
   }
-  throw lastErr || new Error('Не удалось загрузить CKEditor 4.22.1');
+  throw lastErr || new Error('Не удалось загрузить CKEditor 4.25.1-lts');
 }
 
 /* Остальные ensure* — без изменений */
@@ -97,3 +98,4 @@ export async function ensureSheetJS(){ if(window.XLSX) return; const cdn=['https
 export async function ensureJsPDF(){ if(window.jspdf&&window.jspdf.jsPDF) return; const cdn=['https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js','https://unpkg.com/jspdf@2.5.1/dist/jspdf.umd.min.js']; let err=null; for(const u of cdn){ try{ await loadScript(u); const ok=await waitFor(()=>!!(window.jspdf&&window.jspdf.jsPDF),4000,50); if(ok) return; }catch(e){err=e} } throw err||new Error('Не удалось загрузить jsPDF');}
 export async function ensureCropper(){ if(window.Cropper) return; const css=['https://cdn.jsdelivr.net/npm/cropperjs@1.6.1/dist/cropper.min.css','https://unpkg.com/cropperjs@1.6.1/dist/cropper.min.css'],js=['https://cdn.jsdelivr.net/npm/cropperjs@1.6.1/dist/cropper.min.js','https://unpkg.com/cropperjs@1.6.1/dist/cropper.min.js']; let err=null; for(let i=0;i<css.length;i++){ try{ await loadStyle(css[i]); await loadScript(js[i]); const ok=await waitFor(()=>!!window.Cropper,4000,50); if(ok) return; }catch(e){err=e} } throw err||new Error('Не удалось загрузить Cropper.js');}
 export async function ensureJSZip(){ if(window.JSZip) return; const cdn=['https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js','https://unpkg.com/jszip@3.10.1/dist/jszip.min.js']; let err=null; for(const u of cdn){ try{ await loadScript(u); const ok=await waitFor(()=>!!window.JSZip,4000,50); if(ok) return; }catch(e){err=e} } throw err||new Error('Не удалось загрузить JSZip');}
+

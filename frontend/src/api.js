@@ -220,7 +220,6 @@ export const AuthAPI = {
     return requestAuthed('/billing/status/');
   },
 
-  // Публичные цены (для гостей и в целом для динамики на лендинге)
   async getPublicPrices() {
     const d = await request('/billing/public/');
     return {
@@ -245,7 +244,6 @@ export const AuthAPI = {
     }
   },
 
-  // История загрузок (временное хранилище, хранится на бэкенде)
   async recordUpload(client_id, doc_name, pages) {
     if (!localStorage.getItem('access')) return null;
     try {
@@ -276,7 +274,6 @@ export const AuthAPI = {
     }
   },
 
-  // ----- Покупки -----
   startPurchase(plan, promo = '') {
     return requestAuthed('/payments/create/', {
       method: 'POST',
@@ -293,25 +290,21 @@ export const AuthAPI = {
     });
   },
 
-  // ----- Админ: конфиг биллинга и промокоды -----
   getBillingConfig() {
     return requestAuthed('/billing/config/');
   },
 
-  // ВАЖНО: после изменения конфигурации — эмитим billing:update, чтобы цены/лимиты обновились везде
   async setBillingConfig(payload) {
     const data = await requestAuthed('/billing/config/', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
-    // Пытаемся получить свежий статус биллинга (свободные лимиты и т.д.), если не выйдет — шлём то, что вернул PUT
     try {
       const st = await this.getBillingStatus();
       emitBilling(st);
     } catch {
       emitBilling({
-        // Прокинем то, что точно нужно для динамических цен/TTL:
         draft_ttl_hours: Number(data?.draft_ttl_hours ?? 24),
         price_single: Number(data?.price_single ?? 99),
         price_month: Number(data?.price_month ?? 399),
@@ -349,7 +342,6 @@ export const AuthAPI = {
 
   // ----- Библиотека подписей/печати -----
   listSigns() {
-    // Бэкенд возвращает объединённый список: пользовательские + дефолтные (без скрытых)
     return requestAuthed('/library/signs/');
   },
   addSign({ kind = 'signature', data_url = null, file = null }) {
@@ -364,7 +356,6 @@ export const AuthAPI = {
     return requestAuthed(`/library/signs/${id}/`, { method: 'DELETE' });
   },
 
-  // Скрыть/показать дефолтный элемент в своей библиотеке
   hideDefaultSign(globalId) {
     return requestAuthed('/library/default-signs/hide/', {
       method: 'POST',
@@ -380,7 +371,6 @@ export const AuthAPI = {
     });
   },
 
-  // ----- Админ: глобальные подписи/печати -----
   adminListDefaults() {
     return requestAuthed('/library/default-signs/');
   },
@@ -396,7 +386,6 @@ export const AuthAPI = {
     return requestAuthed(`/library/default-signs/${id}/`, { method: 'DELETE' });
   },
 
-  // ----- Черновик документа (серверное хранилище) -----
   getDraft() {
     return requestAuthed('/draft/get/');
   },
@@ -411,7 +400,6 @@ export const AuthAPI = {
     return requestAuthed('/draft/clear/', { method: 'POST' });
   },
 
-  // ----- Автосессия при старте приложения -----
   async bootstrap() {
     const hasRefresh = !!localStorage.getItem('refresh');
     if (!hasRefresh) return;
