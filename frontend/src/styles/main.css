@@ -258,8 +258,11 @@ main{flex:1}
 .doc-editor .ed-menu>button{border:none;background:#0000;cursor:pointer;text-align:left;padding:10px 12px;border-radius:8px;display:flex;align-items:center}
 .doc-editor .ed-menu>button:hover{background:#f6f6f6}
 .ed-sheet{position:fixed;left:12px;top:110px;background:#fff;border:1px solid #eee;border-radius:12px;box-shadow:0 12px 28px rgba(0,0,0,.12);padding:8px;z-index:70;display:flex;flex-direction:column;min-width:240px}
-.ed-sheet>button{border:none;background:transparent;cursor:pointer;text-align:left;padding:10px 12px;border-radius:8px;display:flex;align-items:center}
-.ed-sheet>button:hover{background:#f6f6f6}
+/* Базовые пункты листа */
+.ed-sheet>button:not(.btn):not(.btn-lite){border:none;background:transparent;cursor:pointer;text-align:left;padding:10px 12px;border-radius:8px;display:flex;align-items:center}
+.ed-sheet>button:not(.btn):not(.btn-lite):hover{background:#f6f6f6}
+/* Кнопки как на десктопе (платные/бесплатные) */
+.ed-sheet .btn,.ed-sheet .btn-lite{width:100%;justify-content:flex-start;border-radius:28px;padding:12px 16px;min-width:auto;margin:6px 0}
 .doc-editor .ed-toolbar{display:flex;align-items:center;gap:8px;background:#fff;border:1px solid #eee;border-radius:12px;padding:6px 8px;margin:8px auto;max-width:900px;flex-wrap:wrap;overflow-x:auto}
 .doc-editor .ed-toolbar select,.doc-editor .ed-toolbar input[type=color],.doc-editor .ed-toolbar button{height:34px;border:1px solid #e5e5e5;border-radius:8px;background:#fff;padding:0 10px;cursor:pointer}
 .doc-editor .ed-toolbar .val{min-width:30px;text-align:center}
@@ -280,7 +283,8 @@ main{flex:1}
 .doc-editor .ed-center{min-height:520px}
 .doc-editor .ed-namebar{display:flex;align-items:center;justify-content:center;margin:8px auto 8px;max-width:980px}
 .doc-editor .ed-filename{width:min(640px,92%);height:44px;border:1px solid #e5e5e5;border-radius:10px;padding:8px 12px;font-size:16px;background:#fff}
-.doc-editor .ed-canvas-wrap{background:#f6f9f8;border:1px solid #f0f0f0;border-radius:12px;min-height:520px;display:flex;align-items:flex-start;justify-content:center;padding:20px 12px;overflow:auto;position:relative}
+/* ВАЖНО: фиксированная область предпросмотра без вертикального скролла */
+.doc-editor .ed-canvas-wrap{background:#f6f9f8;border:1px solid #f0f0f0;border-radius:12px;height:calc(100vh - var(--hdr-h) - 180px);min-height:420px;display:flex;align-items:flex-start;justify-content:center;padding:20px 12px;overflow:hidden;position:relative}
 .doc-editor .ed-canvas{position:relative;display:none;margin:0 auto}
 .doc-editor .ed-canvas.active{display:block}
 .doc-editor .ed-canvas canvas.lower-canvas{display:block;background:#fff;border-radius:10px;border:1px solid #eaeaea;box-shadow:0 12px 26px rgba(0,0,0,.12);image-rendering:-webkit-optimize-contrast;image-rendering:crisp-edges}
@@ -359,7 +363,8 @@ main{flex:1}
   /* скрываем боковины редактора, растягиваем центр */
   .doc-editor .ed-body{grid-template-columns:1fr}
   .doc-editor .ed-left,.doc-editor .ed-right{display:none}
-  .doc-editor .ed-canvas-wrap{padding-bottom:96px;height:calc(100vh - var(--hdr-h) - var(--ed-top-h) - var(--ed-bottom-h) - 16px);min-height:auto}
+  /* ВАЖНО: на мобилке также без вертикального скролла */
+  .doc-editor .ed-canvas-wrap{padding-bottom:96px;height:calc(100vh - var(--hdr-h) - var(--ed-top-h) - var(--ed-bottom-h) - 16px);min-height:auto;overflow:hidden}
 
   /* листы выбора действий и загрузки на мобильных */
   .ed-sheet{left:12px;right:12px;top:auto;bottom:76px}
