@@ -1,7 +1,9 @@
 import os
 from pathlib import Path
+
 import dj_database_url
 from decouple import Config, RepositoryEnv
+from django.core.exceptions import ImproperlyConfigured
 
 # BASE_DIR указывает на папку 'backend'
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -10,26 +12,27 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 config = Config(RepositoryEnv(str(BASE_DIR / '.env')))
 
 # --- Основные настройки ---
-# На проде SECRET_KEY ДОЛЖЕН быть в переменных окружения.
-# Локально он будет взят из .env файла.
 SECRET_KEY = config('SECRET_KEY')
 DEBUG = config('DEBUG', default=False, cast=bool)
 ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='127.0.0.1,localhost').split(',')
 
 # --- Приложения ---
 INSTALLED_APPS = [
+    # Django
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
     'django.contrib.sessions',
     'django.contrib.messages',
-    # WhiteNoise для обслуживания статики Django в DEBUG=False
+
+    # WhiteNoise для статики в DEBUG=False
     'whitenoise.runserver_nostatic',
     'django.contrib.staticfiles',
 
-    # Сторонние приложения
+    # Сторонние
     'rest_framework',
     'corsheaders',
+    'channels',  # WebSockets
 
     # Ваши приложения
     'accounts',
@@ -54,6 +57,7 @@ MIDDLEWARE = [
 # --- Маршрутизация и шаблоны ---
 ROOT_URLCONF = 'config.urls'
 WSGI_APPLICATION = 'config.wsgi.application'
+ASGI_APPLICATION = 'config.asgi.application'  # channels entrypoint
 
 TEMPLATES = [
     {
@@ -73,15 +77,39 @@ TEMPLATES = [
     },
 ]
 
-# --- База данных ---
-DATABASES = {
-    # dj-database-url автоматически читает переменную DATABASE_URL из окружения
-    'default': dj_database_url.config(
-        # Локально будет использован sqlite, если DATABASE_URL не задана
-        default=f"sqlite:///{BASE_DIR / 'db.sqlite3'}",
-        conn_max_age=600,
-        conn_health_checks=True
+# --- База данных: ТОЛЬКО PostgreSQL ---
+def _pg_from_env():
+    """
+    Возвращает конфиг БД из DATABASE_URL или PG_* переменных.
+    Если ничего не задано — бросаем ImproperlyConfigured.
+    """
+    url = os.environ.get('DATABASE_URL') or config('DATABASE_URL', default='')
+    if url:
+        return dj_database_url.parse(url, conn_max_age=600, conn_health_checks=True)
+
+    name = config('PG_NAME', default='')
+    user = config('PG_USER', default='')
+    password = config('PG_PASS', default='')
+    host = config('PG_HOST', default='')
+    port = config('PG_PORT', default='')
+
+    if name and user and host:
+        return {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': name,
+            'USER': user,
+            'PASSWORD': password,
+            'HOST': host,
+            'PORT': port,
+            'CONN_MAX_AGE': 600,
+        }
+
+    raise ImproperlyConfigured(
+        'PostgreSQL is required. Please set DATABASE_URL or PG_* environment variables.'
     )
+
+DATABASES = {
+    'default': _pg_from_env()
 }
 
 # --- Аутентификация и авторизация ---
@@ -112,15 +140,16 @@ STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
 # --- Прочие настройки ---
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': ('rest_framework_simplejwt.authentication.JWTAuthentication',),
 }
-CORS_ALLOW_ALL_ORIGINS = True  # В проде будет переопределено
+
+CORS_ALLOW_ALL_ORIGINS = True  # В проде можно переопределить
+# Если хотите ограничить:
+# CORS_ALLOWED_ORIGINS = [ 'https://example.com' ]
 
 # --- Настройки E-mail и OAuth ---
-# Делаем EMAIL_BACKEND настраиваемым через .env.
-# По умолчанию в локальной разработке используем консольный бэкенд,
-# чтобы не требовать ключи SendGrid.
 EMAIL_BACKEND = config('EMAIL_BACKEND', default='django.core.mail.backends.console.EmailBackend')
 DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='no-reply@scannyrf.com')
 
@@ -144,6 +173,29 @@ FACEBOOK_APP_ID = config('FACEBOOK_APP_ID', default='')
 FACEBOOK_APP_SECRET = config('FACEBOOK_APP_SECRET', default='')
 VK_SERVICE_KEY = config('VK_SERVICE_KEY', default='')
 
+# --- Channels (WebSockets) ---
+# По умолчанию InMemoryChannelLayer (для одного инстанса).
+# Для продакшена рекомендуем Redis:
+#   CHANNEL_LAYERS = {
+#       "default": {
+#           "BACKEND": "channels_redis.core.RedisChannelLayer",
+#           "CONFIG": { "hosts": [config('REDIS_URL', default='redis://localhost:6379')] },
+#       },
+#   }
+if os.environ.get('REDIS_URL') or config('REDIS_URL', default=''):
+    CHANNEL_LAYERS = {
+        "default": {
+            "BACKEND": "channels_redis.core.RedisChannelLayer",
+            "CONFIG": {
+                "hosts": [os.environ.get('REDIS_URL') or config('REDIS_URL')],
+            },
+        }
+    }
+else:
+    CHANNEL_LAYERS = {
+        "default": { "BACKEND": "channels.layers.InMemoryChannelLayer" }
+    }
+
 # ==============================================================================
 # НАСТРОЙКИ СПЕЦИАЛЬНО ДЛЯ ПРОДАКШЕНА (OnRender)
 # ==============================================================================
@@ -152,7 +204,8 @@ if 'RENDER' in os.environ:
 
     RENDER_EXTERNAL_HOSTNAME = os.environ.get('RENDER_EXTERNAL_HOSTNAME')
     if RENDER_EXTERNAL_HOSTNAME:
-        ALLOWED_HOSTS.append(RENDER_EXTERNAL_HOSTNAME)
+        if RENDER_EXTERNAL_HOSTNAME not in ALLOWED_HOSTS:
+            ALLOWED_HOSTS.append(RENDER_EXTERNAL_HOSTNAME)
         CORS_ALLOWED_ORIGINS = [f"https://{RENDER_EXTERNAL_HOSTNAME}"]
         CSRF_TRUSTED_ORIGINS = [f"https://{RENDER_EXTERNAL_HOSTNAME}"]
 

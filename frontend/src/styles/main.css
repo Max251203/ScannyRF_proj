@@ -1,4 +1,21 @@
-:root{--sage:#C9CBA3;--beige:#FFE1A8;--accent:#E26D5C;--wine:#723D46;--brown:#472D30;--text:#222;--muted:#666;--bg:#fff;--calc-bg:#FFF1E6;--calc-border:#FFD6B3;--calc-ink:#8A3D00;--hdr-h:64px;--ed-top-h:52px;--ed-bottom-h:64px}
+:root{
+  --sage:#C9CBA3;
+  --beige:#FFE1A8;
+  --accent:#E26D5C;
+  --wine:#723D46;
+  --brown:#472D30;
+  --text:#222;
+  --muted:#666;
+  --bg:#fff;
+  --calc-bg:#FFF1E6;
+  --calc-border:#FFD6B3;
+  --calc-ink:#8A3D00;
+
+  /* Высота шапки, верхней панели редактора и нижней мобильной панели */
+  --hdr-h: 64px;
+  --ed-top-h: clamp(48px, 6vh, 64px);
+  --ed-bottom-h: 0px; /* desktop: 0; на мобиле переопределим */
+}
 @font-face{font-family:"Chicoree Em";src:url("/static/assets/fonts/chicoree.woff2") format("woff2"),url("/static/assets/fonts/Chicoree-Em.ttf") format("truetype"),url("../assets/fonts/chicoree.woff2") format("woff2"),url("../assets/fonts/ofont.ru_Chicoree.otf") format("truetype");font-weight:400;font-style:normal;font-display:swap}
 @font-face{font-family:"Ermilov";src:url("../assets/fonts/Ermilov-bold.otf") format("opentype");font-weight:700;font-style:normal;font-display:swap}
 @font-face{font-family:"Rabbits Elf";src:url("../assets/fonts/rabbits-elf.ttf") format("truetype");font-weight:400;font-style:normal;font-display:swap}
@@ -25,8 +42,10 @@ main>.section:first-child{padding-top:0}
 main{flex:1}
 .desktop-only{display:block}
 .mobile-only{display:none!important}
+
+/* ---------- Header ---------- */
 .site-header{position:sticky;top:0;z-index:50;background:#fff;border-bottom:1px solid #eee}
-.header-inner{height:64px;display:flex;align-items:center;justify-content:space-between;gap:18px}
+.header-inner{height:var(--hdr-h);display:flex;align-items:center;justify-content:space-between;gap:18px}
 .logo-wrap{display:flex;align-items:center;gap:10px;text-decoration:none;font-weight:800;letter-spacing:.3px}
 .logo-wrap img{height:28px}
 .nav{display:flex;gap:12px;align-items:center}
@@ -44,6 +63,7 @@ main{flex:1}
 .burger-btn img{width:22px;height:22px;object-fit:contain}
 .nav-close{display:none}
 
+/* ---------- Hero ---------- */
 .hero{background:linear-gradient(180deg,var(--beige) 0%,var(--sage) 100%)}
 .hero-inner{display:grid;grid-template-columns:1.1fr .9fr;gap:24px;padding:24px 12px 20px;align-items:center}
 .hero h1{font-family:"Chicoree Em","Rabbits Elf","Ermilov",system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;font-size:44px;line-height:1.05;margin:0 0 12px}
@@ -51,6 +71,7 @@ main{flex:1}
 .hero .art{display:flex;align-items:center;justify-content:center}
 .hero .art img{max-height:300px;height:auto;object-fit:contain}
 
+/* ---------- How ---------- */
 .how-rows{display:flex;flex-direction:column;gap:64px;margin-top:16px}
 .step-row{--step-h:420px;display:grid;grid-template-columns:1.1fr .9fr;gap:24px;align-items:stretch;min-height:var(--step-h)}
 .step-row.reverse{grid-template-columns:1.1fr .9fr}
@@ -60,6 +81,7 @@ main{flex:1}
 .step-text h3{margin:0 0 8px}
 .badge{width:36px;height:36px;border-radius:50%;background:var(--beige);color:#000;display:flex;align-items:center;justify-content:center;font-weight:800;margin-bottom:10px;border:1px solid #00000014}
 
+/* ---------- Examples ---------- */
 .examples .ellipse{background:var(--sage);color:#fff;border-radius:999px;min-height:560px;display:flex;align-items:center;justify-content:center;padding:12px 12px;overflow:hidden}
 .ellipse-inner{width:min(1100px,96%);text-align:center;padding:6px 12px}
 .ellipse-title{font-family:"Ermilov",system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;font-size:32px;margin:0}
@@ -80,6 +102,7 @@ main{flex:1}
 @keyframes popIn{0%{transform:scale(.85) translateY(12px);opacity:0}60%{transform:scale(1.02)}100%{transform:scale(1) translateY(0);opacity:1}}
 .pop-in{animation:popIn .32s ease-out both}
 
+/* ---------- Features / Pocket / Pricing ---------- */
 .features{background:#E26D5C;color:#111}
 .features h2{color:#fff}
 .features-row{display:grid;grid-template-columns:repeat(3,1fr);gap:24px;margin-top:10px}
@@ -110,6 +133,7 @@ main{flex:1}
 .price .val{font-size:32px;font-weight:800;color:var(--accent)}
 .price-actions{margin-top:12px}
 
+/* ---------- Calculators ---------- */
 .page-title{font-family:"Ermilov",system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;font-size:44px;margin:18px 0 28px}
 
 .calc-tiles{display:flex;gap:24px;flex-wrap:wrap;margin:8px 0 24px}
@@ -156,6 +180,7 @@ main{flex:1}
 .calc-table tfoot td{font-weight:800;background:#fafafa}
 .calc-table td.t-num{text-align:right}
 
+/* ---------- Legal / Profile ---------- */
 .section.legal{padding-top:28px;padding-bottom:48px}
 .legal.container{max-width:900px;padding-left:18px;padding-right:18px}
 #profile.container{max-width:900px;padding-left:18px;padding-right:18px}
@@ -270,14 +295,26 @@ main{flex:1}
 
 /* ---------------- DOC EDITOR ---------------- */
 .doc-editor{--sideL:240px;--sideR:260px;padding:0 8px}
-.doc-editor .ed-top{display:flex;align-items:center;justify-content:space-between;gap:12px;height:52px;border-bottom:1px solid #eee;background:#fff;padding:0 12px;margin-bottom:8px}
+
+/* Единая верхняя панель с фиксированной высотой */
+.doc-editor .ed-top{
+  display:flex;align-items:center;justify-content:space-between;gap:12px;
+  height:var(--ed-top-h);border-bottom:1px solid #eee;background:#fff;padding:0 12px;margin-bottom:8px
+}
 .doc-editor .ed-menu-btn{width:36px;height:36px;border-radius:50%;border:1px solid #e5e5e5;background:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center}
 .doc-editor .ed-menu-btn img{width:18px;height:18px}
 .doc-editor .ed-docid{font-weight:700;opacity:.85}
-.doc-editor .ed-menu{position:absolute;left:12px;top:110px;background:#fff;border:1px solid #eee;border-radius:12px;box-shadow:0 12px 28px rgba(0,0,0,.12);padding:8px;z-index:70;display:flex;flex-direction:column;min-width:240px}
+.doc-editor .ed-menu{
+  position:absolute;left:12px;
+  top:calc(var(--hdr-h) + var(--ed-top-h) + 8px);
+  background:#fff;border:1px solid #eee;border-radius:12px;box-shadow:0 12px 28px rgba(0,0,0,.12);padding:8px;z-index:70;display:flex;flex-direction:column;min-width:240px
+}
 .doc-editor .ed-menu>button{border:none;background:#0000;cursor:pointer;text-align:left;padding:10px 12px;border-radius:8px;display:flex;align-items:center}
 .doc-editor .ed-menu>button:hover{background:#f6f6f6}
-.ed-sheet{position:fixed;left:12px;top:110px;background:#fff;border:1px solid #eee;border-radius:12px;box-shadow:0 12px 28px rgba(0,0,0,.12);padding:8px;z-index:70;display:flex;flex-direction:column;min-width:240px}
+.ed-sheet{
+  position:fixed;left:12px;top:calc(var(--hdr-h) + var(--ed-top-h) + 8px);
+  background:#fff;border:1px solid #eee;border-radius:12px;box-shadow:0 12px 28px rgba(0,0,0,.12);padding:8px;z-index:70;display:flex;flex-direction:column;min-width:240px
+}
 
 /* Базовые пункты листа */
 .ed-sheet>button:not(.btn):not(.btn-lite){border:none;background:transparent;cursor:pointer;text-align:left;padding:10px 12px;border-radius:8px;display:flex;align-items:center}
@@ -285,14 +322,24 @@ main{flex:1}
 /* Кнопки как на десктопе (платные/бесплатные) — компактнее */
 .ed-sheet .btn,.ed-sheet .btn-lite{width:100%;justify-content:flex-start;border-radius:28px;padding:10px 14px;min-width:auto;margin:6px 0}
 
-.doc-editor .ed-toolbar{display:flex;align-items:center;gap:8px;background:#fff;border:1px solid #eee;border-radius:12px;padding:6px 8px;margin:8px auto;max-width:900px;flex-wrap:wrap;overflow-x:auto}
+/* Панель форматирования текста — также в верхней полосе */
+.doc-editor .ed-toolbar{
+  display:flex;align-items:center;gap:8px;background:#fff;border:1px solid #eee;border-radius:12px;padding:6px 8px;margin:8px auto;max-width:900px;flex-wrap:wrap;overflow-x:auto
+}
 .doc-editor .ed-toolbar select,.doc-editor .ed-toolbar input[type=color],.doc-editor .ed-toolbar button{height:34px;border:1px solid #e5e5e5;border-radius:8px;background:#fff;padding:0 10px;cursor:pointer}
 .doc-editor .ed-toolbar .val{min-width:30px;text-align:center}
 .doc-editor .ed-toolbar .toggled{background:#ffeae6;border-color:#ffc9c1}
 .doc-editor .ed-toolbar .sep{width:1px;height:24px;background:#eee;margin:0 4px}
 
+/* Тело редактора */
 .doc-editor .ed-body{display:grid;grid-template-columns:var(--sideL) 1fr var(--sideR);gap:16px;align-items:start;padding:0 12px}
-.doc-editor .ed-left,.doc-editor .ed-right{position:sticky;top:98px;align-self:start;height:max-content;padding:0 12px}
+
+/* Боковые панели — sticky ниже шапки и верхней панели */
+.doc-editor .ed-left,.doc-editor .ed-right{
+  position:sticky;
+  top:calc(var(--hdr-h) + var(--ed-top-h) + 12px);
+  align-self:start;height:max-content;padding:0 12px
+}
 .doc-editor .ed-left{border-right:1px solid #f0f0f0}
 .doc-editor .ed-right{border-left:1px solid #f0f0f0}
 .doc-editor .ed-tools{display:flex;flex-direction:column;gap:8px;padding:4px 0 8px}
@@ -304,16 +351,17 @@ main{flex:1}
 .doc-editor .thumb.add{font-size:28px;color:#888}
 .doc-editor .thumb .thumb-x{position:absolute;right:4px;top:4px;width:18px;height:18px;border-radius:50%;border:1px solid #e5e5e5;background:#fff;color:#000;line-height:16px;text-align:center;font-weight:800;cursor:pointer}
 .doc-editor .ed-center{min-height:520px}
-.doc-editor .ed-namebar{display:flex;align-items:center;justify-content:center;margin:8px auto 8px;max-width:980px}
+
+/* Поле ввода имени */
 .doc-editor .ed-filename{width:min(640px,92%);height:44px;border:1px solid #e5e5e5;border-radius:10px;padding:8px 12px;font-size:16px;background:#fff}
 
-/* Фиксированная область предпросмотра без вертикального скролла, с минимальными отступами */
+/* Область предпросмотра: конкретная высота = экран минус шапка и панели */
 .doc-editor .ed-canvas-wrap{
   background:#f6f9f8;border:1px solid #f0f0f0;border-radius:12px;
-  height:calc(100vh - var(--hdr-h) - 120px);
+  height:calc(100vh - var(--hdr-h) - var(--ed-top-h) - var(--ed-bottom-h) - 16px);
   min-height:420px;
-  display:flex;align-items:flex-start;justify-content:center;
-  padding:12px 10px; /* минимальный отступ от краёв */
+  display:flex;align-items:center;justify-content:center;
+  padding:12px 10px;
   overflow:hidden;position:relative
 }
 .doc-editor .ed-canvas{position:relative;display:none;margin:0 auto}
@@ -328,6 +376,7 @@ main{flex:1}
 .doc-editor .ed-dropzone .dz-sub{opacity:.7}
 .doc-editor .ed-dropzone .dz-types{opacity:.6;font-size:13px}
 
+/* Действия/выгрузка */
 .doc-editor .ed-actions{display:flex;flex-direction:column;gap:8px}
 .doc-editor .ed-action{border:1px solid #eee;background:#fff;border-radius:12px;padding:10px 12px;cursor:pointer;text-align:left;display:flex;align-items:center}
 .doc-editor .ed-action.danger{color:#c33;border-color:#f0d0d0;background:#fff7f6}
@@ -336,6 +385,7 @@ main{flex:1}
 .doc-editor .ed-dl-row{display:flex;gap:8px;flex-wrap:wrap}
 .doc-editor .ed-dl-row-paid{margin-bottom:12px}
 
+/* Пагинация страниц */
 .doc-editor .ed-pages{display:flex;gap:8px;align-items:center;justify-content:center;padding:12px 0 6px}
 .doc-editor .ed-page-btn{position:relative;border:1px solid #e5e5e5;background:#fff;border-radius:10px;width:36px;height:36px;display:flex;align-items:center;justify-content:center;cursor:pointer;user-select:none}
 .doc-editor .ed-page-btn.active{border-color:var(--accent);color:var(--accent);box-shadow:0 6px 18px rgba(226,109,92,.2)}
@@ -343,7 +393,7 @@ main{flex:1}
 .doc-editor .ed-page-add img{width:18px;height:18px}
 .ed-dim{position:fixed;inset:0;background:rgba(0,0,0,.2);z-index:50}
 
-/* НИЖНЯЯ МОБИЛЬНАЯ ПАНЕЛЬ — единый ряд, без переносов */
+/* Нижняя мобильная панель — высота через переменную */
 .doc-editor .ed-bottom{
   position:fixed;left:0;right:0;bottom:0;background:#fff;border-top:1px solid #eee;
   padding:10px 12px;z-index:100;min-height:var(--ed-bottom-h);
@@ -360,58 +410,7 @@ main{flex:1}
 .doc-editor .ed-bottom .fab img{width:22px;height:22px;object-fit:contain}
 .doc-editor .ed-bottom .ed-pager img{width:18px;height:18px;object-fit:contain}
 
-/* мобильная сетка */
-@media (max-width:960px){
-  .header-inner{gap:10px}
-  .nav{position:fixed;top:0;right:0;bottom:0;left:auto;width:min(320px,86vw);background:#fff;border-left:1px solid #eee;flex-direction:column;align-items:flex-start;gap:0;padding:16px;transform:translate3d(100%,0,0);transition:transform .25s ease;z-index:60;pointer-events:none;will-change:transform}
-  .nav.open{transform:translate3d(0,0,0);pointer-events:auto}
-  .nav a{display:block;width:100%;padding:12px 8px;margin:0;color:#222;border-bottom:1px solid #f3f3f3}
-  .nav a:last-child{border-bottom:none}
-  .nav-close{display:block;position:absolute;right:10px;top:10px;width:34px;height:34px;border:1px solid #e5e5e5;background:#fff;color:#000;font-size:20px;cursor:pointer}
-  .nav-dim{position:fixed;inset:0;background:rgba(0,0,0,.35);backdrop-filter:saturate(60%) blur(2px);opacity:0;pointer-events:none;transition:opacity .2s ease;z-index:55}
-  .nav-dim.show{opacity:1;pointer-events:auto}
-  .burger-btn{display:flex}
-
-  .hero-inner{grid-template-columns:1fr;padding:20px 12px 16px}
-  .step-row{grid-template-columns:1fr;--step-h:360px;display:flex;flex-direction:column}
-  .step-text{order:1}
-  .step-illu{order:2}
-  .features-row{grid-template-columns:1fr}
-  .examples .ellipse{min-height:560px;border-radius:48px}
-  .ellipse-inner{padding:8px 14px}
-  .viewer-card{height:70vh}
-  .pocket-grid{grid-template-columns:1fr}
-  .badge-num{flex:0 0 28px;width:28px;height:28px}
-  .price-grid{grid-template-columns:1fr}
-  .result dl{grid-template-columns:1fr}
-  .help-page{--help-top-offset:320px}
-  .help-grid{grid-template-columns:1fr}
-  .form-grid{grid-template-columns:1fr}
-  .two-col{grid-template-columns:1fr}
-  .logo-wrap span{display:none}
-  .desktop-only{display:none!important}
-  .mobile-only{display:block!important}
-
-  /* скрываем боковины редактора, растягиваем центр */
-  .doc-editor .ed-body{grid-template-columns:1fr}
-  .doc-editor .ed-left,.doc-editor .ed-right{display:none}
-
-  /* ВАЖНО: на мобилке без вертикального скролла и с учётом нижней панели */
-  .doc-editor .ed-canvas-wrap{
-    padding:12px 10px calc(var(--ed-bottom-h) + 8px);
-    height:calc(100vh - var(--hdr-h) - var(--ed-top-h) - var(--ed-bottom-h) - 8px);
-    min-height:auto;
-    overflow:hidden
-  }
-
-  /* листы выбора действий и загрузки на мобильных */
-  .ed-sheet{left:12px;right:12px;top:auto;bottom:76px}
-
-  /* скрыть кнопку удаления страницы над канвой на мобиле */
-  .doc-editor .ed-page-x{display:none}
-}
-
-/* состояния disabled */
+/* Состояния disabled */
 .disabled,.btn.disabled,.ed-action.disabled,.ed-tool.disabled,.fab.disabled,.ed-menu>button.disabled{opacity:.45;filter:saturate(0);cursor:default;pointer-events:none}
 .btn.disabled{background:#f7f7f7;color:#aaa;border-color:#eee}
 .ed-action.disabled{background:#fafafa;border-color:#eee;color:#bbb}
@@ -452,3 +451,57 @@ main{flex:1}
 .defaults-grid .thumb .thumb-x{position:absolute;right:4px;top:4px;width:18px;height:18px;border-radius:50%;border:1px solid #e5e5e5;background:#fff;color:#000;line-height:16px;text-align:center;font-weight:800;cursor:pointer}
 @media (max-width:1100px){.defaults-grid{grid-template-columns:repeat(2,1fr)}}
 @media (max-width:600px){.defaults-grid{grid-template-columns:1fr}}
+
+/* ---------- Mobile adjustments ---------- */
+@media (max-width:960px){
+  :root{
+    --ed-bottom-h: clamp(52px, 7vh, 68px);
+  }
+
+  .header-inner{gap:10px}
+  .nav{position:fixed;top:0;right:0;bottom:0;left:auto;width:min(320px,86vw);background:#fff;border-left:1px solid #eee;flex-direction:column;align-items:flex-start;gap:0;padding:16px;transform:translate3d(100%,0,0);transition:transform .25s ease;z-index:60;pointer-events:none;will-change:transform}
+  .nav.open{transform:translate3d(0,0,0);pointer-events:auto}
+  .nav a{display:block;width:100%;padding:12px 8px;margin:0;color:#222;border-bottom:1px solid #f3f3f3}
+  .nav a:last-child{border-bottom:none}
+  .nav-close{display:block;position:absolute;right:10px;top:10px;width:34px;height:34px;border:1px solid #e5e5e5;background:#fff;color:#000;font-size:20px;cursor:pointer}
+  .nav-dim{position:fixed;inset:0;background:rgba(0,0,0,.35);backdrop-filter:saturate(60%) blur(2px);opacity:0;pointer-events:none;transition:opacity .2s ease;z-index:55}
+  .nav-dim.show{opacity:1;pointer-events:auto}
+  .burger-btn{display:flex}
+
+  .hero-inner{grid-template-columns:1fr;padding:20px 12px 16px}
+  .step-row{grid-template-columns:1fr;--step-h:360px;display:flex;flex-direction:column}
+  .step-text{order:1}
+  .step-illu{order:2}
+  .features-row{grid-template-columns:1fr}
+  .examples .ellipse{min-height:560px;border-radius:48px}
+  .ellipse-inner{padding:8px 14px}
+  .viewer-card{height:70vh}
+  .pocket-grid{grid-template-columns:1fr}
+  .badge-num{flex:0 0 28px;width:28px;height:28px}
+  .price-grid{grid-template-columns:1fr}
+  .result dl{grid-template-columns:1fr}
+  .help-page{--help-top-offset:320px}
+  .help-grid{grid-template-columns:1fr}
+  .form-grid{grid-template-columns:1fr}
+  .two-col{grid-template-columns:1fr}
+  .logo-wrap span{display:none}
+  .desktop-only{display:none!important}
+  .mobile-only{display:block!important}
+
+  /* скрываем боковины редактора, растягиваем центр */
+  .doc-editor .ed-body{grid-template-columns:1fr}
+  .doc-editor .ed-left,.doc-editor .ed-right{display:none}
+
+  /* Область предпросмотра учитывает нижнюю панель */
+  .doc-editor .ed-canvas-wrap{
+    padding:12px 10px calc(var(--ed-bottom-h) + 8px);
+    height:calc(100vh - var(--hdr-h) - var(--ed-top-h) - var(--ed-bottom-h) - 8px);
+    min-height:auto;
+    overflow:hidden
+  }
+
+  /* Листы выбора действий и загрузки на мобильных над нижней панелью */
+  .ed-sheet{left:12px;right:12px;top:auto;bottom:calc(var(--ed-bottom-h) + 12px)}
+  /* скрыть кнопку удаления страницы над канвой на мобиле */
+  .doc-editor .ed-page-x{display:none}
+}

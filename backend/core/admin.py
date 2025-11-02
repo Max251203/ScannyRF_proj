@@ -9,6 +9,7 @@ from .models import (
     HiddenDefaultSign,
     Upload,
     DocumentDraft,
+    DraftEvent,  # <- добавили
 )
 
 
@@ -94,3 +95,11 @@ class DocumentDraftAdmin(admin.ModelAdmin):
         return obj.is_expired()
     is_expired_display.boolean = True
     is_expired_display.short_description = 'Просрочен'
+
+
+@admin.register(DraftEvent)
+class DraftEventAdmin(admin.ModelAdmin):
+    list_display = ('id', 'user', 'client_id', 'kind', 'created_at')
+    list_filter = ('kind',)
+    search_fields = ('user__email', 'user__username', 'client_id', 'kind')
+    ordering = ('-created_at',)

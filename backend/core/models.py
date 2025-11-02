@@ -180,3 +180,24 @@ class DocumentDraft(models.Model):
 
     def __str__(self) -> str:
         return f'draft:{self.user_id}:{self.updated_at:%Y-%m-%d %H:%M}'
+
+
+class DraftEvent(models.Model):
+    """
+    Поток событий редактора (event-sourcing) для надежной записи изменений "на лету".
+    Накопленные события чистятся при commit (сохранении полного snapshot).
+    """
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='draft_events')
+    client_id = models.CharField(max_length=64, db_index=True)
+    kind = models.CharField(max_length=64, default='unknown')
+    payload = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['user', 'client_id', 'created_at']),
+        ]
+        ordering = ['-created_at']
+
+    def __str__(self) -> str:
+        return f'event:{self.user_id}:{self.client_id}:{self.kind}:{self.created_at:%H:%M:%S}'
