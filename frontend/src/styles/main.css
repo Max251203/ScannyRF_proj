@@ -11,10 +11,11 @@
   --calc-border:#FFD6B3;
   --calc-ink:#8A3D00;
 
-  /* Высота шапки, верхней панели редактора и нижней мобильной панели */
+  /* Высоты панелей: desktop и mobile учитываются формулой области */
   --hdr-h: 64px;
   --ed-top-h: clamp(48px, 6vh, 64px);
-  --ed-bottom-h: 0px; /* desktop: 0; на мобиле переопределим */
+  /* ВАЖНО: на десктопе теперь тоже есть нижняя панель (компактная) */
+  --ed-bottom-h: 48px;
 }
 @font-face{font-family:"Chicoree Em";src:url("/static/assets/fonts/chicoree.woff2") format("woff2"),url("/static/assets/fonts/Chicoree-Em.ttf") format("truetype"),url("../assets/fonts/chicoree.woff2") format("woff2"),url("../assets/fonts/ofont.ru_Chicoree.otf") format("truetype");font-weight:400;font-style:normal;font-display:swap}
 @font-face{font-family:"Ermilov";src:url("../assets/fonts/Ermilov-bold.otf") format("opentype");font-weight:700;font-style:normal;font-display:swap}
@@ -296,35 +297,24 @@ main{flex:1}
 /* ---------------- DOC EDITOR ---------------- */
 .doc-editor{--sideL:240px;--sideR:260px;padding:0 8px}
 
-/* Единая верхняя панель с фиксированной высотой */
+/* Единая верхняя панель — поле по центру (desktop), на мобиле слева кнопка */
 .doc-editor .ed-top{
-  display:flex;align-items:center;justify-content:space-between;gap:12px;
+  display:flex;align-items:center;justify-content:center;gap:12px;
   height:var(--ed-top-h);border-bottom:1px solid #eee;background:#fff;padding:0 12px;margin-bottom:8px
 }
 .doc-editor .ed-menu-btn{width:36px;height:36px;border-radius:50%;border:1px solid #e5e5e5;background:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center}
-.doc-editor .ed-menu-btn img{width:18px;height:18px}
 .doc-editor .ed-docid{font-weight:700;opacity:.85}
-.doc-editor .ed-menu{
-  position:absolute;left:12px;
-  top:calc(var(--hdr-h) + var(--ed-top-h) + 8px);
-  background:#fff;border:1px solid #eee;border-radius:12px;box-shadow:0 12px 28px rgba(0,0,0,.12);padding:8px;z-index:70;display:flex;flex-direction:column;min-width:240px
-}
-.doc-editor .ed-menu>button{border:none;background:#0000;cursor:pointer;text-align:left;padding:10px 12px;border-radius:8px;display:flex;align-items:center}
-.doc-editor .ed-menu>button:hover{background:#f6f6f6}
 .ed-sheet{
   position:fixed;left:12px;top:calc(var(--hdr-h) + var(--ed-top-h) + 8px);
   background:#fff;border:1px solid #eee;border-radius:12px;box-shadow:0 12px 28px rgba(0,0,0,.12);padding:8px;z-index:70;display:flex;flex-direction:column;min-width:240px
 }
-
-/* Базовые пункты листа */
 .ed-sheet>button:not(.btn):not(.btn-lite){border:none;background:transparent;cursor:pointer;text-align:left;padding:10px 12px;border-radius:8px;display:flex;align-items:center}
 .ed-sheet>button:not(.btn):not(.btn-lite):hover{background:#f6f6f6}
-/* Кнопки как на десктопе (платные/бесплатные) — компактнее */
 .ed-sheet .btn,.ed-sheet .btn-lite{width:100%;justify-content:flex-start;border-radius:28px;padding:10px 14px;min-width:auto;margin:6px 0}
 
-/* Панель форматирования текста — также в верхней полосе */
+/* Панель форматирования текста (замещает верхнюю панель в режиме редактирования текста) */
 .doc-editor .ed-toolbar{
-  display:flex;align-items:center;gap:8px;background:#fff;border:1px solid #eee;border-radius:12px;padding:6px 8px;margin:8px auto;max-width:900px;flex-wrap:wrap;overflow-x:auto
+  display:flex;align-items:center;gap:8px;background:#fff;border:1px solid #eee;border-radius:12px;padding:6px 8px;max-width:900px;flex-wrap:wrap;overflow-x:auto
 }
 .doc-editor .ed-toolbar select,.doc-editor .ed-toolbar input[type=color],.doc-editor .ed-toolbar button{height:34px;border:1px solid #e5e5e5;border-radius:8px;background:#fff;padding:0 10px;cursor:pointer}
 .doc-editor .ed-toolbar .val{min-width:30px;text-align:center}
@@ -355,7 +345,7 @@ main{flex:1}
 /* Поле ввода имени */
 .doc-editor .ed-filename{width:min(640px,92%);height:44px;border:1px solid #e5e5e5;border-radius:10px;padding:8px 12px;font-size:16px;background:#fff}
 
-/* Область предпросмотра: конкретная высота = экран минус шапка и панели */
+/* Область предпросмотра: учитывает header, top, bottom */
 .doc-editor .ed-canvas-wrap{
   background:#f6f9f8;border:1px solid #f0f0f0;border-radius:12px;
   height:calc(100vh - var(--hdr-h) - var(--ed-top-h) - var(--ed-bottom-h) - 16px);
@@ -369,8 +359,6 @@ main{flex:1}
 .doc-editor .ed-canvas canvas.lower-canvas{display:block;background:#fff;border-radius:10px;border:1px solid #eaeaea;box-shadow:0 12px 26px rgba(0,0,0,.12);image-rendering:-webkit-optimize-contrast;image-rendering:crisp-edges}
 .doc-editor .ed-canvas canvas.upper-canvas{display:block;background:transparent!important;border-radius:10px;border:none;box-shadow:none}
 .doc-editor .ed-page-x{position:absolute;right:-10px;top:-10px;width:28px;height:28px;border-radius:50%;border:none;background:#fff;color:#000;box-shadow:0 4px 10px rgba(0,0,0,.18);cursor:pointer;z-index:5;font-weight:800}
-.doc-editor .ed-page-drop{position:absolute;inset:0;display:flex;flex-direction:column;gap:8px;align-items:center;justify-content:center;background:rgba(255,255,255,.94);border:2px dashed #e5e5e5;border-radius:10px;color:#666;cursor:pointer;text-align:center}
-.doc-editor .ed-page-drop img{width:100px;height:auto;opacity:.9}
 .doc-editor .ed-dropzone{display:flex;flex-direction:column;align-items:center;justify-content:center;background:#fff;border:2px dashed #e5e5e5;border-radius:12px;width:min(560px,92%);height:420px;color:#666;gap:6px;cursor:pointer}
 .doc-editor .ed-dropzone .dz-title{font-weight:800;color:#222}
 .doc-editor .ed-dropzone .dz-sub{opacity:.7}
@@ -385,7 +373,7 @@ main{flex:1}
 .doc-editor .ed-dl-row{display:flex;gap:8px;flex-wrap:wrap}
 .doc-editor .ed-dl-row-paid{margin-bottom:12px}
 
-/* Пагинация страниц */
+/* Пагинация страниц (отдельной полосой) */
 .doc-editor .ed-pages{display:flex;gap:8px;align-items:center;justify-content:center;padding:12px 0 6px}
 .doc-editor .ed-page-btn{position:relative;border:1px solid #e5e5e5;background:#fff;border-radius:10px;width:36px;height:36px;display:flex;align-items:center;justify-content:center;cursor:pointer;user-select:none}
 .doc-editor .ed-page-btn.active{border-color:var(--accent);color:var(--accent);box-shadow:0 6px 18px rgba(226,109,92,.2)}
@@ -393,7 +381,7 @@ main{flex:1}
 .doc-editor .ed-page-add img{width:18px;height:18px}
 .ed-dim{position:fixed;inset:0;background:rgba(0,0,0,.2);z-index:50}
 
-/* Нижняя мобильная панель — высота через переменную */
+/* Нижняя панель: есть и на десктопе, и на мобиле (разная высота) */
 .doc-editor .ed-bottom{
   position:fixed;left:0;right:0;bottom:0;background:#fff;border-top:1px solid #eee;
   padding:10px 12px;z-index:100;min-height:var(--ed-bottom-h);
@@ -442,6 +430,7 @@ main{flex:1}
 .pay-modal .promo-err{color:#c33;font-size:12px}
 .pay-modal .pay-buttons{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 
+/* Лоадер поверх области документа */
 .ed-canvas-loading{position:fixed;inset:0;background:rgba(255,255,255,.6);display:flex;align-items:center;justify-content:center;z-index:120;font-weight:800;color:#333;gap:10px}
 .ed-canvas-loading .spinner{width:28px;height:28px;border:3px solid rgba(0,0,0,.2);border-top-color:#000;border-radius:50%;animation:spin .8s linear infinite}
 
@@ -494,7 +483,6 @@ main{flex:1}
 
   /* Область предпросмотра учитывает нижнюю панель */
   .doc-editor .ed-canvas-wrap{
-    padding:12px 10px calc(var(--ed-bottom-h) + 8px);
     height:calc(100vh - var(--hdr-h) - var(--ed-top-h) - var(--ed-bottom-h) - 8px);
     min-height:auto;
     overflow:hidden
@@ -502,6 +490,7 @@ main{flex:1}
 
   /* Листы выбора действий и загрузки на мобильных над нижней панелью */
   .ed-sheet{left:12px;right:12px;top:auto;bottom:calc(var(--ed-bottom-h) + 12px)}
+
   /* скрыть кнопку удаления страницы над канвой на мобиле */
   .doc-editor .ed-page-x{display:none}
 }

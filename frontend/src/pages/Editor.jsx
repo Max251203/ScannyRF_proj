@@ -8,7 +8,6 @@ import {
 } from '../utils/scriptLoader'
 import { EditorWS } from '../utils/wsClient'
 
-import icMore from '../assets/icons/kebab.png'
 import icText from '../assets/icons/text.png'
 import icSign from '../assets/icons/sign-upload.png'
 import icAddPage from '../assets/icons/page-add.png'
@@ -105,7 +104,6 @@ export default function Editor(){
   const [color, setColor] = useState('#000000')
 
   const [menuAddOpen, setMenuAddOpen] = useState(false)
-  const [menuMoreOpen, setMenuMoreOpen] = useState(false)
   const [menuDownloadOpen, setMenuDownloadOpen] = useState(false)
   const [payOpen, setPayOpen] = useState(false)
 
@@ -134,7 +132,7 @@ export default function Editor(){
   const [undoStack, setUndoStack] = useState([])
   const canUndo = undoStack.length>0
 
-  // ----- Рефы, чтобы сериализация всегда видела АКТУАЛЬНОЕ состояние -----
+  // ----- Рефы -----
   const pagesRef = useRef(pages)
   const docIdRef = useRef(docId)
   const fileNameRef = useRef(fileName)
@@ -142,7 +140,7 @@ export default function Editor(){
   useEffect(()=>{ docIdRef.current = docId }, [docId])
   useEffect(()=>{ fileNameRef.current = fileName }, [fileName])
 
-  // ----- WebSocket + событийная модель -----
+  // ----- WebSocket + dirty -----
   const wsRef = useRef(null)
   const dirtyRef = useRef(false)
 
@@ -150,40 +148,45 @@ export default function Editor(){
     dirtyRef.current = true
     try { wsRef.current?.sendEvent(kind, payload) } catch {}
   }
-
-  function getAccessToken() {
-    return localStorage.getItem('access') || ''
+  async function commitSnapshotWS(reason='action'){
+    if(!hasDoc) return
+    try{
+      ensureWS()
+      const s = await serializeDocument()
+      wsRef.current?.commit(s)
+      dirtyRef.current = false
+    }catch(e){
+      console.warn('[commitSnapshotWS]', reason, e?.message||e)
+    }
   }
 
+  function getAccessToken() { return localStorage.getItem('access') || '' }
   function ensureWS() {
     if (!isAuthed || !docIdRef.current) return
     const token = getAccessToken()
     const apiBase = AuthAPI.getApiBase()
     if (!wsRef.current) {
       wsRef.current = new EditorWS({ clientId: docIdRef.current, token, apiBase })
-      // ленивое подключение произойдёт при первом sendEvent()/commit
     } else {
       wsRef.current.setClientId(docIdRef.current)
       wsRef.current.setToken(token)
     }
   }
 
-  // ----- ЕДИНОЕ сохранение при выходе/скрытии -----
+  // ----- Финальный коммит при уходе/скрытии -----
   async function commitDraft(reason='unmount'){
-    if (!dirtyRef.current || !hasDoc) return
+    if (!hasDoc) return
     try {
       const s = await serializeDocument()
       try { ensureWS(); wsRef.current?.commit(s) } catch {}
-      // Дополнительный бэкенд-фолбэк (мелкий JSON) — без таймеров, единоразово
       try { await AuthAPI.saveDraft(s) } catch {}
       dirtyRef.current = false
     } catch (e) {
-      // не падаем — уходим с страницы
       console.error('commitDraft failed', reason, e)
     }
   }
 
-  // Флаш при скрытии вкладки/уходе со страницы
+  // pagehide/hidden
   useEffect(()=>{
     const onVis = () => { if (document.hidden) commitDraft('hidden').catch(()=>{}) }
     const onHide = () => { commitDraft('pagehide').catch(()=>{}) }
@@ -195,13 +198,13 @@ export default function Editor(){
     }
   }, [hasDoc])
 
-  // Флаш при размонтировании (смена страницы)
+  // unmount
   useEffect(() => {
     return () => { try { commitDraft('unmount') } catch {} }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Восстанавливаем настройки биллинга
+  // Billing
   useEffect(()=>{
     if(isAuthed){
       AuthAPI.getBillingStatus()
@@ -250,7 +253,6 @@ export default function Editor(){
       }
     }
     const onStorage = () => {
-      // если access поменялся — обновим токен для ws
       const t = getAccessToken()
       if (wsRef.current) wsRef.current.setToken(t)
     }
@@ -264,7 +266,6 @@ export default function Editor(){
   const docFileRef = useRef(null)
   const bgFileRef = useRef(null)
   const signFileRef = useRef(null)
-  const moreRef = useRef(null)
   const sheetRef = useRef(null)
   const dlRef = useRef(null)
 
@@ -276,7 +277,7 @@ export default function Editor(){
     return ()=>mq.removeEventListener('change',on)
   },[])
 
-  // В ЭДИТОРЕ ВСЕГДА прячем футер (и на десктопе, и на мобиле)
+  // В ЭДИТОРЕ ВСЕГДА прячем футер
   useEffect(()=>{
     document.body.classList.add('no-footer')
     document.documentElement.classList.add('no-footer')
@@ -286,27 +287,27 @@ export default function Editor(){
     }
   }, [])
 
+  // Клики вне листов
   useEffect(()=>{
     function onDoc(e){
       const t=e.target
-      if(menuMoreOpen && moreRef.current && !moreRef.current.contains(t)) setMenuMoreOpen(false)
       if(menuAddOpen && sheetRef.current && !sheetRef.current.contains(t)) setMenuAddOpen(false)
       if(menuDownloadOpen && dlRef.current && !dlRef.current.contains(t)) setMenuDownloadOpen(false)
     }
-    if(menuMoreOpen||menuAddOpen||menuDownloadOpen){
+    if(menuAddOpen||menuDownloadOpen){
       document.addEventListener('click',onDoc,true)
       return ()=>document.removeEventListener('click',onDoc,true)
     }
-  },[menuMoreOpen,menuAddOpen,menuDownloadOpen])
+  },[menuAddOpen,menuDownloadOpen])
 
-  // Рефит при ресайзе контейнера — считаем только вписывание (без таймеров)
+  // Рефит при ресайзе контейнера — считаем только вписывание
   useEffect(()=>{
     if(!canvasWrapRef.current) return
     const ro=new ResizeObserver(()=>{ pages.forEach((_,i)=>fitCanvas(i)) })
     ro.observe(canvasWrapRef.current)
     return ()=>ro.disconnect()
   },[pages])
-  useEffect(()=>{ if(pages[cur]?.canvas){ requestAnimationFrame(()=>fitCanvas(cur)); setTimeout(()=>fitCanvas(cur),0) } },[cur,pages.length,isMobile])
+  useEffect(()=>{ if(pages[cur]?.canvas){ requestAnimationFrame(()=>fitCanvas(cur)) } },[cur,pages.length,isMobile])
 
   // ---- Восстановление черновика последнего документа — только с сервера ----
   useEffect(()=>{
@@ -348,15 +349,14 @@ export default function Editor(){
     return { width: el?.naturalWidth || fabImg.width || 1, height: el?.naturalHeight || fabImg.height || 1 }
   }
 
-  // ВАЖНО: теперь не меняем реальный размер canvas под контейнер,
-  // а вписываем "мировые" размеры через viewportTransform (масштаб/отступы)
+  // --- CSS-вписывание: внутренний canvas = worldW/worldH, отображение = CSS width/height ---
   function fitCanvasForPage(page){
     if(!page || !page.canvas) return
     const cv = page.canvas
     const wrap = canvasWrapRef.current
     if(!wrap) return
     const box = wrap.getBoundingClientRect()
-    if(!box || box.width<10 || box.height<10){ setTimeout(()=>fitCanvasForPage(page),30); return }
+    if(!box || box.width<10 || box.height<10){ requestAnimationFrame(()=>fitCanvasForPage(page)); return }
 
     const marginX = 8
     const marginY = 8
@@ -367,12 +367,19 @@ export default function Editor(){
     const worldH = Math.max(1, page.worldH || (page.landscape ? PAGE_W : PAGE_H))
 
     const s = Math.min(availW/worldW, availH/worldH)
-    const dx = (box.width - worldW*s)/2
-    const dy = (box.height - worldH*s)/2
+    const cssW = Math.max(1, Math.round(worldW * s))
+    const cssH = Math.max(1, Math.round(worldH * s))
 
-    // viewportTransform: [a, b, c, d, e, f]  (scaleX=a, scaleY=d, translate=e,f)
-    cv.setViewportTransform([s, 0, 0, s, Math.round(dx), Math.round(dy)])
-    cv.requestRenderAll()
+    const lower = cv.lowerCanvasEl
+    const upper = cv.upperCanvasEl
+    const cont  = lower?.parentElement // .canvas-container
+    const edCanvasEl = cont?.parentElement // .ed-canvas
+
+    // Применяем CSS размеры
+    if (lower) { lower.style.width = cssW+'px'; lower.style.height = cssH+'px'; lower.style.maxWidth='none'; lower.style.maxHeight='none' }
+    if (upper) { upper.style.width = cssW+'px'; upper.style.height = cssH+'px'; upper.style.maxWidth='none'; upper.style.maxHeight='none' }
+    if (cont)  { cont.style.width  = cssW+'px'; cont.style.height  = cssH+'px' }
+    if (edCanvasEl) { edCanvasEl.style.width = cssW+'px'; edCanvasEl.style.height = cssH+'px' }
   }
   function fitCanvas(idx){ const p=pages[idx]; if(!p||!p.canvas) return; fitCanvasForPage(p) }
 
@@ -382,7 +389,7 @@ export default function Editor(){
     await waitForElm(page.elId)
     // eslint-disable-next-line no-undef
     const c=new fabric.Canvas(page.elId,{ backgroundColor:'#fff', preserveObjectStacking:true, selection:true })
-    // Мировые размеры = worldW/worldH
+    // Мировые размеры = worldW/worldH (реальные пиксели документа)
     const w = Math.max(1, page.worldW || PAGE_W)
     const h = Math.max(1, page.worldH || PAGE_H)
     c.setWidth(w); c.setHeight(h)
@@ -393,14 +400,18 @@ export default function Editor(){
     c.on('selection:updated', onSelectionChanged)
     c.on('selection:cleared', ()=>setPanelOpen(false))
 
-    // Событийная запись + пометка dirty (без таймеров)
-    c.on('object:added',   (e)=>{ markDirty('obj_added',   { t:e?.target?.type||'' }); })
-    c.on('object:modified',(e)=>{ markDirty('obj_modified',{ t:e?.target?.type||'' }); })
-    c.on('object:removed', (e)=>{ markDirty('obj_removed', { t:e?.target?.type||'' }); })
+    // Мелкие события — только dirty/event
     c.on('object:moving',  ()=>{ markDirty('obj_moving'); })
     c.on('object:scaling', ()=>{ markDirty('obj_scaling'); })
     c.on('object:rotating',()=>{ markDirty('obj_rotating'); })
-    try{ c.on('text:changed', ()=>{ markDirty('text_changed') }) }catch{}
+    // Завершение правок — полный коммит
+    c.on('object:added',   async (e)=>{ markDirty('obj_added',   { t:e?.target?.type||'' }); await commitSnapshotWS('obj_added') })
+    c.on('object:modified',async (e)=>{ markDirty('obj_modified',{ t:e?.target?.type||'' }); await commitSnapshotWS('obj_modified') })
+    c.on('object:removed', async (e)=>{ markDirty('obj_removed', { t:e?.target?.type||'' }); await commitSnapshotWS('obj_removed') })
+    try{
+      c.on('text:changed', ()=>{ markDirty('text_changed') })
+      c.on('editing:exited', async (e)=>{ markDirty('text_edit_done'); await commitSnapshotWS('text_edit_done') })
+    }catch{}
 
     installDeleteControl()
     return c
@@ -426,12 +437,13 @@ export default function Editor(){
     const F=fabric
     const del=new F.Control({
       x:0.5,y:-0.5,offsetX:12,offsetY:-12,cursorStyle:'pointer',
-      mouseUpHandler:(_,tr)=>{
+      mouseUpHandler:async (_,tr)=>{
         const t=tr.target,cv=t.canvas
         if (window.confirm('Удалить объект со страницы?')) {
           cv.remove(t); cv.discardActiveObject(); cv.requestRenderAll()
           toast('Объект удалён','success')
           markDirty('obj_deleted', { t: t?.type || '' })
+          await commitSnapshotWS('obj_deleted')
         }
         return true
       },
@@ -457,17 +469,19 @@ export default function Editor(){
     try { if (docIdRef.current) await AuthAPI.deleteUploadsByClient(docIdRef.current) } catch {}
     setDocId(null)
     markDirty('remove_document')
+    await commitSnapshotWS('remove_document')
     toast('Документ удалён','success')
   }
-  function removePage(idx=cur){
+  async function removePage(idx=cur){
     if (!hasDoc) return
-    if (pages.length<=1){ removeDocument(); return }
+    if (pages.length<=1){ await removeDocument(); return }
     if (!window.confirm('Удалить текущую страницу?')) return
     const target = pages[idx]; try{ target.canvas?.dispose?.() }catch{}
     setPages(prev=>prev.filter((_,i)=>i!==idx))
     setCur(i=>Math.max(0, idx-1))
     setUndoStack(stk=>stk.filter(x=>!(x.page===idx)))
     markDirty('remove_page', { page: idx })
+    await commitSnapshotWS('remove_page')
     toast('Страница удалена','success')
   }
 
@@ -523,7 +537,12 @@ export default function Editor(){
         cvDst.add(im); cvDst.requestRenderAll(); clones.push({page:i,id:im.__scannyId})
       }
     }
-    if(clones.length){ setUndoStack(stk=>[...stk,{type:'apply_all',clones}]); markDirty('apply_all', { count: clones.length }); toast('Объект продублирован на все страницы','success') }
+    if(clones.length){
+      setUndoStack(stk=>[...stk,{type:'apply_all',clones}])
+      markDirty('apply_all', { count: clones.length })
+      await commitSnapshotWS('apply_all')
+      toast('Объект продублирован на все страницы','success')
+    }
   }
 
   function pickDocument(){ docFileRef.current?.click() }
@@ -566,8 +585,12 @@ export default function Editor(){
         }
       }
 
-      markDirty('add_files', { pages: addedPages })
-      // записываем «загрузку» в историю
+      if (addedPages>0) {
+        markDirty('add_files', { pages: addedPages })
+        await commitSnapshotWS('add_files')
+      }
+
+      // История
       try{
         if (isAuthed && addedPages>0) {
           const nm = sanitizeName(initialName || fileNameRef.current || genDefaultName())
@@ -596,13 +619,13 @@ export default function Editor(){
     const imgEl=await loadImageEl(dataUrl)
     // eslint-disable-next-line no-undef
     const img=new fabric.Image(imgEl,{ selectable:false, evented:false, left:0, top:0 })
-    // Мировые размеры равны натуральным — scale = 1
-    const { width:iw, height:ih } = getImgOriginalSize(img)
-    img.set({ scaleX: page.worldW/iw, scaleY: page.worldH/ih })
+    const iw = imgEl.naturalWidth||imgEl.width||1
+    const ih = imgEl.naturalHeight||imgEl.height||1
+    const s = Math.min(cv.getWidth()/iw, cv.getHeight()/ih)
+    img.set({ scaleX:s, scaleY:s })
     try{ if(page.bgObj) cv.remove(page.bgObj) }catch{}
     page.bgObj=img; cv.add(img); img.moveTo(0); cv.requestRenderAll()
     fitCanvasForPage(page)
-    markDirty('add_page', { type: 'image' })
     return page
   }
 
@@ -626,7 +649,6 @@ export default function Editor(){
     for(let i=1;i<=pdf.numPages;i++){
       const url=await renderPDFPageToDataURL(pdf,i,2.0)
       const id='p_'+Math.random().toString(36).slice(2), elId='cv_'+id
-      // Определим мировые размеры по превью
       const im = await loadImageEl(url)
       const worldW = im.naturalWidth||im.width||PAGE_W
       const worldH = im.naturalHeight||im.height||PAGE_H
@@ -638,12 +660,13 @@ export default function Editor(){
       await ensureFabric()
       // eslint-disable-next-line no-undef
       const img=new fabric.Image(im,{ selectable:false, evented:false, left:0, top:0 })
-      // подгоняем к миру
-      img.set({ scaleX: worldW/(im.width||worldW), scaleY: worldH/(im.height||worldH) })
+      const iw = im.naturalWidth||im.width||1
+      const ih = im.naturalHeight||im.height||1
+      const s = Math.min(cv.getWidth()/iw, cv.getHeight()/ih)
+      img.set({ scaleX:s, scaleY:s })
       try{ if(page.bgObj) cv.remove(page.bgObj) }catch{}
       page.bgObj=img; cv.add(img); img.moveTo(0); cv.requestRenderAll()
       fitCanvasForPage(page)
-      markDirty('add_page', { type: 'pdf' })
     }
     return total
   }
@@ -700,9 +723,6 @@ export default function Editor(){
     const all = cv.getObjects() || []
     return all.filter(o => o !== page.bgObj)
   }
-  function hasRotation(objs){
-    return objs.some(o => Math.abs(o.angle||0) > 0.01)
-  }
   function computeMultiplierForOverlay(cv, page, targetW, targetH){
     let mulX = Math.max(1, targetW / Math.max(1, cv.getWidth()))
     let mulY = Math.max(1, targetH / Math.max(1, cv.getHeight()))
@@ -743,9 +763,10 @@ export default function Editor(){
       const thr = Math.round(255 * (cropThresh / 100))
       dataUrl = await removeWhiteBackground(dataUrl, thr)
 
-      if (hasDoc && isMobile) {
+      if (hasDoc) {
         const page = pages[cur]
         const cv = await ensureCanvas(page)
+        // eslint-disable-next-line no-undef
         const imgEl = await loadImageEl(dataUrl)
         // eslint-disable-next-line no-undef
         const img = new fabric.Image(imgEl)
@@ -756,10 +777,7 @@ export default function Editor(){
         cv.add(img); cv.setActiveObject(img); cv.requestRenderAll()
         setUndoStack(stk => [...stk, { type: 'add_one', page: cur, id: img.__scannyId }])
         markDirty('add_signature_on_canvas')
-      } else {
-        await AuthAPI.addSign({ kind: cropType, data_url: dataUrl })
-        loadLibrary()
-        markDirty('add_signature_to_library')
+        await commitSnapshotWS('add_signature_on_canvas')
       }
       setCropOpen(false)
     } catch (e) {
@@ -782,18 +800,18 @@ export default function Editor(){
   function startDragSign(url,e){ try{ e.dataTransfer.setData('application/x-sign-url',url); e.dataTransfer.effectAllowed='copy' }catch{} }
   function placeFromLib(url){
     if(!hasDoc){ toast('Сначала добавьте страницу','error'); return }
-    const page=pages[cur]; ensureCanvas(page).then(cv=>{
-      loadImageEl(url).then(imgEl=>{
-        // eslint-disable-next-line no-undef
-        const img=new fabric.Image(imgEl)
-        const w=cv.getWidth(),h=cv.getHeight()
-        const s=Math.min(1,(w*0.35)/(img.width||1))
-        img.set({left:Math.round(w*0.15),top:Math.round(h*0.15),scaleX:s,scaleY:s,selectable:true})
-        img.__scannyId=uniqueObjId(); ensureDeleteControlFor(img)
-        cv.add(img); cv.setActiveObject(img); cv.requestRenderAll()
-        setUndoStack(stk=>[...stk,{type:'add_one',page:cur,id:img.__scannyId}])
-        markDirty('place_from_library')
-      })
+    const page=pages[cur]; ensureCanvas(page).then(async (cv)=>{
+      const imgEl=await loadImageEl(url)
+      // eslint-disable-next-line no-undef
+      const img=new fabric.Image(imgEl)
+      const w=cv.getWidth(),h=cv.getHeight()
+      const s=Math.min(1,(w*0.35)/(img.width||1))
+      img.set({left:Math.round(w*0.15),top:Math.round(h*0.15),scaleX:s,scaleY:s,selectable:true})
+      img.__scannyId=uniqueObjId(); ensureDeleteControlFor(img)
+      cv.add(img); cv.setActiveObject(img); cv.requestRenderAll()
+      setUndoStack(stk=>[...stk,{type:'add_one',page:cur,id:img.__scannyId}])
+      markDirty('place_from_library')
+      await commitSnapshotWS('place_from_library')
     })
   }
   async function removeFromLib(item){
@@ -806,6 +824,7 @@ export default function Editor(){
       }
       await loadLibrary()
       markDirty('remove_from_library')
+      await commitSnapshotWS('remove_from_library')
       toast('Удалено','success')
     } catch (e){
       toast(e.message || 'Не удалось удалить','error')
@@ -830,6 +849,7 @@ export default function Editor(){
     cv.add(tb); cv.setActiveObject(tb); cv.requestRenderAll(); setPanelOpen(true)
     setUndoStack(stk=>[...stk,{type:'add_one',page:cur,id:tb.__scannyId}])
     markDirty('add_textbox')
+    await commitSnapshotWS('add_textbox')
   }
 
   async function applyPanel(){
@@ -837,29 +857,30 @@ export default function Editor(){
     obj.set({ fontFamily:font, fontSize:fontSize, fontWeight:bold?'bold':'normal', fontStyle:italic?'italic':'normal', fill:color })
     cv.requestRenderAll()
     markDirty('textbox_style')
+    await commitSnapshotWS('textbox_style')
   }
   useEffect(()=>{ if(panelOpen) applyPanel() },[font,fontSize,bold,italic,color])
 
-  // Поворот: не крутим канвас, а поворачиваем фон и вписываем его в мировые размеры
+  // Поворот: поворачиваем фон в мировых координатах, затем пере-вписываем CSS
   async function rotatePage(){
     if(!hasDoc) return
     const page=pages[cur]; await ensureCanvas(page)
     page.landscape = !page.landscape
     const bg = page.bgObj
     if (bg) {
-      const ang = (Math.round((bg.angle||0)/90)*90 + 90) % 180  // 0 <-> 90
-      const iw = bg._originalElement?.naturalWidth || bg._originalElement?.width || 1
-      const ih = bg._originalElement?.naturalHeight || bg._originalElement?.height || 1
-      const worldW = page.canvas.getWidth(), worldH = page.canvas.getHeight()
-      // если 90°, то ширина/высота меняются местами
-      const s = (ang === 90)
-        ? Math.min(worldW/ih, worldH/iw)
-        : Math.min(worldW/iw, worldH/ih)
-      bg.set({ angle: ang, left:0, top:0, scaleX:s, scaleY:s })
+      // Пересчёт масштаба фона внутри мира (не сдвигаем объекты)
+      const el = bg._originalElement || bg._element
+      const iw = el?.naturalWidth || el?.width || 1
+      const ih = el?.naturalHeight || el?.height || 1
+      // поменяем "ориентацию" за счёт swap w/h при расчёте scale
+      const w = page.canvas.getWidth(), h = page.canvas.getHeight()
+      const s = Math.min(w/iw, h/ih)
+      bg.set({ left:0, top:0, angle: (page.landscape ? 90 : 0), scaleX:s, scaleY:s })
       page.canvas.requestRenderAll()
     }
     fitCanvasForPage(page)
     markDirty('rotate_page', { landscape: page.landscape })
+    await commitSnapshotWS('rotate_page')
   }
 
   function undo(){
@@ -868,6 +889,7 @@ export default function Editor(){
     else if(last.type==='apply_all'){ last.clones.forEach(({page,id})=>{ const p=pages[page], cv=p?.canvas; if(cv){ const obj=cv.getObjects().find(o=>o.__scannyId===id); if(obj){ cv.remove(obj) } cv.requestRenderAll() } }) }
     setUndoStack(stk)
     markDirty('undo')
+    commitSnapshotWS('undo').catch(()=>{})
   }
 
   function baseName(){ const nm=(fileNameRef.current||'').trim(); if(!nm){ toast('Введите название файла вверху','error'); return null } return sanitizeName(nm) }
@@ -1065,7 +1087,6 @@ export default function Editor(){
     }
   }
 
-  // ===== Фон текущей страницы (замена) =====
   async function assignFirstFileToCurrent(file){
     const ext=(file.name.split('.').pop()||'').toLowerCase()
     const page=pages[cur]; if(!page) return
@@ -1074,24 +1095,24 @@ export default function Editor(){
       if(['jpg','jpeg','png'].includes(ext)){
         const url=await readAsDataURL(file)
         await setPageBackgroundFromImage(cur,url)
-        markDirty('set_bg_image')
+        markDirty('set_bg_image'); await commitSnapshotWS('set_bg_image')
       }else if(ext==='pdf'){
         const ab = await file.arrayBuffer()
         const bytes = toUint8Copy(ab)
         await setPageBackgroundFromFirstPDFPage(cur, bytes)
-        markDirty('set_bg_pdf')
+        markDirty('set_bg_pdf'); await commitSnapshotWS('set_bg_pdf')
       }else if(['docx','doc'].includes(ext)){
         const canv=await renderDOCXToCanvas(file)
         const slices=sliceCanvasToPages(canv)
         await setPageBackgroundFromImage(cur, slices[0]||canv.toDataURL('image/png'))
         page.meta = { type:'raster', src: slices[0]||canv.toDataURL('image/png'), w: PAGE_W, h: PAGE_H }
-        markDirty('set_bg_raster_docx')
+        markDirty('set_bg_raster_docx'); await commitSnapshotWS('set_bg_raster_docx')
       }else if(['xls','xlsx'].includes(ext)){
         const canv=await renderXLSXToCanvas(file)
         const slices=sliceCanvasToPages(canv)
         await setPageBackgroundFromImage(cur, slices[0]||canv.toDataURL('image/png'))
         page.meta = { type:'raster', src: slices[0]||canv.toDataURL('image/png'), w: PAGE_W, h: PAGE_H }
-        markDirty('set_bg_raster_xlsx')
+        markDirty('set_bg_raster_xlsx'); await commitSnapshotWS('set_bg_raster_xlsx')
       }else toast('Этот формат не поддерживается','error')
     }catch(e){ toast(e.message||'Не удалось назначить страницу','error') }
     finally{ setLoading(false) }
@@ -1104,14 +1125,12 @@ export default function Editor(){
     const imgEl=await loadImageEl(dataUrl)
     // eslint-disable-next-line no-undef
     const img=new fabric.Image(imgEl,{ selectable:false, evented:false })
-    // Вписываем с сохранением пропорций в мировые размеры
     const iw = imgEl.naturalWidth||imgEl.width||1
     const ih = imgEl.naturalHeight||imgEl.height||1
     const s = Math.min(cv.getWidth()/iw, cv.getHeight()/ih)
     img.set({ left:0, top:0, scaleX:s, scaleY:s })
     try{ if(page.bgObj) cv.remove(page.bgObj) }catch{}
     page.bgObj=img; cv.add(img); img.moveTo(0); cv.requestRenderAll()
-    // meta
     if (page.meta?.type==='image' || page.meta?.type==='raster') {
       page.meta = { ...page.meta, src:dataUrl, w:iw, h:ih, mime: dataUrl.startsWith('data:image/jpeg')?'image/jpeg':'image/png' }
     } else {
@@ -1145,13 +1164,11 @@ export default function Editor(){
         const targetW = Math.max(1, p.worldW || cv.getWidth())
         const targetH = Math.max(1, p.worldH || cv.getHeight())
 
-        // Рисуем фон в оффскрине
         const off = document.createElement('canvas')
         off.width = targetW
         off.height = targetH
         const octx = off.getContext('2d')
-        octx.fillStyle = '#fff'
-        octx.fillRect(0,0,off.width,off.height)
+        octx.fillStyle = '#fff'; octx.fillRect(0,0,off.width,off.height)
 
         if (p.meta?.type === 'pdf' && p.meta.bytes) {
           await ensurePDFJS()
@@ -1177,13 +1194,11 @@ export default function Editor(){
           const dy = Math.round((off.height - dh)/2)
           octx.drawImage(img, dx, dy, dw, dh)
         } else {
-          // падение назад — обычный снимок
           const url = cv.toDataURL({ format:'png', multiplier: 3 })
           const img = await loadImageEl(url)
           octx.drawImage(img, 0, 0, off.width, off.height)
         }
 
-        // Оверлей
         const overlayBytes = await exportOverlayAsPNGBytes(p, cv, off.width, off.height)
         if (overlayBytes) {
           const blob = new Blob([overlayBytes], { type:'image/png' })
@@ -1284,10 +1299,11 @@ export default function Editor(){
     }catch(e){ toast(e.message||'Ошибка оплаты','error') }
   }
 
-  // Помечаем документ грязным при переименовании (без таймеров)
-  useEffect(()=>{ if(hasDoc) { try { wsRef.current?.sendEvent('rename', { name: fileName }) } catch {}; dirtyRef.current = true } },[fileName, hasDoc])
+  // Переименование файла: помечаем dirty, коммит по blur (чтобы не на каждую букву)
+  const onRenameChange = (e) => { setFileName(sanitizeName(e.target.value)); markDirty('rename') }
+  const onRenameBlur = () => { if(hasDoc) commitSnapshotWS('rename').catch(()=>{}) }
 
-  // Поддержка удаления по клавише Delete/Backspace (кроме ввода в поля/textarea)
+  // Удаление по клавише Delete/Backspace (после — коммит)
   useEffect(()=>{
     const onKey=(e)=>{
       const tag = String(e.target?.tagName || '').toLowerCase()
@@ -1300,6 +1316,7 @@ export default function Editor(){
           e.preventDefault()
           cv.remove(obj); cv.discardActiveObject(); cv.requestRenderAll()
           markDirty('delete_by_key')
+          commitSnapshotWS('delete_by_key').catch(()=>{})
           toast('Объект удалён','success')
         }
       }
@@ -1308,39 +1325,37 @@ export default function Editor(){
     return ()=>document.removeEventListener('keydown', onKey)
   },[pages, cur])
 
-  // UI
   const hasActive = hasDoc && !!(pages[cur]?.canvas?.getActiveObject())
 
   return (
     <div className="doc-editor page" style={{ paddingTop: 0 }}>
-      {/* ЕДИНАЯ ВЕРХНЯЯ ПАНЕЛЬ: либо "имя файла", либо "панель текста" */}
-      <div className="ed-top">
-        {!panelOpen ? (
-          <>
-            <button className="ed-menu-btn" aria-label="Ещё" onClick={()=>setMenuMoreOpen(o=>!o)}><img src={icMore} alt=""/></button>
-            <div className="ed-docid" style={{flex:1,padding:'0 8px'}}>
-              <input className="ed-filename" placeholder="Название файла при скачивании" value={fileName} onChange={e=>setFileName(sanitizeName(e.target.value))}/>
-            </div>
-            <div className="ed-top-right"></div>
-            {menuMoreOpen && (
-              <div className="ed-menu" ref={moreRef}>
-                <button onClick={rotatePage}><img src={icRotate} alt="" style={{width:18,height:18,marginRight:8}}/>Повернуть страницу</button>
-                <button className={pages.length>1?'':'disabled'} onClick={()=>removePage()}><img src={icDelete} alt="" style={{width:18,height:18,marginRight:8}}/>Удалить страницу</button>
-                <button className={hasActive?'':'disabled'} onClick={()=>{ if(hasActive) applyToAllPages() }}><img src={icAddPage} alt="" style={{width:18,height:18,marginRight:8}}/>На все страницы</button>
-                <button className={hasDoc?'':'disabled'} onClick={removeDocument}><img src={icDelete} alt="" style={{width:18,height:18,marginRight:8}}/>Удалить документ</button>
-              </div>
-            )}
-          </>
-        ) : (
-          <div className="ed-toolbar">
+      {/* ЕДИНАЯ ВЕРХНЯЯ ПАНЕЛЬ:
+          - Desktop: только поле по центру
+          - Mobile: слева кнопка "меню" (открывает лист), по центру поле
+          - Третий режим: панель текста (подменяет верхнюю панель полностью)
+      */}
+      {!panelOpen ? (
+        <div className="ed-top">
+          {/* Мобильная кнопка "меню" слева */}
+          <button className="ed-menu-btn mobile-only" aria-label="Меню" onClick={()=>setMenuAddOpen(o=>!o)}>⋮</button>
+          <div className="ed-docid" style={{flex:1, display:'flex', justifyContent:'center'}}>
+            <input className="ed-filename" placeholder="Название файла при скачивании"
+                   value={fileName} onChange={onRenameChange} onBlur={onRenameBlur}
+                   style={{ margin: '0 auto' }}/>
+          </div>
+          <div style={{width:36 /* правый спейсер */}} className="desktop-only" />
+        </div>
+      ) : (
+        <div className="ed-top">
+          <div className="ed-toolbar" style={{ margin:'0 auto' }}>
             <select value={font} onChange={e=>setFont(e.target.value)}>{FONTS.map(f=><option key={f} value={f}>{f}</option>)}</select>
             <div className="sep"/><button onClick={()=>setFontSize(s=>Math.max(6,s-2))}>−</button><span className="val">{fontSize}</span><button onClick={()=>setFontSize(s=>Math.min(300,s+2))}>+</button>
             <div className="sep"/><input type="color" value={color} onChange={e=>setColor(e.target.value)} title="Цвет текста"/>
             <button className={bold?'toggled':''} onClick={()=>setBold(b=>!b)}><b>B</b></button>
             <button className={italic?'toggled':''} onClick={()=>setItalic(i=>!i)}><i>I</i></button>
           </div>
-        )}
-      </div>
+        </div>
+      )}
 
       <div className="ed-body">
         <aside className="ed-left">
@@ -1361,7 +1376,6 @@ export default function Editor(){
         </aside>
 
         <section className="ed-center">
-          {/* На десктопе отдельная панель ввода имени больше не нужна — она в .ed-top */}
           <div
             className="ed-canvas-wrap"
             ref={canvasWrapRef}
@@ -1385,37 +1399,49 @@ export default function Editor(){
             {loading && <div className="ed-canvas-loading"><div className="spinner" aria-hidden="true"></div>Загрузка…</div>}
           </div>
 
-          <div className="ed-pages desktop-only">
-            {pages.map((p,i)=>(<div key={p.id} className={`ed-page-btn ${i===cur?'active':''}`} onClick={()=>setCur(i)}>{i+1}</div>))}
-            <button className="ed-page-add" onClick={pickDocument}><img src={icPlus} alt="+"/></button>
-          </div>
-
-          {isMobile && (
-            <div className="ed-bottom mobile-only">
-              {/* Левая FAB — плюс и повторный клик — закрыть/открыть */}
-              <button className={`fab ${hasDoc?'':'disabled'}`} onClick={()=>{ if(!hasDoc){ return } setMenuAddOpen(o=>!o) }} title="Добавить">
-                <img src={icPlus} alt="+" />
+          {/* Desktop: короткая нижняя панель */}
+          <div className="ed-bottom desktop-only">
+            <button className={`fab ${hasDoc?'':'disabled'}`} onClick={()=>{ if(!hasDoc){ return } setMenuAddOpen(o=>!o) }} title="Добавить">
+              <img src={icPlus} alt="+" />
+            </button>
+            <div className="ed-pager">
+              <button onClick={()=>setCur(i=>Math.max(0, i-1))} disabled={!canPrev} title="Предыдущая">
+                <img src={icPrev} alt="Prev" />
               </button>
-
-              <div className="ed-pager">
-                <button onClick={()=>setCur(i=>Math.max(0, i-1))} disabled={!canPrev} title="Предыдущая">
-                  <img src={icPrev} alt="Prev" />
-                </button>
-                <span className="pg">{hasDoc ? `${cur+1}/${pages.length}` : '0/0'}</span>
-                <button onClick={()=>{ if(canNext) setCur(i=>Math.min(pages.length-1, i+1)); else pickDocument() }} title={canNext ? 'Следующая' : 'Добавить документ'}>
-                  {canNext
-                    ? <img src={icPrev} alt="Next" style={{ transform:'rotate(180deg)' }} />
-                    : <img src={icPlus} alt="+" />
-                  }
-                </button>
-              </div>
-
-              {/* Правая FAB — повторный клик также закрывает */}
-              <button className={`fab ${(!hasDoc)?'disabled':''}`} onClick={()=>{ if(!hasDoc) return; setMenuDownloadOpen(o=>!o) }} title="Скачать">
-                <img src={icDownload} alt="↓" />
+              <span className="pg">{hasDoc ? `${cur+1}/${pages.length}` : '0/0'}</span>
+              <button onClick={()=>{ if(canNext) setCur(i=>Math.min(pages.length-1, i+1)); else pickDocument() }} title={canNext ? 'Следующая' : 'Добавить документ'}>
+                {canNext
+                  ? <img src={icPrev} alt="Next" style={{ transform:'rotate(180deg)' }} />
+                  : <img src={icPlus} alt="+" />
+                }
               </button>
             </div>
-          )}
+            <button className={`fab ${(!hasDoc)?'disabled':''}`} onClick={()=>{ if(!hasDoc) return; setMenuDownloadOpen(o=>!o) }} title="Скачать">
+              <img src={icDownload} alt="↓" />
+            </button>
+          </div>
+
+          {/* Mobile: нижняя панель как раньше */}
+          <div className="ed-bottom mobile-only">
+            <button className={`fab ${hasDoc?'':'disabled'}`} onClick={()=>{ if(!hasDoc){ return } setMenuAddOpen(o=>!o) }} title="Добавить">
+              <img src={icPlus} alt="+" />
+            </button>
+            <div className="ed-pager">
+              <button onClick={()=>setCur(i=>Math.max(0, i-1))} disabled={!canPrev} title="Предыдущая">
+                <img src={icPrev} alt="Prev" />
+              </button>
+              <span className="pg">{hasDoc ? `${cur+1}/${pages.length}` : '0/0'}</span>
+              <button onClick={()=>{ if(canNext) setCur(i=>Math.min(pages.length-1, i+1)); else pickDocument() }} title={canNext ? 'Следующая' : 'Добавить документ'}>
+                {canNext
+                  ? <img src={icPrev} alt="Next" style={{ transform:'rotate(180deg)' }} />
+                  : <img src={icPlus} alt="+" />
+                }
+              </button>
+            </div>
+            <button className={`fab ${(!hasDoc)?'disabled':''}`} onClick={()=>{ if(!hasDoc) return; setMenuDownloadOpen(o=>!o) }} title="Скачать">
+              <img src={icDownload} alt="↓" />
+            </button>
+          </div>
         </section>
 
         <aside className="ed-right">
@@ -1441,11 +1467,15 @@ export default function Editor(){
         </aside>
       </div>
 
+      {/* Единый лист действий (и для desktop, и для mobile), открывается кнопкой "⋮" (моб. сверху) или плюсами */}
       {menuAddOpen && (
         <div className="ed-sheet" ref={sheetRef}>
           <button className={hasDoc?'':'disabled'} onClick={()=>{ if(hasDoc){ setMenuAddOpen(false); addText() } }}><img src={icText} alt="" style={{width:18,height:18,marginRight:10}}/>Добавить текст</button>
           <button onClick={()=>{ setMenuAddOpen(false); pickSignature() }}><img src={icSign} alt="" style={{width:18,height:18,marginRight:10}}/>Добавить подпись/печать</button>
           <button onClick={()=>{ setMenuAddOpen(false); pickDocument() }}><img src={icPlus} alt="" style={{width:18,height:18,marginRight:10}}/>Добавить документ/страницу</button>
+          <button className={hasDoc?'':'disabled'} onClick={()=>{ if(hasDoc){ setMenuAddOpen(false); rotatePage() } }}><img src={icRotate} alt="" style={{width:18,height:18,marginRight:10}}/>Повернуть страницу</button>
+          <button className={(hasDoc && pages.length>1)?'':'disabled'} onClick={()=>{ if(hasDoc){ setMenuAddOpen(false); removePage() } }}><img src={icDelete} alt="" style={{width:18,height:18,marginRight:10}}/>Удалить страницу</button>
+          <button className={(hasDoc && !!(pages[cur]?.canvas?.getActiveObject()))?'':'disabled'} onClick={()=>{ if(hasDoc){ setMenuAddOpen(false); applyToAllPages() } }}><img src={icAddPage} alt="" style={{width:18,height:18,marginRight:10}}/>На все страницы</button>
         </div>
       )}
 
@@ -1463,33 +1493,6 @@ export default function Editor(){
           <button className={`btn btn-lite ${hasDoc?'':'disabled'}`} style={{padding:'10px 14px'}} onClick={()=>{ if(hasDoc){ setMenuDownloadOpen(false); exportPDF() } }}>
             <img src={icPdfFree} alt="" style={{width:18,height:18,marginRight:10}}/>Скачать бесплатно PDF
           </button>
-        </div>
-      )}
-
-      {(menuAddOpen || menuDownloadOpen || menuMoreOpen) && <div className="ed-dim" onClick={()=>{ setMenuAddOpen(false); setMenuDownloadOpen(false); setMenuMoreOpen(false) }}/>}
-      {cropOpen && (
-        <div className="modal-overlay" onClick={()=>setCropOpen(false)}>
-          <div className="modal crop-modal" onClick={e=>e.stopPropagation()}>
-            <button className="modal-x" onClick={()=>setCropOpen(false)}>×</button>
-            <h3 className="modal-title">1. Выделите область</h3>
-            <div className="crop-row">
-              <select value={cropType} onChange={e=>setCropType(e.target.value)}>
-                <option value="signature">подпись</option>
-                <option value="sig_seal">подпись + печать</option>
-                <option value="round_seal">круглая печать</option>
-              </select>
-            </div>
-            <div className="crop-area"><img ref={cropImgRef} src={cropSrc} alt="" style={{maxWidth:'100%',maxHeight:'46vh'}}/></div>
-            <div className="crop-controls">
-              <h4>2. Настройте прозрачность фона:</h4>
-              <div className="thr-row">
-                <input type="range" min="0" max="100" value={cropThresh} onChange={e=>setCropThresh(Number(e.target.value))}/>
-                <input type="number" min="0" max="100" value={cropThresh} onChange={e=>{ const v=Math.max(0,Math.min(100,Number(e.target.value)||0)); setCropThresh(v) }}/>
-                <span>%</span>
-              </div>
-              <button className="btn" onClick={cropConfirm}><span className="label">Готово</span></button>
-            </div>
-          </div>
         </div>
       )}
 

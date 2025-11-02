@@ -1,11 +1,17 @@
-// ----------------------------- API core helpers -----------------------------
+// src/api.js
+// Без 401 в консоли: не шлём запросы, если нет access-токена.
+// WebSocket используется для событий, а REST — для чтения/коммита снапшота.
 
-// Базовый URL API
 const API = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000/api';
 
-function authHeader() {
-  const access = localStorage.getItem('access');
-  return access ? { Authorization: `Bearer ${access}` } : {};
+function hasAccess() {
+  return !!localStorage.getItem('access');
+}
+function getAccess() {
+  return localStorage.getItem('access') || '';
+}
+function getRefresh() {
+  return localStorage.getItem('refresh') || '';
 }
 
 function parseJsonSafe(text) {
@@ -37,13 +43,14 @@ function isTokenProblem(text) {
 }
 
 async function refreshAccessToken() {
-  const refresh = localStorage.getItem('refresh');
+  const refresh = getRefresh();
   if (!refresh) return null;
   try {
     const res = await fetch(API + '/auth/token/refresh/', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ refresh })
+      body: JSON.stringify({ refresh }),
+      keepalive: true,
     });
     const text = await res.text();
     if (!res.ok) return null;
@@ -56,12 +63,11 @@ async function refreshAccessToken() {
   return null;
 }
 
-function clearTokens() {
-  localStorage.removeItem('access');
-  localStorage.removeItem('refresh');
-  localStorage.removeItem('user');
-  emitUser(null);
-  emitBilling(null);
+function emitUser(u) {
+  window.dispatchEvent(new CustomEvent('user:update', { detail: u || null }));
+}
+function emitBilling(s) {
+  window.dispatchEvent(new CustomEvent('billing:update', { detail: s || null }));
 }
 
 async function request(path, options = {}, _retried = false) {
@@ -69,7 +75,9 @@ async function request(path, options = {}, _retried = false) {
   const res = await fetch(url, options);
   const text = await res.text();
 
-  if (res.status === 401 && !_retried && isTokenProblem(text)) {
+  // 401: попробуем рефреш, если это был запрос с Bearer-токеном
+  const hadAuthHeader = !!(options.headers && (options.headers.Authorization || options.headers.authorization));
+  if (res.status === 401 && !_retried && hadAuthHeader && isTokenProblem(text)) {
     const newAccess = await refreshAccessToken();
     if (newAccess) {
       const headers = { ...(options.headers || {}), Authorization: `Bearer ${newAccess}` };
@@ -78,7 +86,9 @@ async function request(path, options = {}, _retried = false) {
       if (!res2.ok) throw buildError(text2);
       return parseJsonSafe(text2);
     } else {
+      // сбрасываем токены
       clearTokens();
+      throw buildError(text || '{"detail":"Требуется авторизация"}');
     }
   }
 
@@ -87,19 +97,22 @@ async function request(path, options = {}, _retried = false) {
 }
 
 async function requestAuthed(path, options = {}) {
-  const headers = { ...(options.headers || {}), ...authHeader() };
+  const access = getAccess();
+  if (!access) {
+    // Не посылаем сетевой запрос — никакого 401 в консоли
+    return Promise.reject(new Error('Требуется авторизация'));
+  }
+  const headers = { ...(options.headers || {}), Authorization: `Bearer ${access}` };
   return request(path, { ...options, headers });
 }
 
-// Единые события
-function emitUser(u) {
-  window.dispatchEvent(new CustomEvent('user:update', { detail: u || null }));
+function clearTokens() {
+  localStorage.removeItem('access');
+  localStorage.removeItem('refresh');
+  localStorage.removeItem('user');
+  emitUser(null);
+  emitBilling(null);
 }
-function emitBilling(s) {
-  window.dispatchEvent(new CustomEvent('billing:update', { detail: s || null }));
-}
-
-// ----------------------------- API -----------------------------
 
 export const AuthAPI = {
   getApiBase() { return API; },
@@ -217,6 +230,7 @@ export const AuthAPI = {
 
   // ----- Billing -----
   getBillingStatus() {
+    if (!hasAccess()) return Promise.reject(new Error('Требуется авторизация'));
     return requestAuthed('/billing/status/');
   },
 
@@ -230,7 +244,7 @@ export const AuthAPI = {
   },
 
   async recordDownload(kind, pages, doc_name, mode = 'free') {
-    if (!localStorage.getItem('access')) return null;
+    if (!hasAccess()) return null;
     try {
       const s = await requestAuthed('/billing/record/', {
         method: 'POST',
@@ -245,7 +259,7 @@ export const AuthAPI = {
   },
 
   async recordUpload(client_id, doc_name, pages) {
-    if (!localStorage.getItem('access')) return null;
+    if (!hasAccess()) return null;
     try {
       const s = await requestAuthed('/uploads/record/', {
         method: 'POST',
@@ -260,7 +274,7 @@ export const AuthAPI = {
   },
 
   async deleteUploadsByClient(client_id) {
-    if (!localStorage.getItem('access')) return null;
+    if (!hasAccess()) return null;
     try {
       await requestAuthed('/uploads/delete/', {
         method: 'POST',
@@ -275,6 +289,7 @@ export const AuthAPI = {
   },
 
   startPurchase(plan, promo = '') {
+    if (!hasAccess()) return Promise.reject(new Error('Требуется авторизация'));
     return requestAuthed('/payments/create/', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -291,10 +306,12 @@ export const AuthAPI = {
   },
 
   getBillingConfig() {
+    if (!hasAccess()) return Promise.reject(new Error('Требуется авторизация'));
     return requestAuthed('/billing/config/');
   },
 
   async setBillingConfig(payload) {
+    if (!hasAccess()) return Promise.reject(new Error('Требуется авторизация'));
     const data = await requestAuthed('/billing/config/', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -320,9 +337,11 @@ export const AuthAPI = {
   },
 
   getPromos() {
+    if (!hasAccess()) return Promise.reject(new Error('Требуется авторизация'));
     return requestAuthed('/billing/promos/');
   },
   createPromo({ code, discount_percent, active = true, note = '' }) {
+    if (!hasAccess()) return Promise.reject(new Error('Требуется авторизация'));
     return requestAuthed('/billing/promos/', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -330,6 +349,7 @@ export const AuthAPI = {
     });
   },
   updatePromo(id, { code, discount_percent, active = true, note = '' }) {
+    if (!hasAccess()) return Promise.reject(new Error('Требуется авторизация'));
     return requestAuthed(`/billing/promos/${id}/`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -337,14 +357,17 @@ export const AuthAPI = {
     });
   },
   deletePromo(id) {
+    if (!hasAccess()) return Promise.reject(new Error('Требуется авторизация'));
     return requestAuthed(`/billing/promos/${id}/`, { method: 'DELETE' });
   },
 
   // ----- Библиотека подписей/печати -----
   listSigns() {
+    if (!hasAccess()) return Promise.reject(new Error('Требуется авторизация'));
     return requestAuthed('/library/signs/');
   },
   addSign({ kind = 'signature', data_url = null, file = null }) {
+    if (!hasAccess()) return Promise.reject(new Error('Требуется авторизация'));
     const fd = new FormData();
     fd.append('kind', kind);
     if (file) fd.append('image', file);
@@ -353,10 +376,12 @@ export const AuthAPI = {
     return requestAuthed('/library/signs/', { method: 'POST', body: fd });
   },
   deleteSign(id) {
+    if (!hasAccess()) return Promise.reject(new Error('Требуется авторизация'));
     return requestAuthed(`/library/signs/${id}/`, { method: 'DELETE' });
   },
 
   hideDefaultSign(globalId) {
+    if (!hasAccess()) return Promise.reject(new Error('Требуется авторизация'));
     return requestAuthed('/library/default-signs/hide/', {
       method: 'POST',
       headers: { 'Content-Type':'application/json' },
@@ -364,6 +389,7 @@ export const AuthAPI = {
     });
   },
   unhideDefaultSign(globalId) {
+    if (!hasAccess()) return Promise.reject(new Error('Требуется авторизация'));
     return requestAuthed('/library/default-signs/hide/', {
       method: 'POST',
       headers: { 'Content-Type':'application/json' },
@@ -371,40 +397,29 @@ export const AuthAPI = {
     });
   },
 
-  adminListDefaults() {
-    return requestAuthed('/library/default-signs/');
-  },
-  adminAddDefault({ kind = 'signature', data_url = null, file = null }) {
-    const fd = new FormData();
-    fd.append('kind', kind);
-    if (file) fd.append('image', file);
-    else if (data_url) fd.append('data_url', data_url);
-    else throw new Error('Ожидается file или data_url');
-    return requestAuthed('/library/default-signs/', { method: 'POST', body: fd });
-  },
-  adminDeleteDefault(id) {
-    return requestAuthed(`/library/default-signs/${id}/`, { method: 'DELETE' });
-  },
-
   getDraft() {
+    if (!hasAccess()) return Promise.reject(new Error('Требуется авторизация'));
     return requestAuthed('/draft/get/');
   },
   saveDraft(data) {
+    if (!hasAccess()) return Promise.reject(new Error('Требуется авторизация'));
     return requestAuthed('/draft/save/', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ data }),
+      keepalive: true,
     });
   },
   clearDraft() {
-    return requestAuthed('/draft/clear/', { method: 'POST' });
+    if (!hasAccess()) return Promise.reject(new Error('Требуется авторизация'));
+    return requestAuthed('/draft/clear/', { method: 'POST', keepalive: true });
   },
 
   async bootstrap() {
-    const hasRefresh = !!localStorage.getItem('refresh');
+    const hasRefresh = !!getRefresh();
     if (!hasRefresh) return;
     try {
-      if (!localStorage.getItem('access')) {
+      if (!hasAccess()) {
         const ok = await refreshAccessToken();
         if (!ok) { clearTokens(); return; }
       }
