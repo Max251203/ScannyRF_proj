@@ -174,6 +174,7 @@ export default function Editor(){
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // Восстанавливаем настройки биллинга
   useEffect(()=>{
     if(isAuthed){
       AuthAPI.getBillingStatus()
@@ -241,20 +242,15 @@ export default function Editor(){
     return ()=>mq.removeEventListener('change',on)
   },[])
 
-  // На мобильном скрываем футер и отключаем прокрутку страницы — работаем в «режиме редактора»
+  // В ЭДИТОРЕ ВСЕГДА прячем футер (и на десктопе, и на мобиле)
   useEffect(()=>{
-    if (isMobile) {
-      document.body.classList.add('no-footer')
-      document.documentElement.classList.add('no-footer')
-    } else {
-      document.body.classList.remove('no-footer')
-      document.documentElement.classList.remove('no-footer')
-    }
+    document.body.classList.add('no-footer')
+    document.documentElement.classList.add('no-footer')
     return () => {
       document.body.classList.remove('no-footer')
       document.documentElement.classList.remove('no-footer')
     }
-  }, [isMobile])
+  }, [])
 
   useEffect(()=>{
     function onDoc(e){
@@ -345,8 +341,9 @@ export default function Editor(){
     if(!cv){ return }
     const box = canvasWrapRef.current?.getBoundingClientRect()
     if(!box||box.width<10||box.height<10){ setTimeout(()=>fitCanvasForPage(page),30); return }
-    const marginX = 20
-    const marginY = 20
+    // минимальные отступы от края поля
+    const marginX = 8
+    const marginY = 8
     const availW = Math.max(50, box.width - marginX*2)
     const availH = Math.max(50, box.height - marginY*2)
     const tW = page.landscape ? PAGE_H : PAGE_W
@@ -597,7 +594,7 @@ export default function Editor(){
     return count
   }
 
-  // src/pages/Editor.jsx (продолжение файла)
+// src/pages/Editor.jsx (продолжение файла)
 
   async function assignFirstFileToCurrent(file){
     const ext=(file.name.split('.').pop()||'').toLowerCase()
@@ -954,7 +951,6 @@ export default function Editor(){
     try{
       const pagesData = Array.isArray(draft?.pages) ? draft.pages : []
       const created = []
-      // Предварительно готовим объекты страниц и фоновые URL
       const bgUrls = []
       for (let i=0;i<pagesData.length;i++){
         const pg = pagesData[i]
@@ -972,13 +968,11 @@ export default function Editor(){
           created.push({ id, elId, canvas:null, bgObj:null, landscape:!!pg.landscape, meta:{ type: pg.type, src: pg.src, w: pg.w||PAGE_W, h: pg.h||PAGE_H, mime: pg.mime||'image/png' } })
         }
       }
-      // Сразу устанавливаем список страниц одним сетом состояния
       setPages(created)
       setCur(created.length ? 0 : 0)
       setFileName((draft?.name||'').trim() || genDefaultName())
       setDocId(draft?.client_id || null)
 
-      // Ждём рендер, затем развешиваем фон и оверлеи
       await new Promise(r=>requestAnimationFrame(r))
       await ensureFabric()
 
@@ -994,7 +988,6 @@ export default function Editor(){
         }
       }
 
-      // Восстанавливаем объекты
       for (let i=0;i<created.length;i++){
         const page = created[i]
         const cv = await ensureCanvas(page)
@@ -1192,8 +1185,12 @@ export default function Editor(){
   const hasActive = hasDoc && !!(pages[cur]?.canvas?.getActiveObject())
 
   return (
-    <div className="doc-editor page">
-      <div className="ed-top" style={{display: isMobile && hasDoc ? undefined : 'none'}}>
+    <div className="doc-editor page" style={{ paddingTop: 0 }}>
+      {/* На мобиле верхняя панель скрывается, если открыт текстовый тулбар */}
+      <div
+        className="ed-top"
+        style={{display: (isMobile && hasDoc && !panelOpen) ? undefined : 'none', marginTop: '-20px'}}
+      >
         <button className="ed-menu-btn" aria-label="Ещё" onClick={()=>setMenuMoreOpen(o=>!o)}><img src={icMore} alt=""/></button>
         <div className="ed-docid" style={{flex:1,padding:'0 8px'}}><input className="ed-filename" placeholder="Название файла при скачивании" value={fileName} onChange={e=>setFileName(sanitizeName(e.target.value))}/></div>
         <div className="ed-top-right"></div>
@@ -1207,8 +1204,9 @@ export default function Editor(){
         )}
       </div>
 
+      {/* Панель форматирования текста: показываем сверху и на мобиле используем вместо верхней панели */}
       {panelOpen && (
-        <div className="ed-toolbar">
+        <div className="ed-toolbar" style={{ marginTop: isMobile ? '-20px' : undefined }}>
           <select value={font} onChange={e=>setFont(e.target.value)}>{FONTS.map(f=><option key={f} value={f}>{f}</option>)}</select>
           <div className="sep"/><button onClick={()=>setFontSize(s=>Math.max(6,s-2))}>−</button><span className="val">{fontSize}</span><button onClick={()=>setFontSize(s=>Math.min(300,s+2))}>+</button>
           <div className="sep"/><input type="color" value={color} onChange={e=>setColor(e.target.value)} title="Цвет текста"/>
@@ -1236,11 +1234,17 @@ export default function Editor(){
         </aside>
 
         <section className="ed-center">
-          <div className="ed-namebar desktop-only">
+          <div className="ed-namebar desktop-only" style={{ marginTop: -8 }}>
             <input className="ed-filename" placeholder="Название файла при скачивании" value={fileName} onChange={e=>setFileName(sanitizeName(e.target.value))}/>
           </div>
 
-          <div className="ed-canvas-wrap" ref={canvasWrapRef} onDragOver={(e)=>e.preventDefault()} onDrop={onCanvasDrop}>
+          <div
+            className="ed-canvas-wrap"
+            ref={canvasWrapRef}
+            onDragOver={(e)=>e.preventDefault()}
+            onDrop={onCanvasDrop}
+            style={{ padding: isMobile ? '12px 10px 96px' : '20px 12px' }}
+          >
             {pages.map((p,idx)=>(
               <div key={p.id} className={`ed-canvas ${idx===cur?'active':''}`}>
                 <button className="ed-page-x desktop-only" title="Удалить эту страницу" onClick={()=>removePage(idx)}>×</button>
@@ -1248,7 +1252,7 @@ export default function Editor(){
               </div>
             ))}
             {!hasDoc && (
-              <div className="ed-dropzone" onClick={pickDocument}>
+              <div className="ed-dropzone" onClick={pickDocument} style={{ width: isMobile ? 'min(680px, 96vw)' : undefined }}>
                 <img src={icDocAdd} alt="" style={{width:140,height:'auto',opacity:.9}}/>
                 <div className="dz-title">Загрузите документы</div>
                 <div className="dz-sub">Можно перетащить их в это поле</div>
@@ -1265,7 +1269,7 @@ export default function Editor(){
 
           {isMobile && (
             <div className="ed-bottom mobile-only">
-              {/* Левая FAB — плюс */}
+              {/* Левая FAB — плюс и повторный клик — закрыть/открыть */}
               <button className={`fab ${hasDoc?'':'disabled'}`} onClick={()=>{ if(!hasDoc){ return } setMenuAddOpen(o=>!o) }} title="Добавить">
                 <img src={icPlus} alt="+" />
               </button>
@@ -1283,6 +1287,7 @@ export default function Editor(){
                 </button>
               </div>
 
+              {/* Правая FAB — повторный клик также закрывает */}
               <button className={`fab ${(!hasDoc)?'disabled':''}`} onClick={()=>{ if(!hasDoc) return; setMenuDownloadOpen(o=>!o) }} title="Скачать">
                 <img src={icDownload} alt="↓" />
               </button>
@@ -1322,18 +1327,18 @@ export default function Editor(){
       )}
 
       {menuDownloadOpen && (
-        <div className="ed-sheet" ref={dlRef}>
-          {/* платные — как на десктопе (btn), бесплатные — btn-lite */}
-          <button className={`btn ${hasDoc?'':'disabled'}`} onClick={()=>{ if(hasDoc){ setMenuDownloadOpen(false); setPlan('single'); setPayOpen(true) } }}>
+        <div className="ed-sheet" ref={dlRef} style={{ padding: 6 }}>
+          {/* платные — как на десктопе (btn), бесплатные — btn-lite; компактнее по высоте */}
+          <button className={`btn ${hasDoc?'':'disabled'}`} style={{padding:'10px 14px'}} onClick={()=>{ if(hasDoc){ setMenuDownloadOpen(false); setPlan('single'); setPayOpen(true) } }}>
             <img src={icJpgPaid} alt="" style={{width:18,height:18,marginRight:10}}/>Купить JPG
           </button>
-          <button className={`btn ${hasDoc?'':'disabled'}`} onClick={()=>{ if(hasDoc){ setMenuDownloadOpen(false); setPlan('single'); setPayOpen(true) } }}>
+          <button className={`btn ${hasDoc?'':'disabled'}`} style={{padding:'10px 14px'}} onClick={()=>{ if(hasDoc){ setMenuDownloadOpen(false); setPlan('single'); setPayOpen(true) } }}>
             <img src={icPdfPaid} alt="" style={{width:18,height:18,marginRight:10}}/>Купить PDF
           </button>
-          <button className={`btn btn-lite ${hasDoc?'':'disabled'}`} onClick={()=>{ if(hasDoc){ setMenuDownloadOpen(false); exportJPG() } }}>
+          <button className={`btn btn-lite ${hasDoc?'':'disabled'}`} style={{padding:'10px 14px'}} onClick={()=>{ if(hasDoc){ setMenuDownloadOpen(false); exportJPG() } }}>
             <img src={icJpgFree} alt="" style={{width:18,height:18,marginRight:10}}/>Скачать бесплатно JPG
           </button>
-          <button className={`btn btn-lite ${hasDoc?'':'disabled'}`} onClick={()=>{ if(hasDoc){ setMenuDownloadOpen(false); exportPDF() } }}>
+          <button className={`btn btn-lite ${hasDoc?'':'disabled'}`} style={{padding:'10px 14px'}} onClick={()=>{ if(hasDoc){ setMenuDownloadOpen(false); exportPDF() } }}>
             <img src={icPdfFree} alt="" style={{width:18,height:18,marginRight:10}}/>Скачать бесплатно PDF
           </button>
         </div>
