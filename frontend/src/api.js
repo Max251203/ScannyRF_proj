@@ -1,6 +1,6 @@
 // src/api.js
-// Без 401 в консоли: не шлём запросы, если нет access-токена.
-// WebSocket используется для событий, а REST — для чтения/коммита снапшота.
+// Без 401 в консоли для неавторизованных: не шлём запросы без access.
+// WS используется для событий редактора, а REST — для чтения/коммита снапшота и остального API.
 
 const API = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000/api';
 
@@ -86,7 +86,6 @@ async function request(path, options = {}, _retried = false) {
       if (!res2.ok) throw buildError(text2);
       return parseJsonSafe(text2);
     } else {
-      // сбрасываем токены
       clearTokens();
       throw buildError(text || '{"detail":"Требуется авторизация"}');
     }
@@ -397,6 +396,26 @@ export const AuthAPI = {
     });
   },
 
+  // ADMIN: Стандартные подписи/печати (global)
+  adminListDefaults() {
+    if (!hasAccess()) return Promise.reject(new Error('Требуется авторизация'));
+    return requestAuthed('/library/default-signs/');
+  },
+  adminAddDefault({ kind = 'signature', data_url = null, file = null }) {
+    if (!hasAccess()) return Promise.reject(new Error('Требуется авторизация'));
+    const fd = new FormData();
+    fd.append('kind', kind);
+    if (file) fd.append('image', file);
+    else if (data_url) fd.append('data_url', data_url);
+    else throw new Error('Ожидается file или data_url');
+    return requestAuthed('/library/default-signs/', { method: 'POST', body: fd });
+  },
+  adminDeleteDefault(id) {
+    if (!hasAccess()) return Promise.reject(new Error('Требуется авторизация'));
+    return requestAuthed(`/library/default-signs/${id}/`, { method: 'DELETE' });
+  },
+
+  // ----- Черновик -----
   getDraft() {
     if (!hasAccess()) return Promise.reject(new Error('Требуется авторизация'));
     return requestAuthed('/draft/get/');
