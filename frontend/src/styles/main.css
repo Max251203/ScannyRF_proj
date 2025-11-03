@@ -11,11 +11,10 @@
   --calc-border:#FFD6B3;
   --calc-ink:#8A3D00;
 
-  /* Высоты панелей: desktop и mobile учитываются формулой области */
   --hdr-h: 64px;
   --ed-top-h: clamp(48px, 6vh, 64px);
-  /* Desktop: компактная нижняя панель */
-  --ed-bottom-h: 48px;
+  --ed-bottom-h-desktop: 64px;
+  --ed-bottom-h-mobile: clamp(52px, 7vh, 68px);
 }
 
 @font-face{font-family:"Chicoree Em";src:url("/static/assets/fonts/chicoree.woff2") format("woff2"),url("/static/assets/fonts/Chicoree-Em.ttf") format("truetype"),url("../assets/fonts/chicoree.woff2") format("woff2"),url("../assets/fonts/ofont.ru_Chicoree.otf") format("truetype");font-weight:400;font-style:normal;font-display:swap}
@@ -42,7 +41,6 @@ main{flex:1}
 .desktop-only{display:block}
 .mobile-only{display:none!important}
 
-/* ---------- Header ---------- */
 .site-header{position:sticky;top:0;z-index:50;background:#fff;border-bottom:1px solid #eee}
 .header-inner{height:var(--hdr-h);display:flex;align-items:center;justify-content:space-between;gap:18px}
 .logo-wrap{display:flex;align-items:center;gap:10px;text-decoration:none;font-weight:800;letter-spacing:.3px}
@@ -62,7 +60,6 @@ main{flex:1}
 .burger-btn img{width:22px;height:22px;object-fit:contain}
 .nav-close{display:none}
 
-/* ---------- Hero ---------- */
 .hero{background:linear-gradient(180deg,var(--beige) 0%,var(--sage) 100%)}
 .hero-inner{display:grid;grid-template-columns:1.1fr .9fr;gap:24px;padding:24px 12px 20px;align-items:center}
 .hero h1{font-family:"Chicoree Em","Rabbits Elf","Ermilov",system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;font-size:44px;line-height:1.05;margin:0 0 12px}
@@ -70,7 +67,6 @@ main{flex:1}
 .hero .art{display:flex;align-items:center;justify-content:center}
 .hero .art img{max-height:300px;height:auto;object-fit:contain}
 
-/* ---------- How ---------- */
 .how-rows{display:flex;flex-direction:column;gap:64px;margin-top:16px}
 .step-row{--step-h:420px;display:grid;grid-template-columns:1.1fr .9fr;gap:24px;align-items:stretch;min-height:var(--step-h)}
 .step-row.reverse{grid-template-columns:1.1fr .9fr}
@@ -80,7 +76,6 @@ main{flex:1}
 .step-text h3{margin:0 0 8px}
 .badge{width:36px;height:36px;border-radius:50%;background:var(--beige);color:#000;display:flex;align-items:center;justify-content:center;font-weight:800;margin-bottom:10px;border:1px solid #00000014}
 
-/* ---------- Examples ---------- */
 .examples .ellipse{background:var(--sage);color:#fff;border-radius:999px;min-height:560px;display:flex;align-items:center;justify-content:center;padding:12px 12px;overflow:hidden}
 .ellipse-inner{width:min(1100px,96%);text-align:center;padding:6px 12px}
 .ellipse-title{font-family:"Ermilov",system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;font-size:32px;margin:0}
@@ -101,7 +96,6 @@ main{flex:1}
 @keyframes popIn{0%{transform:scale(.85) translateY(12px);opacity:0}60%{transform:scale(1.02)}100%{transform:scale(1) translateY(0);opacity:1}}
 .pop-in{animation:popIn .32s ease-out both}
 
-/* ---------- Features / Pocket / Pricing ---------- */
 .features{background:#E26D5C;color:#111}
 .features h2{color:#fff}
 .features-row{display:grid;grid-template-columns:repeat(3,1fr);gap:24px;margin-top:10px}
@@ -132,7 +126,6 @@ main{flex:1}
 .price .val{font-size:32px;font-weight:800;color:var(--accent)}
 .price-actions{margin-top:12px}
 
-/* ---------- Calculators ---------- */
 .page-title{font-family:"Ermilov",system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;font-size:44px;margin:18px 0 28px}
 .calc-tiles{display:flex;gap:24px;flex-wrap:wrap;margin:8px 0 24px}
 .tile{display:flex;align-items:center;gap:14px;padding:20px 22px;border-radius:16px;background:#fff;border:1px solid #eee;box-shadow:0 14px 28px rgba(0,0,0,.06);cursor:pointer;font-weight:700}
@@ -178,7 +171,6 @@ main{flex:1}
 .calc-table tfoot td{font-weight:800;background:#fafafa}
 .calc-table td.t-num{text-align:right}
 
-/* ---------- Legal / Profile ---------- */
 .section.legal{padding-top:28px;padding-bottom:48px}
 .legal.container{max-width:900px;padding-left:18px;padding-right:18px}
 #profile.container{max-width:900px;padding-left:18px;padding-right:18px}
@@ -189,13 +181,11 @@ main{flex:1}
 .legal li{margin:4px 0}
 .legal .subhead{display:block;font-weight:800;margin-top:12px}
 
-/* ---------- Admin form ---------- */
 .admin-form .form-stack{display:flex;flex-direction:column;gap:10px;margin-top:8px}
 .admin-form .field{display:flex;flex-direction:column;gap:6px;margin:8px 0}
 .subhead.with-colon::after{content:':';margin-left:4px;color:#666}
 .admin-form .field .text-input{margin-top:2px}
 
-/* ---------- Help ---------- */
 .help-page{padding:24px 0 48px;--help-top-offset:240px}
 .help-head{display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-bottom:8px;justify-content:space-between}
 .help-head.center{justify-content:center}
@@ -214,7 +204,6 @@ main{flex:1}
 .help-article-title{font-family:"Ermilov",system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;font-size:40px;margin:12px 0}
 .help-article-body p{margin:10px 0;color:#333}
 
-/* ---------- Modals / Auth / Editor modal ---------- */
 .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:1000}
 .modal{background:#fff;border-radius:16px;min-width:min(560px,92vw);max-width:92vw;padding:18px;position:relative;max-height:calc(100vh - 40px);display:flex;flex-direction:column;overflow:hidden}
 .modal-x{position:absolute;top:8px;right:10px;border:none;background:#0000;font-size:26px;cursor:pointer;z-index:1}
@@ -280,7 +269,6 @@ main{flex:1}
 .admin-list .row:last-child{border-bottom:none}
 .admin-input{border:1.5px solid var(--accent)!important;border-radius:12px!important;padding:10px 14px!important;background:#fff}
 
-/* ---------- Footer ---------- */
 .site-footer{background:#222;color:#eee;padding:32px 0;margin-top:0}
 .footer-top{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap}
 .footer-nav{display:flex;gap:16px;flex-wrap:wrap}
@@ -291,56 +279,25 @@ main{flex:1}
 .back-to-top{position:fixed;right:22px;bottom:22px;width:40px;height:40px;border-radius:50%;border:1px solid #eee;background:#fff;color:#000;font-weight:800;cursor:pointer;display:flex;align-items:center;justify-content:center;box-shadow:0 8px 16px rgba(0,0,0,.15);z-index:70}
 @keyframes spin{to{transform:rotate(360deg)}}
 
-/* ---------------- DOC EDITOR ---------------- */
+/* --- DOC EDITOR --- */
 .doc-editor{--sideL:240px;--sideR:260px;padding:0 8px}
-
-/* Верхняя панель — поле по центру; на мобиле слева ⋮ */
-.doc-editor .ed-top{
-  display:flex;align-items:center;justify-content:center;gap:12px;
-  height:var(--ed-top-h);border-bottom:1px solid #eee;background:#fff;padding:0 12px;margin-bottom:8px
-}
+.doc-editor .ed-top{display:flex;align-items:center;justify-content:center;gap:12px;height:var(--ed-top-h);border-bottom:1px solid #eee;background:#fff;padding:0 12px;margin-bottom:8px}
 .doc-editor .ed-menu-btn{width:36px;height:36px;border-radius:50%;border:1px solid #e5e5e5;background:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center}
 .doc-editor .ed-docid{font-weight:700;opacity:.85}
-
-/* ВЕРХНЕЕ МЕНЮ (⋮) — под кнопкой, слева сверху (моб.) */
-.doc-editor .ed-menu{
-  position:fixed;
-  left:12px;
-  top:calc(var(--hdr-h) + var(--ed-top-h) + 8px);
-  background:#fff;border:1px solid #eee;border-radius:12px;box-shadow:0 12px 28px rgba(0,0,0,.12);
-  padding:8px;z-index:120;display:flex;flex-direction:column;min-width:240px
-}
-.doc-editor .ed-menu>button{border:none;background:#0000;cursor:pointer;text-align:left;padding:10px 12px;border-radius:8px;display:flex;align-items:center}
-.doc-editor .ed-menu>button:hover{background:#f6f6f6}
-
-/* ЛИСТЫ (слева/справа) */
-.ed-sheet{
-  position:fixed;left:12px;top:calc(var(--hdr-h) + var(--ed-top-h) + 8px);
-  background:#fff;border:1px solid #eee;border-radius:12px;box-shadow:0 12px 28px rgba(0,0,0,.12);padding:8px;z-index:110;display:flex;flex-direction:column;min-width:240px
-}
-.ed-sheet.right{left:auto;right:12px}
+.ed-sheet{position:fixed;background:#fff;border:1px solid #eee;border-radius:12px;box-shadow:0 12px 28px rgba(0,0,0,.12);padding:8px;z-index:110;display:flex;flex-direction:column;min-width:240px}
+.ed-sheet.top-left{left:12px;top:calc(var(--hdr-h) + var(--ed-top-h) + 12px)}
+.ed-sheet.bottom-left{left:12px;bottom:calc(var(--ed-bottom-h-mobile) + 12px)}
+.ed-sheet.bottom-right{right:12px;bottom:calc(var(--ed-bottom-h-mobile) + 12px)}
 .ed-sheet>button:not(.btn):not(.btn-lite){border:none;background:transparent;cursor:pointer;text-align:left;padding:10px 12px;border-radius:8px;display:flex;align-items:center}
 .ed-sheet>button:not(.btn):not(.btn-lite):hover{background:#f6f6f6}
 .ed-sheet .btn,.ed-sheet .btn-lite{width:100%;justify-content:flex-start;border-radius:28px;padding:10px 14px;min-width:auto;margin:6px 0}
-
-/* Панель форматирования текста (замещает верхнюю панель) */
-.doc-editor .ed-toolbar{
-  display:flex;align-items:center;gap:8px;background:#fff;border:1px solid #eee;border-radius:12px;padding:6px 8px;max-width:900px;flex-wrap:wrap;overflow-x:auto
-}
+.doc-editor .ed-toolbar{display:flex;align-items:center;gap:8px;background:#fff;border:1px solid #eee;border-radius:12px;padding:6px 8px;max-width:100%;flex-wrap:wrap;overflow-x:auto;justify-content:center}
 .doc-editor .ed-toolbar select,.doc-editor .ed-toolbar input[type=color],.doc-editor .ed-toolbar button{height:34px;border:1px solid #e5e5e5;border-radius:8px;background:#fff;padding:0 10px;cursor:pointer}
 .doc-editor .ed-toolbar .val{min-width:30px;text-align:center}
 .doc-editor .ed-toolbar .toggled{background:#ffeae6;border-color:#ffc9c1}
 .doc-editor .ed-toolbar .sep{width:1px;height:24px;background:#eee;margin:0 4px}
-
-/* Тело редактора */
 .doc-editor .ed-body{display:grid;grid-template-columns:var(--sideL) 1fr var(--sideR);gap:16px;align-items:start;padding:0 12px}
-
-/* Боковые панели — sticky ниже шапки и верхней панели */
-.doc-editor .ed-left,.doc-editor .ed-right{
-  position:sticky;
-  top:calc(var(--hdr-h) + var(--ed-top-h) + 12px);
-  align-self:start;height:max-content;padding:0 12px
-}
+.doc-editor .ed-left,.doc-editor .ed-right{position:sticky;top:calc(var(--hdr-h) + var(--ed-top-h) + 12px);align-self:start;height:max-content;padding:0 12px}
 .doc-editor .ed-left{border-right:1px solid #f0f0f0}
 .doc-editor .ed-right{border-left:1px solid #f0f0f0}
 .doc-editor .ed-tools{display:flex;flex-direction:column;gap:8px;padding:4px 0 8px}
@@ -352,19 +309,8 @@ main{flex:1}
 .doc-editor .thumb.add{font-size:28px;color:#888}
 .doc-editor .thumb .thumb-x{position:absolute;right:4px;top:4px;width:18px;height:18px;border-radius:50%;border:1px solid #e5e5e5;background:#fff;color:#000;line-height:16px;text-align:center;font-weight:800;cursor:pointer}
 .doc-editor .ed-center{min-height:520px}
-
-/* Поле ввода имени */
 .doc-editor .ed-filename{width:min(640px,92%);height:44px;border:1px solid #e5e5e5;border-radius:10px;padding:8px 12px;font-size:16px;background:#fff}
-
-/* Область предпросмотра: учитывает header, top, bottom; увеличен внутренний отступ по вертикали */
-.doc-editor .ed-canvas-wrap{
-  background:#f6f9f8;border:1px solid #f0f0f0;border-radius:12px;
-  height:calc(100vh - var(--hdr-h) - var(--ed-top-h) - var(--ed-bottom-h) - 16px);
-  min-height:420px;
-  display:flex;align-items:center;justify-content:center;
-  padding:24px 12px; /* было 12px 10px; стало больше сверху/снизу */
-  overflow:hidden;position:relative
-}
+.doc-editor .ed-canvas-wrap{background:#f6f9f8;border:1px solid #f0f0f0;border-radius:12px;height:calc(100vh - var(--hdr-h) - var(--ed-top-h) - var(--ed-bottom-h-desktop) - 24px);min-height:420px;display:flex;align-items:center;justify-content:center;padding:24px 12px;overflow:hidden;position:relative}
 .doc-editor .ed-canvas{position:relative;display:none;margin:0 auto}
 .doc-editor .ed-canvas.active{display:block}
 .doc-editor .ed-canvas canvas.lower-canvas{display:block;background:#fff;border-radius:10px;border:1px solid #eaeaea;box-shadow:0 12px 26px rgba(0,0,0,.12);image-rendering:-webkit-optimize-contrast;image-rendering:crisp-edges}
@@ -374,8 +320,6 @@ main{flex:1}
 .doc-editor .ed-dropzone .dz-title{font-weight:800;color:#222}
 .doc-editor .ed-dropzone .dz-sub{opacity:.7}
 .doc-editor .ed-dropzone .dz-types{opacity:.6;font-size:13px}
-
-/* Действия/выгрузка */
 .doc-editor .ed-actions{display:flex;flex-direction:column;gap:8px}
 .doc-editor .ed-action{border:1px solid #eee;background:#fff;border-radius:12px;padding:10px 12px;cursor:pointer;text-align:left;display:flex;align-items:center}
 .doc-editor .ed-action.danger{color:#c33;border-color:#f0d0d0;background:#fff7f6}
@@ -383,39 +327,25 @@ main{flex:1}
 .doc-editor .ed-dl-title{font-weight:800;margin:6px 0}
 .doc-editor .ed-dl-row{display:flex;gap:8px;flex-wrap:wrap}
 .doc-editor .ed-dl-row-paid{margin-bottom:12px}
-
-/* Пагинация: крупные круглые кнопки + плюс */
 .doc-editor .ed-pages{display:flex;gap:8px;align-items:center;justify-content:center;padding:6px 0}
 .doc-editor .ed-page-btn{position:relative;border:1px solid #e5e5e5;background:#fff;border-radius:50%;width:40px;height:40px;display:flex;align-items:center;justify-content:center;cursor:pointer;user-select:none;font-weight:800}
 .doc-editor .ed-page-btn.active{border-color:var(--accent);color:var(--accent);box-shadow:0 6px 18px rgba(226,109,92,.2)}
+.doc-editor .ed-page-dots{user-select:none;color:#aaa}
 .doc-editor .ed-page-add{border:1px solid #e5e5e5;background:#fff;border-radius:50%;width:40px;height:40px;display:flex;align-items:center;justify-content:center;cursor:pointer}
 .doc-editor .ed-page-add img{width:18px;height:18px}
 .ed-dim{position:fixed;inset:0;background:rgba(0,0,0,.2);z-index:50}
-
-/* Нижняя панель: есть и на десктопе, и на мобиле (разная высота) */
-.doc-editor .ed-bottom{
-  position:fixed;left:0;right:0;bottom:0;background:#fff;border-top:1px solid #eee;
-  padding:10px 12px;z-index:100;min-height:var(--ed-bottom-h);
-  display:flex !important;align-items:center;justify-content:space-between;gap:12px;flex-wrap:nowrap !important;
-}
-.doc-editor .ed-bottom .ed-pager{
-  display:flex;align-items:center;gap:10px;min-width:0;justify-content:center;flex:1 1 auto;
-}
+.doc-editor .ed-bottom.desktop-only{display:flex !important;justify-content:center;height:var(--ed-bottom-h-desktop)}
+.doc-editor .ed-bottom.mobile-only{display:none !important}
+.doc-editor .ed-bottom .fab{flex-shrink:0;flex:0 0 44px;width:44px;height:44px;border-radius:50%;border:1px solid #eee;background:#fff;display:flex;align-items:center;justify-content:center;box-shadow:0 8px 16px rgba(0,0,0,.12)}
+.doc-editor .ed-bottom .ed-pager{display:flex;align-items:center;gap:10px;min-width:0;justify-content:center;flex:1 1 auto}
 .doc-editor .ed-bottom .ed-pager .pg{flex:0 0 auto;min-width:64px;text-align:center}
-.doc-editor .ed-bottom .ed-pager button,
-.doc-editor .ed-bottom > .fab{flex-shrink:0}
-.doc-editor .ed-bottom > .fab{flex:0 0 44px;width:44px;height:44px;border-radius:50%;border:1px solid #eee;background:#fff;display:flex;align-items:center;justify-content:center;box-shadow:0 8px 16px rgba(0,0,0,.12)}
 .doc-editor .ed-bottom .ed-pager button{width:36px;height:36px;border:1px solid #eee;border-radius:50%;background:#fff;display:flex;align-items:center;justify-content:center}
 .doc-editor .ed-bottom .fab img{width:22px;height:22px;object-fit:contain}
 .doc-editor .ed-bottom .ed-pager img{width:18px;height:18px;object-fit:contain}
-
-/* Состояния disabled */
 .disabled,.btn.disabled,.ed-action.disabled,.ed-tool.disabled,.fab.disabled,.ed-menu>button.disabled{opacity:.45;filter:saturate(0);cursor:default;pointer-events:none}
 .btn.disabled{background:#f7f7f7;color:#aaa;border-color:#eee}
 .ed-action.disabled{background:#fafafa;border-color:#eee;color:#bbb}
 .fab.disabled{background:#f3f3f3;color:#aaa;border-color:#eee}
-
-/* КРОП-МОДАЛКА, ОПЛАТА, И ПРОЧЕЕ */
 .crop-modal{max-width:920px}
 .crop-modal .crop-row{display:flex;align-items:center;gap:8px;margin:6px 0 8px;justify-content:center}
 .crop-modal .crop-row select{height:40px;border:1px solid #e5e5e5;border-radius:8px;padding:0 10px;background:#fff}
@@ -424,7 +354,6 @@ main{flex:1}
 .crop-modal .thr-row{display:flex;align-items:center;gap:10px;justify-content:center}
 .crop-modal input[type=range]{width:min(520px,90%)}
 .crop-modal input[type=number]{width:64px;height:36px;border:1px solid #e5e5e5;border-radius:8px;padding:0 8px;text-align:center}
-
 .pay-modal .pay-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin:6px 0 12px}
 .pay-modal .pay-card{border:1px solid #eee;border-radius:14px;padding:14px;background:#fff;display:flex;flex-direction:column;gap:6px;align-items:center;cursor:pointer;transition:box-shadow .2s ease,border-color .2s ease}
 .pay-modal .pay-card:hover{box-shadow:0 10px 26px rgba(0,0,0,.06)}
@@ -440,24 +369,15 @@ main{flex:1}
 .pay-modal .promo.error .promo-row{border-color:#e66}
 .pay-modal .promo-err{color:#c33;font-size:12px}
 .pay-modal .pay-buttons{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-
-/* Лоадер поверх области документа */
 .ed-canvas-loading{position:fixed;inset:0;background:rgba(255,255,255,.6);display:flex;align-items:center;justify-content:center;z-index:120;font-weight:800;color:#333;gap:10px}
 .ed-canvas-loading .spinner{width:28px;height:28px;border:3px solid rgba(0,0,0,.2);border-top-color:#000;border-radius:50%;animation:spin .8s linear infinite}
-
-/* Сетка для дефолтной библиотеки */
 .defaults-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
 .defaults-grid .thumb{position:relative;width:100%;aspect-ratio:1/1;border:1px solid #eee;border-radius:12px;background:#f6f6f6;display:flex;align-items:center;justify-content:center;overflow:hidden}
 .defaults-grid .thumb .thumb-x{position:absolute;right:4px;top:4px;width:18px;height:18px;border-radius:50%;border:1px solid #e5e5e5;background:#fff;color:#000;line-height:16px;text-align:center;font-weight:800;cursor:pointer}
 @media (max-width:1100px){.defaults-grid{grid-template-columns:repeat(2,1fr)}}
 @media (max-width:600px){.defaults-grid{grid-template-columns:1fr}}
 
-/* ---------- Mobile adjustments ---------- */
 @media (max-width:960px){
-  :root{
-    --ed-bottom-h: clamp(52px, 7vh, 68px);
-  }
-
   .header-inner{gap:10px}
   .nav{position:fixed;top:0;right:0;bottom:0;left:auto;width:min(320px,86vw);background:#fff;border-left:1px solid #eee;flex-direction:column;align-items:flex-start;gap:0;padding:16px;transform:translate3d(100%,0,0);transition:transform .25s ease;z-index:60;pointer-events:none;will-change:transform}
   .nav.open{transform:translate3d(0,0,0);pointer-events:auto}
@@ -467,7 +387,6 @@ main{flex:1}
   .nav-dim{position:fixed;inset:0;background:rgba(0,0,0,.35);backdrop-filter:saturate(60%) blur(2px);opacity:0;pointer-events:none;transition:opacity .2s ease;z-index:55}
   .nav-dim.show{opacity:1;pointer-events:auto}
   .burger-btn{display:flex}
-
   .hero-inner{grid-template-columns:1fr;padding:20px 12px 16px}
   .step-row{grid-template-columns:1fr;--step-h:360px;display:flex;flex-direction:column}
   .step-text{order:1}
@@ -486,24 +405,16 @@ main{flex:1}
   .two-col{grid-template-columns:1fr}
   .logo-wrap span{display:none}
   .desktop-only{display:none!important}
-  .mobile-only{display:block!important}
+  .mobile-only{display:flex!important}
 
-  /* скрываем боковины редактора, растягиваем центр */
   .doc-editor .ed-body{grid-template-columns:1fr}
   .doc-editor .ed-left,.doc-editor .ed-right{display:none}
-
-  /* Область предпросмотра: дополнительно учитываем нижнюю панель и добавляем padding-bottom */
-  .doc-editor .ed-canvas-wrap{
-    height:calc(100vh - var(--hdr-h) - var(--ed-top-h) - var(--ed-bottom-h) - 8px);
-    min-height:auto;
-    padding-bottom:calc(var(--ed-bottom-h) + 16px);
-    overflow:hidden
-  }
-
-  /* Всплывающие листы — над нижней панелью */
-  .ed-sheet{left:12px;right:12px;top:auto;bottom:calc(var(--ed-bottom-h) + 12px)}
-  .ed-sheet.right{left:12px;right:12px}
-
-  /* скрыть кнопку удаления страницы над канвой на мобиле */
+  .doc-editor .ed-canvas-wrap{height:calc(100vh - var(--hdr-h) - var(--ed-top-h) - var(--ed-bottom-h-mobile) - 16px);min-height:auto;padding-bottom:calc(var(--ed-bottom-h-mobile) + 16px);overflow:hidden}
   .doc-editor .ed-page-x{display:none}
+  .doc-editor .ed-toolbar{flex-wrap:nowrap; gap: 4px; padding: 4px;}
+  .doc-editor .ed-toolbar select, .doc-editor .ed-toolbar input[type=color], .doc-editor .ed-toolbar button { height: 30px; padding: 0 6px; font-size: 14px; }
+  .doc-editor .ed-toolbar .val { font-size: 14px; min-width: 24px; }
+  .doc-editor .ed-toolbar .sep { margin: 0 2px; }
+  .doc-editor .ed-bottom.desktop-only{display:none !important}
+  .doc-editor .ed-bottom.mobile-only{display:flex !important}
 }

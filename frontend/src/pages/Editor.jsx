@@ -1,5 +1,5 @@
 // src/pages/Editor.jsx
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import { toast } from '../components/Toast.jsx'
 import { AuthAPI } from '../api'
 import {
@@ -22,6 +22,7 @@ import icDownload from '../assets/icons/download.png'
 import icPlus from '../assets/icons/plus.png'
 import icPrev from '../assets/icons/prev.png'
 import icDocAdd from '../assets/icons/doc-add.svg'
+import icMenu from '../assets/icons/kebab.png'
 
 import plan1 from '../assets/images/один документ.png'
 import plan2 from '../assets/images/безлимит.png'
@@ -36,7 +37,18 @@ function randDocId(){ return String(Math.floor(1e15 + Math.random()*9e15)) }
 function genDefaultName(){ const a = Math.floor(Math.random()*1e6), b = Math.floor(Math.random()*1e6); return `${a}-${b}` }
 function sanitizeName(s){ s=(s||'').normalize('NFKC'); s=s.replace(/[^\p{L}\p{N}._-]+/gu,'-').replace(/-+/g,'-').replace(/^[-_.]+|[-_.]+$/g,''); return s.slice(0,64)||genDefaultName() }
 
-// pdf-lib через CDN
+function debounce(func, wait) {
+  let timeout;
+  return function executedFunction(...args) {
+    const later = () => {
+      clearTimeout(timeout);
+      func(...args);
+    };
+    clearTimeout(timeout);
+    timeout = setTimeout(later, wait);
+  };
+}
+
 async function ensurePDFLib(){
   if (window.PDFLib) return window.PDFLib
   await ensureScripts(['https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js'])
@@ -44,23 +56,21 @@ async function ensurePDFLib(){
   return window.PDFLib
 }
 
-// безопасное копирование в новый Uint8Array (без slice у ArrayBuffer)
 function toUint8Copy(input){
   if (input instanceof Uint8Array){
-    const out = new Uint8Array(input.length)
-    out.set(input)
+    const out = new Uint8Array(input.length);
+    out.set(input);
     return out
   }
   if (input instanceof ArrayBuffer){
-    const view = new Uint8Array(input)
-    const out = new Uint8Array(view.length)
-    out.set(view)
+    const view = new Uint8Array(input);
+    const out = new Uint8Array(view.length);
+    out.set(view);
     return out
   }
   return new Uint8Array()
 }
 
-// Кодирование/декодирование в base64 для сохранения PDF-страниц в JSON
 function u8ToB64(u8){
   let bin = ''
   const chunk = 0x8000
@@ -80,11 +90,6 @@ export default function Editor(){
   const [docId, setDocId] = useState(null)
   const [fileName, setFileName] = useState('')
 
-  // page: {id, elId, canvas, bgObj, landscape, meta, worldW, worldH}
-  // meta:
-  //  - image: { type:'image', src, w, h, mime }
-  //  - pdf:   { type:'pdf', bytes(Uint8Array), index }
-  //  - raster:{ type:'raster', src, w, h }
   const [pages, setPages] = useState([])
   const [cur, setCur] = useState(0)
   const [loading, setLoading] = useState(false)
@@ -103,8 +108,10 @@ export default function Editor(){
   const [italic, setItalic] = useState(false)
   const [color, setColor] = useState('#000000')
 
+  const [menuActionsOpen, setMenuActionsOpen] = useState(false)
   const [menuAddOpen, setMenuAddOpen] = useState(false)
   const [menuDownloadOpen, setMenuDownloadOpen] = useState(false)
+
   const [payOpen, setPayOpen] = useState(false)
 
   const [cropOpen, setCropOpen] = useState(false)
@@ -117,7 +124,6 @@ export default function Editor(){
   const [plan, setPlan] = useState('month')
   const [promo, setPromo] = useState('')
   const [promoError, setPromoError] = useState('')
-  // Цены приходят из BillingConfig (бэкенд) через /billing/status/
   const [prices, setPrices] = useState({ single:0, month:0, year:0 })
   const [promoPercent, setPromoPercent] = useState(0)
   const price = useMemo(()=>{
@@ -132,7 +138,6 @@ export default function Editor(){
   const [undoStack, setUndoStack] = useState([])
   const canUndo = undoStack.length>0
 
-  // ----- Рефы -----
   const pagesRef = useRef(pages)
   const docIdRef = useRef(docId)
   const fileNameRef = useRef(fileName)
@@ -140,25 +145,101 @@ export default function Editor(){
   useEffect(()=>{ docIdRef.current = docId }, [docId])
   useEffect(()=>{ fileNameRef.current = fileName }, [fileName])
 
-  // ----- WebSocket + dirty -----
   const wsRef = useRef(null)
-  const dirtyRef = useRef(false)
+  const draftCacheRef = useRef(null);
 
-  function markDirty(kind = 'change', payload = {}) {
-    dirtyRef.current = true
-    try { wsRef.current?.sendEvent(kind, payload) } catch {}
-  }
-  async function commitSnapshotWS(reason='action'){
-    if(!hasDoc) return
-    try{
-      ensureWS()
-      const s = await serializeDocument()
-      wsRef.current?.commit(s)
-      dirtyRef.current = false
-    }catch(e){
-      console.warn('[commitSnapshotWS]', reason, e?.message||e)
+  const serializeDocument = useCallback(async () => {
+    if(!pagesRef.current || pagesRef.current.length === 0) return null;
+    const pagesLocal = pagesRef.current
+    const outPages = []
+    for (let i=0; i<pagesLocal.length; i++){
+      const p = pagesLocal[i]
+      const cv = await ensureCanvas(p)
+      const meta = p.meta || {}
+      const rawObjs = (cv.getObjects()||[]).filter(o=>o!==p.bgObj)
+      const overlays = []
+      for (const o of rawObjs){
+        if (o.type === 'textbox') {
+          overlays.push({
+            t:'tb', text:o.text||'', left:o.left||0, top:o.top||0, angle:o.angle||0,
+            fontFamily:o.fontFamily||'Arial', fontSize:o.fontSize||42, fontStyle:o.fontStyle||'normal', fontWeight:o.fontWeight||'normal',
+            fill:o.fill||'#000', width: Math.round(o.width || 200), textAlign: o.textAlign || 'left',
+            scaleX: o.scaleX || 1, scaleY: o.scaleY || 1,
+          })
+        } else if (o.type === 'image') {
+          const src = await ensureSerializableSrcForImage(o)
+          overlays.push({
+            t:'im', src, left:o.left||0, top:o.top||0, scaleX:o.scaleX||1, scaleY:o.scaleY||1,
+            angle:o.angle||0, flipX: !!o.flipX, flipY: !!o.flipY,
+          })
+        }
+      }
+
+      const pageData = {
+        type: meta.type || 'raster',
+        landscape: !!p.landscape,
+        overlays,
+        world_w: p.worldW,
+        world_h: p.worldH,
+      };
+
+      if (meta.type === 'pdf' && meta.bytes) {
+        pageData.index = meta.index || 0;
+        pageData.bytes_b64 = u8ToB64(meta.bytes);
+      } else if (meta.type === 'image' || meta.type === 'raster') {
+        pageData.src = meta.src;
+        pageData.w = meta.w;
+        pageData.h = meta.h;
+        pageData.mime = meta.mime || 'image/png';
+      } else {
+        pageData.src = cv.toDataURL({ format:'png', multiplier: 2 });
+        pageData.w = cv.getWidth() * 2;
+        pageData.h = cv.getHeight() * 2;
+        pageData.mime = 'image/png';
+      }
+      outPages.push(pageData);
     }
-  }
+    return { client_id: docIdRef.current || null, name: fileNameRef.current || genDefaultName(), pages: outPages }
+  }, []);
+
+  const commitWithFetch = useCallback(async () => {
+    const data = draftCacheRef.current;
+    if (!data) return;
+    try {
+      await AuthAPI.saveDraft(data);
+    } catch (e) {
+      console.warn('[commitWithFetch] failed', e);
+    }
+  }, []);
+
+  const debouncedCommit = useMemo(() => debounce(commitWithFetch, 2000), [commitWithFetch]);
+
+  const markDirty = useCallback(async (kind = 'change') => {
+    try {
+      const s = await serializeDocument();
+      if (s) {
+        draftCacheRef.current = s;
+        ensureWS();
+        wsRef.current?.sendEvent(kind);
+        debouncedCommit();
+      }
+    } catch (e) {
+      console.warn('markDirty failed', e);
+    }
+  }, [debouncedCommit, serializeDocument]);
+  
+  useEffect(() => {
+    const commitOnUnload = (e) => {
+      const data = draftCacheRef.current;
+      if (data) {
+        // navigator.sendBeacon не может быть асинхронным, поэтому мы не можем сериализовать здесь.
+        // Мы используем данные из кэша, который обновляется при каждом markDirty.
+        AuthAPI.saveDraftBeacon(data);
+      }
+    };
+    window.addEventListener('beforeunload', commitOnUnload);
+    return () => window.removeEventListener('beforeunload', commitOnUnload);
+  }, []);
 
   function getAccessToken() { return localStorage.getItem('access') || '' }
   function ensureWS() {
@@ -173,68 +254,27 @@ export default function Editor(){
     }
   }
 
-  // ----- Финальный коммит при уходе/скрытии -----
-  async function commitDraft(reason='unmount'){
-    if (!hasDoc) return
-    try {
-      const s = await serializeDocument()
-      try { ensureWS(); wsRef.current?.commit(s) } catch {}
-      try { await AuthAPI.saveDraft(s) } catch {}
-      dirtyRef.current = false
-    } catch (e) {
-      console.error('commitDraft failed', reason, e)
-    }
-  }
-
-  // pagehide/hidden
-  useEffect(()=>{
-    const onVis = () => { if (document.hidden) commitDraft('hidden').catch(()=>{}) }
-    const onHide = () => { commitDraft('pagehide').catch(()=>{}) }
-    window.addEventListener('visibilitychange', onVis)
-    window.addEventListener('pagehide', onHide)
-    return () => {
-      window.removeEventListener('visibilitychange', onVis)
-      window.removeEventListener('pagehide', onHide)
-    }
-  }, [hasDoc])
-
-  // unmount
-  useEffect(() => {
-    return () => { try { commitDraft('unmount') } catch {} }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
-  // Billing
   useEffect(()=>{
     if(isAuthed){
       AuthAPI.getBillingStatus()
         .then((st)=>{
           setBilling(st)
           if (st && ('price_single' in st)) {
-            setPrices({
-              single: Number(st.price_single||0),
-              month: Number(st.price_month||0),
-              year: Number(st.price_year||0),
-            })
+            setPrices({ single: Number(st.price_single||0), month: Number(st.price_month||0), year: Number(st.price_year||0) })
           }
         })
         .catch(()=>{})
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   },[isAuthed])
 
   useEffect(()=>{
     const onUser=async()=>{
       if(localStorage.getItem('access')){
         try{
-          const st = await AuthAPI.getBillingStatus()
+          const st = await AuthAPI.getBillingStatus();
           setBilling(st)
           if (st && ('price_single' in st)) {
-            setPrices({
-              single: Number(st.price_single||0),
-              month: Number(st.price_month||0),
-              year: Number(st.price_year||0),
-            })
+            setPrices({ single: Number(st.price_single||0), month: Number(st.price_month||0), year: Number(st.price_year||0) })
           }
         }catch{}
         loadLibrary()
@@ -242,19 +282,15 @@ export default function Editor(){
       }
     }
     const onBill=(e)=>{
-      const st = e.detail
+      const st = e.detail;
       setBilling(st)
       if (st && ('price_single' in st)) {
-        setPrices({
-          single: Number(st.price_single||0),
-          month: Number(st.price_month||0),
-          year: Number(st.price_year||0),
-        })
+        setPrices({ single: Number(st.price_single||0), month: Number(st.price_month||0), year: Number(st.price_year||0) })
       }
     }
     const onStorage = () => {
-      const t = getAccessToken()
-      if (wsRef.current) wsRef.current.setToken(t)
+      const t = getAccessToken();
+      if (wsRef.current) wsRef.current.setToken(t);
     }
     window.addEventListener('user:update', onUser)
     window.addEventListener('billing:update', onBill)
@@ -266,8 +302,9 @@ export default function Editor(){
   const docFileRef = useRef(null)
   const bgFileRef = useRef(null)
   const signFileRef = useRef(null)
-  const sheetRef = useRef(null)
-  const dlRef = useRef(null)
+  const sheetActionsRef = useRef(null)
+  const sheetAddRef = useRef(null)
+  const sheetDownloadRef = useRef(null)
 
   const [isMobile, setIsMobile] = useState(()=>window.matchMedia('(max-width: 960px)').matches)
   useEffect(()=>{
@@ -277,7 +314,6 @@ export default function Editor(){
     return ()=>mq.removeEventListener('change',on)
   },[])
 
-  // В ЭДИТОРЕ ВСЕГДА прячем футер
   useEffect(()=>{
     document.body.classList.add('no-footer')
     document.documentElement.classList.add('no-footer')
@@ -287,20 +323,19 @@ export default function Editor(){
     }
   }, [])
 
-  // Клики вне листов
   useEffect(()=>{
     function onDoc(e){
       const t=e.target
-      if(menuAddOpen && sheetRef.current && !sheetRef.current.contains(t)) setMenuAddOpen(false)
-      if(menuDownloadOpen && dlRef.current && !dlRef.current.contains(t)) setMenuDownloadOpen(false)
+      if(menuActionsOpen && sheetActionsRef.current && !sheetActionsRef.current.contains(t) && !t.closest('.ed-menu-btn')) setMenuActionsOpen(false)
+      if(menuAddOpen && sheetAddRef.current && !sheetAddRef.current.contains(t) && !t.closest('.fab-add')) setMenuAddOpen(false)
+      if(menuDownloadOpen && sheetDownloadRef.current && !sheetDownloadRef.current.contains(t) && !t.closest('.fab-dl')) setMenuDownloadOpen(false)
     }
-    if(menuAddOpen||menuDownloadOpen){
+    if(menuActionsOpen || menuAddOpen || menuDownloadOpen){
       document.addEventListener('click',onDoc,true)
       return ()=>document.removeEventListener('click',onDoc,true)
     }
-  },[menuAddOpen,menuDownloadOpen])
+  },[menuActionsOpen, menuAddOpen, menuDownloadOpen])
 
-  // Рефит при ресайзе контейнера — считаем только вписывание
   useEffect(()=>{
     if(!canvasWrapRef.current) return
     const ro=new ResizeObserver(()=>{ pages.forEach((_,i)=>fitCanvas(i)) })
@@ -309,7 +344,6 @@ export default function Editor(){
   },[pages])
   useEffect(()=>{ if(pages[cur]?.canvas){ requestAnimationFrame(()=>fitCanvas(cur)) } },[cur,pages.length,isMobile])
 
-  // ---- Восстановление черновика последнего документа — только с сервера ----
   useEffect(()=>{
     (async ()=>{
       if(hasDoc) return
@@ -322,14 +356,10 @@ export default function Editor(){
             toast('Восстановлен последний документ','info')
           }
         }
-      }catch(e){
-        console.error('restore draft failed',e)
-      }finally{
-        setLoading(false)
-      }
+      }catch(e){ console.error('restore draft failed',e) }
+      finally{ setLoading(false) }
     })()
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[])
+  },[hasDoc])
 
   async function loadLibrary(){
     setLibLoading(true)
@@ -349,7 +379,6 @@ export default function Editor(){
     return { width: el?.naturalWidth || fabImg.width || 1, height: el?.naturalHeight || fabImg.height || 1 }
   }
 
-  // --- CSS-вписывание: внутренний canvas = worldW/worldH, отображение = CSS width/height ---
   function fitCanvasForPage(page){
     if(!page || !page.canvas) return
     const cv = page.canvas
@@ -358,24 +387,20 @@ export default function Editor(){
     const box = wrap.getBoundingClientRect()
     if(!box || box.width<10 || box.height<10){ requestAnimationFrame(()=>fitCanvasForPage(page)); return }
 
-    const marginX = 8
-    const marginY = 8
+    const marginX = 8, marginY = 8
     const availW = Math.max(50, box.width - marginX*2)
     const availH = Math.max(50, box.height - marginY*2)
 
-    const worldW = Math.max(1, page.worldW || (page.landscape ? PAGE_H : PAGE_W))
-    const worldH = Math.max(1, page.worldH || (page.landscape ? PAGE_W : PAGE_H))
+    const worldW = Math.max(1, page.worldW)
+    const worldH = Math.max(1, page.worldH)
 
     const s = Math.min(availW/worldW, availH/worldH)
     const cssW = Math.max(1, Math.round(worldW * s))
     const cssH = Math.max(1, Math.round(worldH * s))
 
-    const lower = cv.lowerCanvasEl
-    const upper = cv.upperCanvasEl
-    const cont  = lower?.parentElement // .canvas-container
-    const edCanvasEl = cont?.parentElement // .ed-canvas
+    const lower = cv.lowerCanvasEl, upper = cv.upperCanvasEl
+    const cont  = lower?.parentElement, edCanvasEl = cont?.parentElement
 
-    // Применяем CSS размеры
     if (lower) { lower.style.width = cssW+'px'; lower.style.height = cssH+'px'; lower.style.maxWidth='none'; lower.style.maxHeight='none' }
     if (upper) { upper.style.width = cssW+'px'; upper.style.height = cssH+'px'; upper.style.maxWidth='none'; upper.style.maxHeight='none' }
     if (cont)  { cont.style.width  = cssW+'px'; cont.style.height  = cssH+'px' }
@@ -387,12 +412,8 @@ export default function Editor(){
     await ensureFabric()
     if(page.canvas) return page.canvas
     await waitForElm(page.elId)
-    // eslint-disable-next-line no-undef
     const c=new fabric.Canvas(page.elId,{ backgroundColor:'#fff', preserveObjectStacking:true, selection:true })
-    // Мировые размеры = worldW/worldH (реальные пиксели документа)
-    const w = Math.max(1, page.worldW || PAGE_W)
-    const h = Math.max(1, page.worldH || PAGE_H)
-    c.setWidth(w); c.setHeight(h)
+    c.setWidth(page.worldW); c.setHeight(page.worldH)
     page.canvas = c
     fitCanvasForPage(page)
 
@@ -400,17 +421,14 @@ export default function Editor(){
     c.on('selection:updated', onSelectionChanged)
     c.on('selection:cleared', ()=>setPanelOpen(false))
 
-    // Мелкие события — только dirty/event
-    c.on('object:moving',  ()=>{ markDirty('obj_moving'); })
-    c.on('object:scaling', ()=>{ markDirty('obj_scaling'); })
-    c.on('object:rotating',()=>{ markDirty('obj_rotating'); })
-    // Завершение правок — полный коммит
-    c.on('object:added',   async (e)=>{ markDirty('obj_added',   { t:e?.target?.type||'' }); await commitSnapshotWS('obj_added') })
-    c.on('object:modified',async (e)=>{ markDirty('obj_modified',{ t:e?.target?.type||'' }); await commitSnapshotWS('obj_modified') })
-    c.on('object:removed', async (e)=>{ markDirty('obj_removed', { t:e?.target?.type||'' }); await commitSnapshotWS('obj_removed') })
+    c.on('object:moving',  () => markDirty('obj_moving'))
+    c.on('object:scaling', () => markDirty('obj_scaling'))
+    c.on('object:rotating',() => markDirty('obj_rotating'))
+    c.on('object:added',   () => markDirty('obj_added'))
+    c.on('object:removed', () => markDirty('obj_removed'))
+    c.on('object:modified',() => markDirty('obj_modified'))
     try{
-      c.on('text:changed', ()=>{ markDirty('text_changed') })
-      c.on('editing:exited', async (e)=>{ markDirty('text_edit_done'); await commitSnapshotWS('text_edit_done') })
+      c.on('text:changed', () => markDirty('text_changed'))
     }catch{}
 
     installDeleteControl()
@@ -429,34 +447,28 @@ export default function Editor(){
     }else setPanelOpen(false)
   }
 
-  // Кастомный контрол удаления
   function installDeleteControl(){
-    // eslint-disable-next-line no-undef
     const fobj=fabric.Object; if(fobj.__delPatched) return
-    // eslint-disable-next-line no-undef
     const F=fabric
     const del=new F.Control({
       x:0.5,y:-0.5,offsetX:12,offsetY:-12,cursorStyle:'pointer',
-      mouseUpHandler:async (_,tr)=>{
+      mouseUpHandler:(_,tr)=>{
         const t=tr.target,cv=t.canvas
         if (window.confirm('Удалить объект со страницы?')) {
           cv.remove(t); cv.discardActiveObject(); cv.requestRenderAll()
           toast('Объект удалён','success')
-          markDirty('obj_deleted', { t: t?.type || '' })
-          await commitSnapshotWS('obj_deleted')
+          markDirty('obj_deleted')
         }
         return true
       },
       render:(ctx,left,top)=>{ const r=12; ctx.save(); ctx.fillStyle='#E26D5C'; ctx.beginPath(); ctx.arc(left,top,r,0,Math.PI*2); ctx.fill(); ctx.strokeStyle='#fff'; ctx.lineWidth=2; ctx.beginPath(); ctx.moveTo(left-5,top-5); ctx.lineTo(left+5,top+5); ctx.moveTo(left+5,top-5); ctx.lineTo(left-5,top+5); ctx.stroke(); ctx.restore(); }
     })
     fobj.prototype.controls.tr=del
-    // eslint-disable-next-line no-undef
     window.__scannyDelControl = del
     fobj.__delPatched=true
   }
   function ensureDeleteControlFor(obj){
     try{
-      // eslint-disable-next-line no-undef
       if (obj && obj.controls && window.__scannyDelControl) obj.controls.tr = window.__scannyDelControl
     }catch{}
   }
@@ -466,12 +478,13 @@ export default function Editor(){
     if (!window.confirm('Удалить весь документ?')) return
     pages.forEach(p=>{ try{ p.canvas?.dispose?.() }catch{} })
     setPages([]); setCur(0); setPanelOpen(false); setFileName(''); setUndoStack([])
+    draftCacheRef.current = null;
     try { if (docIdRef.current) await AuthAPI.deleteUploadsByClient(docIdRef.current) } catch {}
+    try { await AuthAPI.clearDraft() } catch(e) { console.error("Failed to clear draft", e)}
     setDocId(null)
-    markDirty('remove_document')
-    await commitSnapshotWS('remove_document')
     toast('Документ удалён','success')
   }
+
   async function removePage(idx=cur){
     if (!hasDoc) return
     if (pages.length<=1){ await removeDocument(); return }
@@ -480,8 +493,7 @@ export default function Editor(){
     setPages(prev=>prev.filter((_,i)=>i!==idx))
     setCur(i=>Math.max(0, idx-1))
     setUndoStack(stk=>stk.filter(x=>!(x.page===idx)))
-    markDirty('remove_page', { page: idx })
-    await commitSnapshotWS('remove_page')
+    markDirty('remove_page')
     toast('Страница удалена','success')
   }
 
@@ -493,69 +505,49 @@ export default function Editor(){
     for(let i=0;i<pages.length;i++){
       if(i===cur) continue
       const dstPage=pages[i], cvDst=await ensureCanvas(dstPage)
-      // eslint-disable-next-line no-undef
       const F=fabric
       if(obj.type==='textbox'){
         const tb=new F.Textbox(obj.text||'',{
-          left:(obj.left||0)*cvDst.getWidth()/cvSrc.getWidth(),
-          top:(obj.top||0)*cvDst.getHeight()/cvSrc.getHeight(),
-          fontFamily:obj.fontFamily||'Arial',
-          fontStyle:obj.fontStyle||'normal',
-          fontWeight:obj.fontWeight||'normal',
-          fill:obj.fill||'#000',
-          fontSize:Math.max(6,(obj.fontSize||42)*cvDst.getHeight()/cvSrc.getHeight()),
-          angle:obj.angle||0,
-          selectable:true,
-          width: Math.max(20, (obj.width||200)*cvDst.getWidth()/cvSrc.getWidth()),
-          textAlign: obj.textAlign || 'left',
-          scaleX: obj.scaleX || 1,
-          scaleY: obj.scaleY || 1,
+          left:(obj.left||0)*cvDst.getWidth()/cvSrc.getWidth(), top:(obj.top||0)*cvDst.getHeight()/cvSrc.getHeight(),
+          fontFamily:obj.fontFamily||'Arial', fontStyle:obj.fontStyle||'normal', fontWeight:obj.fontWeight||'normal',
+          fill:obj.fill||'#000', fontSize:Math.max(6,(obj.fontSize||42)*cvDst.getHeight()/cvSrc.getHeight()),
+          angle:obj.angle||0, selectable:true, width: Math.max(20, (obj.width||200)*cvDst.getWidth()/cvSrc.getWidth()),
+          textAlign: obj.textAlign || 'left', scaleX: obj.scaleX || 1, scaleY: obj.scaleY || 1,
         })
-        tb.__scannyId=uniqueObjId()
-        ensureDeleteControlFor(tb)
+        tb.__scannyId=uniqueObjId(); ensureDeleteControlFor(tb)
         cvDst.add(tb); cvDst.requestRenderAll(); clones.push({page:i,id:tb.__scannyId})
       }else if(obj.type==='image'){
         const src=(obj._originalElement?.src||obj._element?.src)
         const imgEl=await loadImageEl(src)
-        const im=new F.Image(imgEl,{
-          angle:obj.angle||0,
-          selectable:true,
-          flipX: !!obj.flipX,
-          flipY: !!obj.flipY,
-        })
+        const im=new F.Image(imgEl,{ angle:obj.angle||0, selectable:true, flipX: !!obj.flipX, flipY: !!obj.flipY })
         const dispW=obj.getScaledWidth(), dispH=obj.getScaledHeight()
         const targetW=dispW*cvDst.getWidth()/cvSrc.getWidth(), targetH=dispH*cvDst.getHeight()/cvSrc.getHeight()
         const baseW=(im.width||1), baseH=(im.height||1)
         const sUni = Math.min(targetW/baseW, targetH/baseH)
         im.set({
-          left:(obj.left||0)*cvDst.getWidth()/cvSrc.getWidth(),
-          top:(obj.top||0)*cvDst.getHeight()/cvSrc.getHeight(),
+          left:(obj.left||0)*cvDst.getWidth()/cvSrc.getWidth(), top:(obj.top||0)*cvDst.getHeight()/cvSrc.getHeight(),
           scaleX:sUni, scaleY:sUni
         })
-        im.__scannyId=uniqueObjId()
-        ensureDeleteControlFor(im)
+        im.__scannyId=uniqueObjId(); ensureDeleteControlFor(im)
         cvDst.add(im); cvDst.requestRenderAll(); clones.push({page:i,id:im.__scannyId})
       }
     }
     if(clones.length){
       setUndoStack(stk=>[...stk,{type:'apply_all',clones}])
-      markDirty('apply_all', { count: clones.length })
-      await commitSnapshotWS('apply_all')
+      markDirty('apply_all')
       toast('Объект продублирован на все страницы','success')
     }
   }
 
   function pickDocument(){ docFileRef.current?.click() }
-  function pickBgForCurrent(){ bgFileRef.current?.click() }
   async function onPickDocument(e){ const files=Array.from(e.target.files||[]); e.target.value=''; if(!files.length) return; await handleFiles(files) }
   async function onPickBgFile(e){ const files=Array.from(e.target.files||[]); e.target.value=''; if(!files.length) return; await assignFirstFileToCurrent(files[0]) }
-
+  
   async function handleFiles(files){
     setLoading(true)
     try{
-      // гарантируем наличие client_id
-      let curDocId = docIdRef.current
-      if (!curDocId) { curDocId = randDocId(); setDocId(curDocId) }
+      let curDocId = docIdRef.current;
+      if (!curDocId) { curDocId = randDocId(); setDocId(curDocId); }
       ensureWS()
 
       let addedPages = 0
@@ -566,31 +558,23 @@ export default function Editor(){
         if(!initialName){ const base=f.name.replace(/\.[^.]+$/,''); initialName = sanitizeName(base); setFileName(initialName) }
 
         if(['jpg','jpeg','png'].includes(ext)){
-          const url=await readAsDataURL(f)
-          const img = await loadImageEl(url)
+          const url=await readAsDataURL(f); const img = await loadImageEl(url)
           await createPageFromImage(url, img.naturalWidth||img.width, img.naturalHeight||img.height, f.type || (url.startsWith('data:image/png')?'image/png':'image/jpeg'), false)
           addedPages += 1
         }else if(ext==='pdf'){
-          const ab = await f.arrayBuffer()
-          const bytes = toUint8Copy(ab)
+          const ab = await f.arrayBuffer(); const bytes = toUint8Copy(ab)
           addedPages += await addPagesFromPDFBytes(bytes)
         }else if(['docx','doc'].includes(ext)){
-          const canv=await renderDOCXToCanvas(f)
-          addedPages += await addRasterPagesFromCanvas(canv)
+          const canv=await renderDOCXToCanvas(f); addedPages += await addRasterPagesFromCanvas(canv)
         }else if(['xls','xlsx'].includes(ext)){
-          const canv=await renderXLSXToCanvas(f)
-          addedPages += await addRasterPagesFromCanvas(canv)
+          const canv=await renderXLSXToCanvas(f); addedPages += await addRasterPagesFromCanvas(canv)
         }else{
           toast(`Формат не поддерживается: ${ext}`,'error')
         }
       }
 
-      if (addedPages>0) {
-        markDirty('add_files', { pages: addedPages })
-        await commitSnapshotWS('add_files')
-      }
+      if (addedPages>0) markDirty('add_files');
 
-      // История
       try{
         if (isAuthed && addedPages>0) {
           const nm = sanitizeName(initialName || fileNameRef.current || genDefaultName())
@@ -606,18 +590,17 @@ export default function Editor(){
   function readAsDataURL(file){ return new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result); r.onerror=rej; r.readAsDataURL(file) }) }
   function loadImageEl(src){ return new Promise((res,rej)=>{ const img=new Image(); img.crossOrigin='anonymous'; img.onload=()=>res(img); img.onerror=rej; img.src=src }) }
 
-  // Создание страницы с фоном из изображения (мировые размеры = натуральные)
   async function createPageFromImage(dataUrl, w, h, mime='image/png', landscape=false){
     const id='p_'+Math.random().toString(36).slice(2), elId='cv_'+id
-    const worldW = Math.max(1, w||PAGE_W), worldH = Math.max(1, h||PAGE_H)
+    const worldW = landscape ? Math.max(h, PAGE_H) : Math.max(w, PAGE_W);
+    const worldH = landscape ? Math.max(w, PAGE_W) : Math.max(h, PAGE_H);
     const page={ id, elId, canvas:null, bgObj:null, landscape:!!landscape, worldW, worldH,
-      meta:{ type:'image', src:dataUrl, w:worldW, h:worldH, mime } }
+      meta:{ type:'image', src:dataUrl, w:w, h:h, mime } }
     setPages(prev=>{ const arr=[...prev,page]; setCur(arr.length-1); return arr })
     await new Promise(r=>requestAnimationFrame(r))
     const cv=await ensureCanvas(page)
     await ensureFabric()
     const imgEl=await loadImageEl(dataUrl)
-    // eslint-disable-next-line no-undef
     const img=new fabric.Image(imgEl,{ selectable:false, evented:false, left:0, top:0 })
     const iw = imgEl.naturalWidth||imgEl.width||1
     const ih = imgEl.naturalHeight||imgEl.height||1
@@ -628,7 +611,7 @@ export default function Editor(){
     fitCanvasForPage(page)
     return page
   }
-
+  
   async function addRasterPagesFromCanvas(canvas){
     const slices = sliceCanvasToPages(canvas)
     let count = 0
@@ -640,25 +623,27 @@ export default function Editor(){
     return count
   }
 
-  // ===== PDF: превью — копия bytes.slice(), экспорт — оригинальные bytes =====
   async function addPagesFromPDFBytes(bytes){
     await ensurePDFJS()
-    // eslint-disable-next-line no-undef
     const pdf=await pdfjsLib.getDocument({data: bytes.slice()}).promise
     const total = pdf.numPages
     for(let i=1;i<=pdf.numPages;i++){
-      const url=await renderPDFPageToDataURL(pdf,i,2.0)
+      const p = await pdf.getPage(i);
+      const vp = p.getViewport({ scale: 2.0 });
+      const url = await renderPDFPageToDataURL(pdf,i,2.0);
       const id='p_'+Math.random().toString(36).slice(2), elId='cv_'+id
-      const im = await loadImageEl(url)
-      const worldW = im.naturalWidth||im.width||PAGE_W
-      const worldH = im.naturalHeight||im.height||PAGE_H
-      const page={ id, elId, canvas:null, bgObj:null, landscape:false, worldW, worldH,
+      
+      const landscape = vp.width > vp.height;
+      const worldW = vp.width;
+      const worldH = vp.height;
+      
+      const page={ id, elId, canvas:null, bgObj:null, landscape, worldW, worldH,
         meta:{ type:'pdf', bytes: toUint8Copy(bytes), index:i-1 } }
       setPages(prev=>{ const arr=[...prev,page]; setCur(arr.length-1); return arr })
       await new Promise(r=>requestAnimationFrame(r))
       const cv=await ensureCanvas(page)
       await ensureFabric()
-      // eslint-disable-next-line no-undef
+      const im = await loadImageEl(url);
       const img=new fabric.Image(im,{ selectable:false, evented:false, left:0, top:0 })
       const iw = im.naturalWidth||im.width||1
       const ih = im.naturalHeight||im.height||1
@@ -718,7 +703,6 @@ export default function Editor(){
     return out
   }
 
-  // ===== Улучшение качества подписи/печати в PDF/JPG =====
   function getOverlayObjects(cv, page){
     const all = cv.getObjects() || []
     return all.filter(o => o !== page.bgObj)
@@ -742,7 +726,6 @@ export default function Editor(){
     return mul
   }
 
-  // ===== Загрузка подписи/печати, кроп с удалением фона =====
   function pickSignature(){ signFileRef.current?.click() }
   async function onPickSignature(e){
     const f=e.target.files?.[0]; e.target.value=''
@@ -751,8 +734,7 @@ export default function Editor(){
     setCropSrc(src); setCropOpen(true); setCropType('signature'); setCropThresh(40)
   }
 
-  useEffect(()=>{ if(!cropOpen) return; (async()=>{ await ensureCropper(); if(cropperRef.current){ try{ cropperRef.current.destroy() }catch{}; cropperRef.current=null } const img=cropImgRef.current; if(!img) return; /* eslint-disable no-undef */ const inst=new Cropper(img,{viewMode:1,dragMode:'move',guides:true,background:false,autoCrop:true}); /* eslint-enable */ cropperRef.current=inst })(); return ()=>{ if(cropperRef.current){ try{ cropperRef.current.destroy() }catch{}; cropperRef.current=null } } },[cropOpen])
-
+  useEffect(()=>{ if(!cropOpen) return; (async()=>{ await ensureCropper(); if(cropperRef.current){ try{ cropperRef.current.destroy() }catch{}; cropperRef.current=null } const img=cropImgRef.current; if(!img) return; const inst=new Cropper(img,{viewMode:1,dragMode:'move',guides:true,background:false,autoCrop:true}); cropperRef.current=inst })(); return ()=>{ if(cropperRef.current){ try{ cropperRef.current.destroy() }catch{}; cropperRef.current=null } } },[cropOpen])
   useEffect(()=>{ if(!cropOpen||!cropperRef.current||!cropSrc) return; (async()=>{ const thr=Math.round(255*(cropThresh/100)); const url=await removeWhiteBackground(cropSrc,thr); try{ cropperRef.current.replace(url,true) }catch{} })() },[cropThresh,cropOpen,cropSrc])
 
   async function cropConfirm(){
@@ -766,9 +748,7 @@ export default function Editor(){
       if (hasDoc) {
         const page = pages[cur]
         const cv = await ensureCanvas(page)
-        // eslint-disable-next-line no-undef
         const imgEl = await loadImageEl(dataUrl)
-        // eslint-disable-next-line no-undef
         const img = new fabric.Image(imgEl)
         const w = cv.getWidth(), h = cv.getHeight()
         const s = Math.min(1, (w * 0.35) / (img.width || 1))
@@ -777,7 +757,6 @@ export default function Editor(){
         cv.add(img); cv.setActiveObject(img); cv.requestRenderAll()
         setUndoStack(stk => [...stk, { type: 'add_one', page: cur, id: img.__scannyId }])
         markDirty('add_signature_on_canvas')
-        await commitSnapshotWS('add_signature_on_canvas')
       }
       setCropOpen(false)
     } catch (e) {
@@ -802,7 +781,6 @@ export default function Editor(){
     if(!hasDoc){ toast('Сначала добавьте страницу','error'); return }
     const page=pages[cur]; ensureCanvas(page).then(async (cv)=>{
       const imgEl=await loadImageEl(url)
-      // eslint-disable-next-line no-undef
       const img=new fabric.Image(imgEl)
       const w=cv.getWidth(),h=cv.getHeight()
       const s=Math.min(1,(w*0.35)/(img.width||1))
@@ -811,7 +789,6 @@ export default function Editor(){
       cv.add(img); cv.setActiveObject(img); cv.requestRenderAll()
       setUndoStack(stk=>[...stk,{type:'add_one',page:cur,id:img.__scannyId}])
       markDirty('place_from_library')
-      await commitSnapshotWS('place_from_library')
     })
   }
   async function removeFromLib(item){
@@ -824,7 +801,6 @@ export default function Editor(){
       }
       await loadLibrary()
       markDirty('remove_from_library')
-      await commitSnapshotWS('remove_from_library')
       toast('Удалено','success')
     } catch (e){
       toast(e.message || 'Не удалось удалить','error')
@@ -835,21 +811,16 @@ export default function Editor(){
     if(!hasDoc){ toast('Сначала добавьте страницу','error'); return }
     await ensureFabric()
     const page=pages[cur]; const cv=await ensureCanvas(page)
-    // eslint-disable-next-line no-undef
     const tb=new fabric.Textbox('Вставьте текст',{
-      left:Math.round(cv.getWidth()*0.1),
-      top:Math.round(cv.getHeight()*0.15),
-      fontSize:48, fill:'#000000',
-      fontFamily:'Arial', fontWeight:'bold',
-      width: Math.round(cv.getWidth()*0.6),
-      textAlign: 'left',
+      left:Math.round(cv.getWidth()*0.1), top:Math.round(cv.getHeight()*0.15),
+      fontSize:48, fill:'#000000', fontFamily:'Arial', fontWeight:'bold',
+      width: Math.round(cv.getWidth()*0.6), textAlign: 'left',
     })
     tb.__scannyId=uniqueObjId()
     ensureDeleteControlFor(tb)
     cv.add(tb); cv.setActiveObject(tb); cv.requestRenderAll(); setPanelOpen(true)
     setUndoStack(stk=>[...stk,{type:'add_one',page:cur,id:tb.__scannyId}])
     markDirty('add_textbox')
-    await commitSnapshotWS('add_textbox')
   }
 
   async function applyPanel(){
@@ -857,30 +828,32 @@ export default function Editor(){
     obj.set({ fontFamily:font, fontSize:fontSize, fontWeight:bold?'bold':'normal', fontStyle:italic?'italic':'normal', fill:color })
     cv.requestRenderAll()
     markDirty('textbox_style')
-    await commitSnapshotWS('textbox_style')
   }
-  useEffect(()=>{ if(panelOpen) applyPanel() },[font,fontSize,bold,italic,color])
+  useEffect(()=>{ if(panelOpen) applyPanel() },[font,fontSize,bold,italic,color, panelOpen, applyPanel])
 
-  // Поворот: поворачиваем фон в мировых координатах, затем пере-вписываем CSS
   async function rotatePage(){
     if(!hasDoc) return
-    const page=pages[cur]; await ensureCanvas(page)
-    page.landscape = !page.landscape
+    const page = pages[cur]; await ensureCanvas(page)
+    
+    page.landscape = !page.landscape;
+    [page.worldW, page.worldH] = [page.worldH, page.worldW];
+
+    page.canvas.setWidth(page.worldW);
+    page.canvas.setHeight(page.worldH);
+    
     const bg = page.bgObj
     if (bg) {
-      // Пересчёт масштаба фона внутри мира (не сдвигаем объекты)
       const el = bg._originalElement || bg._element
       const iw = el?.naturalWidth || el?.width || 1
       const ih = el?.naturalHeight || el?.height || 1
-      // поменяем "ориентацию" за счёт swap w/h при расчёте scale
-      const w = page.canvas.getWidth(), h = page.canvas.getHeight()
-      const s = Math.min(w/iw, h/ih)
-      bg.set({ left:0, top:0, angle: (page.landscape ? 90 : 0), scaleX:s, scaleY:s })
-      page.canvas.requestRenderAll()
+      const s = Math.min(page.worldW / iw, page.worldH / ih)
+      bg.set({ left: 0, top: 0, scaleX: s, scaleY: s, angle: 0 });
+      page.canvas.centerObject(bg);
+      page.canvas.requestRenderAll();
     }
+    
     fitCanvasForPage(page)
-    markDirty('rotate_page', { landscape: page.landscape })
-    await commitSnapshotWS('rotate_page')
+    markDirty('rotate_page')
   }
 
   function undo(){
@@ -889,13 +862,11 @@ export default function Editor(){
     else if(last.type==='apply_all'){ last.clones.forEach(({page,id})=>{ const p=pages[page], cv=p?.canvas; if(cv){ const obj=cv.getObjects().find(o=>o.__scannyId===id); if(obj){ cv.remove(obj) } cv.requestRenderAll() } }) }
     setUndoStack(stk)
     markDirty('undo')
-    commitSnapshotWS('undo').catch(()=>{})
   }
 
   function baseName(){ const nm=(fileNameRef.current||'').trim(); if(!nm){ toast('Введите название файла вверху','error'); return null } return sanitizeName(nm) }
   function freeLeft(){ return billing?.free_left ?? 0 }
 
-  // Получаем стабильный src (data:) для overlay-изображений (если было blob:)
   async function ensureSerializableSrcForImage(obj){
     const src = (obj._originalElement?.src || obj._element?.src || '')
     if (src && !src.startsWith('blob:')) return src
@@ -903,100 +874,36 @@ export default function Editor(){
       const imgEl = obj._originalElement || obj._element
       const w = imgEl?.naturalWidth || imgEl?.width || obj.width || 1
       const h = imgEl?.naturalHeight || imgEl?.height || obj.height || 1
-      const c = document.createElement('canvas')
-      c.width = w; c.height = h
-      const ctx = c.getContext('2d')
-      ctx.drawImage(imgEl, 0, 0, w, h)
+      const c = document.createElement('canvas'); c.width = w; c.height = h
+      const ctx = c.getContext('2d'); ctx.drawImage(imgEl, 0, 0, w, h)
       return c.toDataURL('image/png')
-    }catch{
-      return src || ''
-    }
-  }
-
-  // ----- Сериализация/восстановление черновика c client_id и объектами -----
-  async function serializeDocument(){
-    const pagesLocal = pagesRef.current || []
-    const outPages = []
-    for (let i=0; i<pagesLocal.length; i++){
-      const p = pagesLocal[i]
-      const cv = await ensureCanvas(p)
-      const meta = p.meta || {}
-      const rawObjs = (cv.getObjects()||[]).filter(o=>o!==p.bgObj)
-      const overlays = []
-      for (const o of rawObjs){
-        if (o.type === 'textbox') {
-          overlays.push({
-            t:'tb',
-            text:o.text||'',
-            left:o.left||0,
-            top:o.top||0,
-            angle:o.angle||0,
-            fontFamily:o.fontFamily||'Arial',
-            fontSize:o.fontSize||42,
-            fontStyle:o.fontStyle||'normal',
-            fontWeight:o.fontWeight||'normal',
-            fill:o.fill||'#000',
-            width: Math.round(o.width || 200),
-            textAlign: o.textAlign || 'left',
-            scaleX: o.scaleX || 1,
-            scaleY: o.scaleY || 1,
-          })
-        } else if (o.type === 'image') {
-          const src = await ensureSerializableSrcForImage(o)
-          overlays.push({
-            t:'im',
-            src,
-            left:o.left||0,
-            top:o.top||0,
-            scaleX:o.scaleX||1,
-            scaleY:o.scaleY||1,
-            angle:o.angle||0,
-            flipX: !!o.flipX,
-            flipY: !!o.flipY,
-          })
-        }
-      }
-
-      if (meta.type === 'pdf' && meta.bytes) {
-        outPages.push({ type:'pdf', index: meta.index||0, bytes_b64: u8ToB64(meta.bytes), landscape: !!p.landscape, overlays,
-          w: p.worldW || PAGE_W, h: p.worldH || PAGE_H })
-      } else if (meta.type === 'image' || meta.type === 'raster') {
-        outPages.push({ type: meta.type, src: meta.src, w: meta.w, h: meta.h, mime: meta.mime||'image/png', landscape: !!p.landscape, overlays,
-          world_w: p.worldW || meta.w, world_h: p.worldH || meta.h })
-      } else {
-        const url = cv.toDataURL({ format:'png', multiplier: 2 })
-        outPages.push({ type:'raster', src:url, w:cv.getWidth()*2, h:cv.getHeight()*2, mime:'image/png', landscape: !!p.landscape, overlays })
-      }
-    }
-    return { client_id: docIdRef.current || null, name: fileNameRef.current || genDefaultName(), pages: outPages }
+    }catch{ return src || '' }
   }
 
   async function restoreDocumentFromDraft(draft){
     try{
       const pagesData = Array.isArray(draft?.pages) ? draft.pages : []
+      if (pagesData.length === 0) return;
+      
       const created = []
       const bgUrls = []
       for (let i=0;i<pagesData.length;i++){
         const pg = pagesData[i]
         const id='p_'+Math.random().toString(36).slice(2), elId='cv_'+id
+        let worldW = pg.world_w || pg.w || PAGE_W;
+        let worldH = pg.world_h || pg.h || PAGE_H;
+        
         if (pg.type==='pdf' && pg.bytes_b64){
           await ensurePDFJS()
           const bytes = b64ToU8(pg.bytes_b64)
-          // eslint-disable-next-line no-undef
           const pdf = await pdfjsLib.getDocument({data: bytes.slice()}).promise
           const url = await renderPDFPageToDataURL(pdf, (pg.index||0)+1, 2.0)
           bgUrls[i] = url
-          const im = await loadImageEl(url)
-          const worldW = pg.w || im.naturalWidth || im.width || PAGE_W
-          const worldH = pg.h || im.naturalHeight || im.height || PAGE_H
           created.push({ id, elId, canvas:null, bgObj:null, landscape:!!pg.landscape, worldW, worldH,
             meta:{ type:'pdf', bytes: toUint8Copy(bytes), index: pg.index||0 } })
         } else if (pg.type==='image' || pg.type==='raster'){
           const url = pg.src
           bgUrls[i] = url
-          const im = await loadImageEl(url)
-          const worldW = (pg.world_w || pg.w || im.naturalWidth || im.width || PAGE_W)
-          const worldH = (pg.world_h || pg.h || im.naturalHeight || im.height || PAGE_H)
           created.push({ id, elId, canvas:null, bgObj:null, landscape:!!pg.landscape, worldW, worldH,
             meta:{ type: pg.type, src: pg.src, w: pg.w||worldW, h: pg.h||worldH, mime: pg.mime||'image/png' } })
         }
@@ -1016,11 +923,10 @@ export default function Editor(){
         const url = bgUrls[i]
         if (url){
           const imgEl = await loadImageEl(url)
-          // eslint-disable-next-line no-undef
           const img=new fabric.Image(imgEl,{ selectable:false, evented:false, left:0, top:0 })
           const iw = imgEl.naturalWidth||imgEl.width||1
           const ih = imgEl.naturalHeight||imgEl.height||1
-          const s = Math.min((page.worldW||iw)/iw, (page.worldH||ih)/ih)
+          const s = Math.min(cv.getWidth()/iw, cv.getHeight()/ih)
           img.set({ scaleX:s, scaleY:s })
           try{ if(page.bgObj) cv.remove(page.bgObj) }catch{}
           page.bgObj=img; cv.add(img); img.moveTo(0); cv.requestRenderAll()
@@ -1034,24 +940,17 @@ export default function Editor(){
         const overlays = Array.isArray(pg.overlays) ? pg.overlays : []
         for (const o of overlays){
           if (o.t === 'tb'){
-            // eslint-disable-next-line no-undef
             const tb=new fabric.Textbox(o.text||'',{
-              left:o.left||0, top:o.top||0, angle:o.angle||0,
-              fontFamily:o.fontFamily||'Arial', fontSize:o.fontSize||42,
-              fontStyle:o.fontStyle||'normal', fontWeight:o.fontWeight||'normal',
-              fill:o.fill||'#000',
-              width: Math.max(20, Number(o.width||200)),
-              textAlign: o.textAlign || 'left',
-              scaleX: Number(o.scaleX||1),
-              scaleY: Number(o.scaleY||1),
+              left:o.left||0, top:o.top||0, angle:o.angle||0, fontFamily:o.fontFamily||'Arial', fontSize:o.fontSize||42,
+              fontStyle:o.fontStyle||'normal', fontWeight:o.fontWeight||'normal', fill:o.fill||'#000',
+              width: Math.max(20, Number(o.width||200)), textAlign: o.textAlign || 'left',
+              scaleX: Number(o.scaleX||1), scaleY: Number(o.scaleY||1),
             })
             tb.__scannyId=uniqueObjId(); ensureDeleteControlFor(tb); cv.add(tb)
           } else if (o.t === 'im' && o.src){
             const imgEl = await loadImageEl(o.src)
-            // eslint-disable-next-line no-undef
             const im = new fabric.Image(imgEl,{
-              left:o.left||0, top:o.top||0, angle:o.angle||0,
-              flipX: !!o.flipX, flipY: !!o.flipY,
+              left:o.left||0, top:o.top||0, angle:o.angle||0, flipX: !!o.flipX, flipY: !!o.flipY,
               scaleX: Number(o.scaleX||1), scaleY: Number(o.scaleY||1),
             })
             im.__scannyId=uniqueObjId(); ensureDeleteControlFor(im); cv.add(im)
@@ -1059,97 +958,12 @@ export default function Editor(){
         }
         cv.requestRenderAll()
       }
+      markDirty('restore');
     }catch(e){
       console.error('restoreDocumentFromDraft error:', e)
     }
   }
 
-  // ----- Экспорт оверлея как PNG с повышенной чёткостью -----
-  async function exportOverlayAsPNGBytes(page, cv, targetW, targetH){
-    if (!cv) return null
-    const objs = cv.getObjects() || []
-    const hasOverlay = objs.some(o => o !== page.bgObj)
-    if (!hasOverlay) return null
-    const wasBGVisible = !!page.bgObj?.visible
-    const prevBGColor = cv.backgroundColor
-    try{
-      if (page.bgObj) page.bgObj.visible = false
-      cv.setBackgroundColor('rgba(0,0,0,0)', cv.requestRenderAll.bind(cv))
-      cv.discardActiveObject(); cv.requestRenderAll()
-      const mul = computeMultiplierForOverlay(cv, page, targetW, targetH)
-      const url = cv.toDataURL({ format:'png', multiplier: mul })
-      const r = await fetch(url); const ab = await r.arrayBuffer()
-      return new Uint8Array(ab)
-    } finally {
-      if (page.bgObj) page.bgObj.visible = wasBGVisible
-      cv.setBackgroundColor(prevBGColor || '#fff', cv.requestRenderAll.bind(cv))
-      cv.requestRenderAll()
-    }
-  }
-
-  async function assignFirstFileToCurrent(file){
-    const ext=(file.name.split('.').pop()||'').toLowerCase()
-    const page=pages[cur]; if(!page) return
-    setLoading(true)
-    try{
-      if(['jpg','jpeg','png'].includes(ext)){
-        const url=await readAsDataURL(file)
-        await setPageBackgroundFromImage(cur,url)
-        markDirty('set_bg_image'); await commitSnapshotWS('set_bg_image')
-      }else if(ext==='pdf'){
-        const ab = await file.arrayBuffer()
-        const bytes = toUint8Copy(ab)
-        await setPageBackgroundFromFirstPDFPage(cur, bytes)
-        markDirty('set_bg_pdf'); await commitSnapshotWS('set_bg_pdf')
-      }else if(['docx','doc'].includes(ext)){
-        const canv=await renderDOCXToCanvas(file)
-        const slices=sliceCanvasToPages(canv)
-        await setPageBackgroundFromImage(cur, slices[0]||canv.toDataURL('image/png'))
-        page.meta = { type:'raster', src: slices[0]||canv.toDataURL('image/png'), w: PAGE_W, h: PAGE_H }
-        markDirty('set_bg_raster_docx'); await commitSnapshotWS('set_bg_raster_docx')
-      }else if(['xls','xlsx'].includes(ext)){
-        const canv=await renderXLSXToCanvas(file)
-        const slices=sliceCanvasToPages(canv)
-        await setPageBackgroundFromImage(cur, slices[0]||canv.toDataURL('image/png'))
-        page.meta = { type:'raster', src: slices[0]||canv.toDataURL('image/png'), w: PAGE_W, h: PAGE_H }
-        markDirty('set_bg_raster_xlsx'); await commitSnapshotWS('set_bg_raster_xlsx')
-      }else toast('Этот формат не поддерживается','error')
-    }catch(e){ toast(e.message||'Не удалось назначить страницу','error') }
-    finally{ setLoading(false) }
-  }
-
-  async function setPageBackgroundFromImage(idx, dataUrl){
-    const page=pages[idx]; if(!page) return
-    const cv=await ensureCanvas(page)
-    await ensureFabric()
-    const imgEl=await loadImageEl(dataUrl)
-    // eslint-disable-next-line no-undef
-    const img=new fabric.Image(imgEl,{ selectable:false, evented:false })
-    const iw = imgEl.naturalWidth||imgEl.width||1
-    const ih = imgEl.naturalHeight||imgEl.height||1
-    const s = Math.min(cv.getWidth()/iw, cv.getHeight()/ih)
-    img.set({ left:0, top:0, scaleX:s, scaleY:s })
-    try{ if(page.bgObj) cv.remove(page.bgObj) }catch{}
-    page.bgObj=img; cv.add(img); img.moveTo(0); cv.requestRenderAll()
-    if (page.meta?.type==='image' || page.meta?.type==='raster') {
-      page.meta = { ...page.meta, src:dataUrl, w:iw, h:ih, mime: dataUrl.startsWith('data:image/jpeg')?'image/jpeg':'image/png' }
-    } else {
-      page.meta = { type:'image', src:dataUrl, w:iw, h:ih, mime: dataUrl.startsWith('data:image/jpeg')?'image/jpeg':'image/png' }
-    }
-    fitCanvasForPage(page)
-  }
-
-  async function setPageBackgroundFromFirstPDFPage(idx, bytes){
-    await ensurePDFJS()
-    const page=pages[idx]; if(!page) return
-    // eslint-disable-next-line no-undef
-    const pdf=await pdfjsLib.getDocument({data: bytes.slice()}).promise
-    const url=await renderPDFPageToDataURL(pdf,1,2.0)
-    await setPageBackgroundFromImage(idx,url)
-    page.meta = { type:'pdf', bytes: toUint8Copy(bytes), index: 0 }
-  }
-
-  // ===== Экспорт JPG — оффскрин-компоновка из оригиналов =====
   async function exportJPG(){
     try{
       if(!hasDoc) return
@@ -1157,41 +971,30 @@ export default function Editor(){
       const count=pages.length
       if(freeLeft()<count){ setPlan('single'); setPayOpen(true); return }
       await ensureJSZip()
-      // eslint-disable-next-line no-undef
       const zip=new JSZip()
       for(let i=0;i<pages.length;i++){
         const p=pages[i], cv=await ensureCanvas(p)
         const targetW = Math.max(1, p.worldW || cv.getWidth())
         const targetH = Math.max(1, p.worldH || cv.getHeight())
-
-        const off = document.createElement('canvas')
-        off.width = targetW
-        off.height = targetH
-        const octx = off.getContext('2d')
-        octx.fillStyle = '#fff'; octx.fillRect(0,0,off.width,off.height)
+        const off = document.createElement('canvas'); off.width = targetW; off.height = targetH
+        const octx = off.getContext('2d'); octx.fillStyle = '#fff'; octx.fillRect(0,0,off.width,off.height)
 
         if (p.meta?.type === 'pdf' && p.meta.bytes) {
           await ensurePDFJS()
-          // eslint-disable-next-line no-undef
           const pdf = await pdfjsLib.getDocument({ data: p.meta.bytes.slice() }).promise
           const pj = await pdf.getPage((p.meta.index||0)+1)
           const vp = pj.getViewport({ scale: 1 })
           const scale = Math.min(off.width / vp.width, off.height / vp.height)
-          const cv2 = document.createElement('canvas')
-          cv2.width = Math.round(vp.width * scale)
-          cv2.height = Math.round(vp.height * scale)
+          const cv2 = document.createElement('canvas'); cv2.width = Math.round(vp.width * scale); cv2.height = Math.round(vp.height * scale)
           await pj.render({ canvasContext: cv2.getContext('2d'), viewport: pj.getViewport({ scale }) }).promise
-          const dx = Math.round((off.width - cv2.width)/2)
-          const dy = Math.round((off.height - cv2.height)/2)
+          const dx = Math.round((off.width - cv2.width)/2); const dy = Math.round((off.height - cv2.height)/2)
           octx.drawImage(cv2, dx, dy)
         } else if (p.meta?.type === 'image' || p.meta?.type === 'raster') {
           const img = await loadImageEl(p.meta.src)
-          const iw = img.naturalWidth||img.width||1
-          const ih = img.naturalHeight||img.height||1
+          const iw = img.naturalWidth||img.width||1; const ih = img.naturalHeight||img.height||1
           const s = Math.min(off.width/iw, off.height/ih)
           const dw = Math.round(iw*s), dh = Math.round(ih*s)
-          const dx = Math.round((off.width - dw)/2)
-          const dy = Math.round((off.height - dh)/2)
+          const dx = Math.round((off.width - dw)/2); const dy = Math.round((off.height - dh)/2)
           octx.drawImage(img, dx, dy, dw, dh)
         } else {
           const url = cv.toDataURL({ format:'png', multiplier: 3 })
@@ -1207,7 +1010,6 @@ export default function Editor(){
           octx.drawImage(img, 0, 0, off.width, off.height)
           URL.revokeObjectURL(src)
         }
-
         const blob = await new Promise(res => off.toBlob(b => res(b), 'image/jpeg', 0.95))
         zip.file(`${bn}-p${i+1}.jpg`, blob)
       }
@@ -1240,17 +1042,11 @@ export default function Editor(){
             pageRef.drawImage(png, { x:0, y:0, width, height })
           }
         } else if (p.meta?.type === 'image' || p.meta?.type === 'raster') {
-          const iw = Math.max(1, p.meta.w || p.worldW || PAGE_W), ih = Math.max(1, p.meta.h || p.worldH || PAGE_H)
+          const iw = Math.max(1, p.worldW), ih = Math.max(1, p.worldH)
           const pageRef = out.addPage([iw, ih])
           const bytes = new Uint8Array(await (await fetch(p.meta.src)).arrayBuffer())
-          let img
-          try{
-            img = p.meta.mime && /jpe?g/i.test(p.meta.mime)
-              ? await out.embedJpg(bytes)
-              : await out.embedPng(bytes)
-          }catch{
-            img = await out.embedPng(bytes)
-          }
+          let img;
+          try{ img = p.meta.mime && /jpe?g/i.test(p.meta.mime) ? await out.embedJpg(bytes) : await out.embedPng(bytes) }catch{ img = await out.embedPng(bytes) }
           pageRef.drawImage(img, { x:0, y:0, width:iw, height:ih })
           const overlayBytes = await exportOverlayAsPNGBytes(p, cv, iw, ih)
           if (overlayBytes) {
@@ -1259,11 +1055,9 @@ export default function Editor(){
           }
         } else {
           const w = cv.getWidth(), h = cv.getHeight()
-          const mul = 3
-          const url = cv.toDataURL({ format:'png', multiplier: mul })
+          const mul = 3; const url = cv.toDataURL({ format:'png', multiplier: mul })
           const bytes = new Uint8Array(await (await fetch(url)).arrayBuffer())
-          const pageRef = out.addPage([w*mul, h*mul])
-          const png = await out.embedPng(bytes)
+          const pageRef = out.addPage([w*mul, h*mul]); const png = await out.embedPng(bytes)
           pageRef.drawImage(png, { x:0, y:0, width:w*mul, height:h*mul })
         }
       }
@@ -1299,11 +1093,9 @@ export default function Editor(){
     }catch(e){ toast(e.message||'Ошибка оплаты','error') }
   }
 
-  // Переименование файла: помечаем dirty, коммит по blur (чтобы не на каждую букву)
   const onRenameChange = (e) => { setFileName(sanitizeName(e.target.value)); markDirty('rename') }
-  const onRenameBlur = () => { if(hasDoc) commitSnapshotWS('rename').catch(()=>{}) }
+  const onRenameBlur = () => { if(hasDoc) markDirty('rename_blur').catch(()=>{}) }
 
-  // Удаление по клавише Delete/Backspace (после — коммит)
   useEffect(()=>{
     const onKey=(e)=>{
       const tag = String(e.target?.tagName || '').toLowerCase()
@@ -1316,34 +1108,26 @@ export default function Editor(){
           e.preventDefault()
           cv.remove(obj); cv.discardActiveObject(); cv.requestRenderAll()
           markDirty('delete_by_key')
-          commitSnapshotWS('delete_by_key').catch(()=>{})
-          toast('Объект удалён','success')
         }
       }
     }
     document.addEventListener('keydown', onKey)
     return ()=>document.removeEventListener('keydown', onKey)
-  },[pages, cur])
-
-  const hasActive = hasDoc && !!(pages[cur]?.canvas?.getActiveObject())
+  },[pages, cur, markDirty])
 
   return (
     <div className="doc-editor page" style={{ paddingTop: 0 }}>
-      {/* ЕДИНАЯ ВЕРХНЯЯ ПАНЕЛЬ:
-          - Desktop: только поле по центру
-          - Mobile: слева кнопка "меню" (открывает лист), по центру поле
-          - Третий режим: панель текста (подменяет верхнюю панель полностью)
-      */}
       {!panelOpen ? (
         <div className="ed-top">
-          {/* Мобильная кнопка "меню" слева */}
-          <button className="ed-menu-btn mobile-only" aria-label="Меню" onClick={()=>setMenuAddOpen(o=>!o)}>⋮</button>
+          <button className="ed-menu-btn mobile-only" aria-label="Меню действий" onClick={()=>setMenuActionsOpen(o=>!o)}>
+            <img src={icMenu} alt="" style={{ width: 18, height: 18 }} />
+          </button>
           <div className="ed-docid" style={{flex:1, display:'flex', justifyContent:'center'}}>
             <input className="ed-filename" placeholder="Название файла при скачивании"
                    value={fileName} onChange={onRenameChange} onBlur={onRenameBlur}
                    style={{ margin: '0 auto' }}/>
           </div>
-          <div style={{width:36 /* правый спейсер */}} className="desktop-only" />
+          <div style={{width:36}} className="desktop-only" />
         </div>
       ) : (
         <div className="ed-top">
@@ -1376,15 +1160,9 @@ export default function Editor(){
         </aside>
 
         <section className="ed-center">
-          <div
-            className="ed-canvas-wrap"
-            ref={canvasWrapRef}
-            onDragOver={(e)=>e.preventDefault()}
-            onDrop={onCanvasDrop}
-          >
+          <div className="ed-canvas-wrap" ref={canvasWrapRef} onDragOver={(e)=>e.preventDefault()} onDrop={onCanvasDrop}>
             {pages.map((p,idx)=>(
               <div key={p.id} className={`ed-canvas ${idx===cur?'active':''}`}>
-                <button className="ed-page-x desktop-only" title="Удалить эту страницу" onClick={()=>removePage(idx)}>×</button>
                 <canvas id={p.elId}/>
               </div>
             ))}
@@ -1398,47 +1176,23 @@ export default function Editor(){
             )}
             {loading && <div className="ed-canvas-loading"><div className="spinner" aria-hidden="true"></div>Загрузка…</div>}
           </div>
-
-          {/* Desktop: короткая нижняя панель */}
+          
           <div className="ed-bottom desktop-only">
-            <button className={`fab ${hasDoc?'':'disabled'}`} onClick={()=>{ if(!hasDoc){ return } setMenuAddOpen(o=>!o) }} title="Добавить">
-              <img src={icPlus} alt="+" />
-            </button>
-            <div className="ed-pager">
-              <button onClick={()=>setCur(i=>Math.max(0, i-1))} disabled={!canPrev} title="Предыдущая">
-                <img src={icPrev} alt="Prev" />
-              </button>
-              <span className="pg">{hasDoc ? `${cur+1}/${pages.length}` : '0/0'}</span>
-              <button onClick={()=>{ if(canNext) setCur(i=>Math.min(pages.length-1, i+1)); else pickDocument() }} title={canNext ? 'Следующая' : 'Добавить документ'}>
-                {canNext
-                  ? <img src={icPrev} alt="Next" style={{ transform:'rotate(180deg)' }} />
-                  : <img src={icPlus} alt="+" />
-                }
-              </button>
-            </div>
-            <button className={`fab ${(!hasDoc)?'disabled':''}`} onClick={()=>{ if(!hasDoc) return; setMenuDownloadOpen(o=>!o) }} title="Скачать">
-              <img src={icDownload} alt="↓" />
-            </button>
+            <DesktopPager pages={pages} current={cur} onSelect={setCur} onAdd={pickDocument} />
           </div>
 
-          {/* Mobile: нижняя панель как раньше */}
           <div className="ed-bottom mobile-only">
-            <button className={`fab ${hasDoc?'':'disabled'}`} onClick={()=>{ if(!hasDoc){ return } setMenuAddOpen(o=>!o) }} title="Добавить">
+            <button className={`fab fab-add ${hasDoc?'':'disabled'}`} onClick={()=>{ if(hasDoc){ setMenuAddOpen(o=>!o) } }} title="Добавить">
               <img src={icPlus} alt="+" />
             </button>
             <div className="ed-pager">
-              <button onClick={()=>setCur(i=>Math.max(0, i-1))} disabled={!canPrev} title="Предыдущая">
-                <img src={icPrev} alt="Prev" />
-              </button>
+              <button onClick={()=>setCur(i=>Math.max(0, i-1))} disabled={!canPrev} title="Предыдущая"><img src={icPrev} alt="Prev" /></button>
               <span className="pg">{hasDoc ? `${cur+1}/${pages.length}` : '0/0'}</span>
               <button onClick={()=>{ if(canNext) setCur(i=>Math.min(pages.length-1, i+1)); else pickDocument() }} title={canNext ? 'Следующая' : 'Добавить документ'}>
-                {canNext
-                  ? <img src={icPrev} alt="Next" style={{ transform:'rotate(180deg)' }} />
-                  : <img src={icPlus} alt="+" />
-                }
+                {canNext ? <img src={icPrev} alt="Next" style={{ transform:'rotate(180deg)' }} /> : <img src={icPlus} alt="+" />}
               </button>
             </div>
-            <button className={`fab ${(!hasDoc)?'disabled':''}`} onClick={()=>{ if(!hasDoc) return; setMenuDownloadOpen(o=>!o) }} title="Скачать">
+            <button className={`fab fab-dl ${!hasDoc?'disabled':''}`} onClick={()=>{ if(!hasDoc) return; setMenuDownloadOpen(o=>!o) }} title="Скачать">
               <img src={icDownload} alt="↓" />
             </button>
           </div>
@@ -1467,20 +1221,23 @@ export default function Editor(){
         </aside>
       </div>
 
-      {/* Единый лист действий (и для desktop, и для mobile), открывается кнопкой "⋮" (моб. сверху) или плюсами */}
-      {menuAddOpen && (
-        <div className="ed-sheet" ref={sheetRef}>
-          <button className={hasDoc?'':'disabled'} onClick={()=>{ if(hasDoc){ setMenuAddOpen(false); addText() } }}><img src={icText} alt="" style={{width:18,height:18,marginRight:10}}/>Добавить текст</button>
-          <button onClick={()=>{ setMenuAddOpen(false); pickSignature() }}><img src={icSign} alt="" style={{width:18,height:18,marginRight:10}}/>Добавить подпись/печать</button>
-          <button onClick={()=>{ setMenuAddOpen(false); pickDocument() }}><img src={icPlus} alt="" style={{width:18,height:18,marginRight:10}}/>Добавить документ/страницу</button>
-          <button className={hasDoc?'':'disabled'} onClick={()=>{ if(hasDoc){ setMenuAddOpen(false); rotatePage() } }}><img src={icRotate} alt="" style={{width:18,height:18,marginRight:10}}/>Повернуть страницу</button>
-          <button className={(hasDoc && pages.length>1)?'':'disabled'} onClick={()=>{ if(hasDoc){ setMenuAddOpen(false); removePage() } }}><img src={icDelete} alt="" style={{width:18,height:18,marginRight:10}}/>Удалить страницу</button>
-          <button className={(hasDoc && !!(pages[cur]?.canvas?.getActiveObject()))?'':'disabled'} onClick={()=>{ if(hasDoc){ setMenuAddOpen(false); applyToAllPages() } }}><img src={icAddPage} alt="" style={{width:18,height:18,marginRight:10}}/>На все страницы</button>
+      {menuActionsOpen && (
+        <div className="ed-sheet top-left" ref={sheetActionsRef}>
+          <button className={hasDoc?'':'disabled'} onClick={()=>{ setMenuActionsOpen(false); rotatePage() }}><img src={icRotate} alt="" style={{width:18,height:18,marginRight:10}}/>Повернуть страницу</button>
+          <button className={(hasDoc && pages.length>1)?'':'disabled'} onClick={()=>{ setMenuActionsOpen(false); removePage() }}><img src={icDelete} alt="" style={{width:18,height:18,marginRight:10}}/>Удалить страницу</button>
+          <button className={(hasDoc && !!(pages[cur]?.canvas?.getActiveObject()))?'':'disabled'} onClick={()=>{ setMenuActionsOpen(false); applyToAllPages() }}><img src={icAddPage} alt="" style={{width:18,height:18,marginRight:10}}/>На все страницы</button>
+          <button className={hasDoc?'':'disabled'} onClick={()=>{ setMenuActionsOpen(false); removeDocument() }}><img src={icDelete} alt="" style={{width:18,height:18,marginRight:10}}/>Удалить документ</button>
         </div>
       )}
-
+      {menuAddOpen && (
+        <div className="ed-sheet bottom-left" ref={sheetAddRef}>
+          <button className={hasDoc?'':'disabled'} onClick={()=>{ setMenuAddOpen(false); addText() }}><img src={icText} alt="" style={{width:18,height:18,marginRight:10}}/>Добавить текст</button>
+          <button onClick={()=>{ setMenuAddOpen(false); pickSignature() }}><img src={icSign} alt="" style={{width:18,height:18,marginRight:10}}/>Добавить подпись/печать</button>
+          <button onClick={()=>{ setMenuAddOpen(false); pickDocument() }}><img src={icPlus} alt="" style={{width:18,height:18,marginRight:10}}/>Добавить документ/страницу</button>
+        </div>
+      )}
       {menuDownloadOpen && (
-        <div className="ed-sheet" ref={dlRef} style={{ padding: 6 }}>
+        <div className="ed-sheet bottom-right" ref={sheetDownloadRef} style={{ padding: 6 }}>
           <button className={`btn ${hasDoc?'':'disabled'}`} style={{padding:'10px 14px'}} onClick={()=>{ if(hasDoc){ setMenuDownloadOpen(false); setPlan('single'); setPayOpen(true) } }}>
             <img src={icJpgPaid} alt="" style={{width:18,height:18,marginRight:10}}/>Купить JPG
           </button>
@@ -1507,18 +1264,8 @@ export default function Editor(){
               <button className={`pay-card ${plan==='year'?'active':''}`} onClick={()=>setPlan('year')} type="button"><img className="pay-ill" src={plan3} alt="" /><div className="pay-price">{prices.year} ₽</div><div className="pay-sub">безлимит на год</div></button>
             </div>
             <div className={`pay-controls ${promoError?'error':''}`}>
-              <div className="promo">
-                <label className="field-label">Промокод</label>
-                <div className="promo-row">
-                  <input value={promo} onChange={e=>{ setPromo(e.target.value); setPromoError('') }} placeholder="Введите промокод"/>
-                  {promo && <button className="promo-clear" onClick={()=>{ setPromo(''); setPromoError(''); setPromoPercent(0) }}>×</button>}
-                </div>
-                {promoError && <div className="promo-err">{promoError}</div>}
-              </div>
-              <div className="pay-buttons">
-                <button className="btn btn-lite" onClick={applyPromo}><span className="label">Активировать</span></button>
-                <button className="btn" onClick={startPurchase}><span className="label">Оплатить {price} ₽</span></button>
-              </div>
+              <div className="promo"><label className="field-label">Промокод</label><div className="promo-row"><input value={promo} onChange={e=>{ setPromo(e.target.value); setPromoError('') }} placeholder="Введите промокод"/>{promo && <button className="promo-clear" onClick={()=>{ setPromo(''); setPromoError(''); setPromoPercent(0) }}>×</button>}</div>{promoError && <div className="promo-err">{promoError}</div>}</div>
+              <div className="pay-buttons"><button className="btn btn-lite" onClick={applyPromo}><span className="label">Активировать</span></button><button className="btn" onClick={startPurchase}><span className="label">Оплатить {price} ₽</span></button></div>
             </div>
           </div>
         </div>
@@ -1529,4 +1276,54 @@ export default function Editor(){
       <input ref={signFileRef} type="file" accept=".png,.jpg,.jpeg" hidden onChange={onPickSignature}/>
     </div>
   )
+}
+
+function DesktopPager({ pages, current, onSelect, onAdd }) {
+  const total = pages.length;
+
+  if (total === 0) {
+    return <div className="ed-pages" />;
+  }
+
+  const items = [];
+  if (total <= 5) {
+    for (let i = 0; i < total; i++) {
+      items.push(i);
+    }
+  } else {
+    items.push(0, 1);
+    if (current > 2 && current < total - 3) {
+      items.push('...');
+      items.push(current);
+      items.push('...');
+    } else if (current <= 2) {
+      items.push(2, '...');
+    } else { 
+      items.push('...');
+    }
+    items.push(total - 2, total - 1);
+  }
+  
+  const finalItems = [...new Set(items)].filter((v, i, arr) => !(v === '...' && arr[i-1] === '...'));
+
+  return (
+    <div className="ed-pages">
+      {finalItems.map((item, index) =>
+        item === '...' ? (
+          <span key={`dot-${index}`} className="ed-page-dots">...</span>
+        ) : (
+          <button
+            key={item}
+            className={`ed-page-btn ${current === item ? 'active' : ''}`}
+            onClick={() => onSelect(item)}
+          >
+            {item + 1}
+          </button>
+        )
+      )}
+      <button className="ed-page-add" onClick={onAdd} title="Добавить документ">
+        <img src={icPlus} alt="+" />
+      </button>
+    </div>
+  );
 }

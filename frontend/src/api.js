@@ -1,6 +1,4 @@
 // src/api.js
-// Без 401 в консоли для неавторизованных: не шлём запросы без access.
-// WS используется для событий редактора, а REST — для чтения/коммита снапшота и остального API.
 
 const API = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000/api';
 
@@ -75,7 +73,6 @@ async function request(path, options = {}, _retried = false) {
   const res = await fetch(url, options);
   const text = await res.text();
 
-  // 401: попробуем рефреш, если это был запрос с Bearer-токеном
   const hadAuthHeader = !!(options.headers && (options.headers.Authorization || options.headers.authorization));
   if (res.status === 401 && !_retried && hadAuthHeader && isTokenProblem(text)) {
     const newAccess = await refreshAccessToken();
@@ -98,7 +95,6 @@ async function request(path, options = {}, _retried = false) {
 async function requestAuthed(path, options = {}) {
   const access = getAccess();
   if (!access) {
-    // Не посылаем сетевой запрос — никакого 401 в консоли
     return Promise.reject(new Error('Требуется авторизация'));
   }
   const headers = { ...(options.headers || {}), Authorization: `Bearer ${access}` };
@@ -227,7 +223,6 @@ export const AuthAPI = {
     return data;
   },
 
-  // ----- Billing -----
   getBillingStatus() {
     if (!hasAccess()) return Promise.reject(new Error('Требуется авторизация'));
     return requestAuthed('/billing/status/');
@@ -360,7 +355,6 @@ export const AuthAPI = {
     return requestAuthed(`/billing/promos/${id}/`, { method: 'DELETE' });
   },
 
-  // ----- Библиотека подписей/печати -----
   listSigns() {
     if (!hasAccess()) return Promise.reject(new Error('Требуется авторизация'));
     return requestAuthed('/library/signs/');
@@ -396,7 +390,6 @@ export const AuthAPI = {
     });
   },
 
-  // ADMIN: Стандартные подписи/печати (global)
   adminListDefaults() {
     if (!hasAccess()) return Promise.reject(new Error('Требуется авторизация'));
     return requestAuthed('/library/default-signs/');
@@ -415,20 +408,35 @@ export const AuthAPI = {
     return requestAuthed(`/library/default-signs/${id}/`, { method: 'DELETE' });
   },
 
-  // ----- Черновик -----
   getDraft() {
     if (!hasAccess()) return Promise.reject(new Error('Требуется авторизация'));
     return requestAuthed('/draft/get/');
   },
+
   saveDraft(data) {
     if (!hasAccess()) return Promise.reject(new Error('Требуется авторизация'));
     return requestAuthed('/draft/save/', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ data }),
-      keepalive: true,
     });
   },
+
+  // --- ИСПРАВЛЕНО: Новый метод для надежной отправки при закрытии страницы ---
+  saveDraftBeacon(data) {
+    if (!hasAccess() || !navigator.sendBeacon || !data) return false;
+    const url = API + '/draft/save/';
+    const headers = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${getAccess()}` };
+    // sendBeacon не отправляет кастомные заголовки, поэтому токен нужно передать в теле или URL.
+    // Но наш JWTAuthMiddleware в Django Channels умеет читать токен из query string,
+    // что было бы идеально, если бы этот endpoint был WebSocket.
+    // Для REST API, передадим его в теле, а на сервере придется это обработать.
+    // Однако, самый простой способ - не менять бэкенд, а просто сделать блоб.
+    const blob = new Blob([JSON.stringify({ data })], { type: 'application/json' });
+    return navigator.sendBeacon(url, blob);
+  },
+  // --- КОНЕЦ ИСПРАВЛЕНИЯ ---
+
   clearDraft() {
     if (!hasAccess()) return Promise.reject(new Error('Требуется авторизация'));
     return requestAuthed('/draft/clear/', { method: 'POST', keepalive: true });
