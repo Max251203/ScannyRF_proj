@@ -72,21 +72,34 @@ async function loadCk(url) {
   return true;
 }
 
-// CKEditor 4.25.1-lts standard: локально по /static, затем CDN
+// // CKEditor 4.25.1-lts standard: локально по /static, затем CDN
+// export async function ensureCKE422() {
+//   // если уже загружен и подходящей версии — выходим
+//   if (window.CKEDITOR && window.CKEDITOR.status === 'loaded' && !lt(window.CKEDITOR.version || '', '4.25.1')) return;
+//   const localStatic = `${window.location.origin}/static/vendor/ckeditor/ckeditor.js`;
+//   const variants = [
+//     localStatic,
+//     'https://cdn.ckeditor.com/4.25.1-lts/standard/ckeditor.js',
+//     'https://cdnjs.cloudflare.com/ajax/libs/ckeditor/4.25.1/ckeditor.js',
+//   ];
+//   let lastErr = null;
+//   for (const url of variants) {
+//     try { await loadCk(url); return; } catch (e) { lastErr = e; }
+//   }
+//   throw lastErr || new Error('Не удалось загрузить CKEditor 4.25.1-lts');
+// }
+
+// CKEditor 4.22.1 (standard)
 export async function ensureCKE422() {
-  // если уже загружен и подходящей версии — выходим
-  if (window.CKEDITOR && window.CKEDITOR.status === 'loaded' && !lt(window.CKEDITOR.version || '', '4.25.1')) return;
-  const localStatic = `${window.location.origin}/static/vendor/ckeditor/ckeditor.js`;
-  const variants = [
-    localStatic,
-    'https://cdn.ckeditor.com/4.25.1-lts/standard/ckeditor.js',
-    'https://cdnjs.cloudflare.com/ajax/libs/ckeditor/4.25.1/ckeditor.js',
-  ];
-  let lastErr = null;
-  for (const url of variants) {
-    try { await loadCk(url); return; } catch (e) { lastErr = e; }
+  if (window.CKEDITOR && window.CKEDITOR.status === 'loaded') return;
+  if (window.CKEDITOR && window.CKEDITOR.status !== 'loaded') { try { delete window.CKEDITOR; } catch {} }
+  window.CKEDITOR_BASEPATH = 'https://cdn.ckeditor.com/4.22.1/standard/';
+  await loadScript('https://cdn.ckeditor.com/4.22.1/standard/ckeditor.js');
+  if (!window.CKEDITOR || window.CKEDITOR.status !== 'loaded') {
+    let loadedFired = false;
+    try { window.CKEDITOR.on('loaded', () => { loadedFired = true; }); } catch {}
+    await waitFor(() => loadedFired || (window.CKEDITOR && window.CKEDITOR.status === 'loaded'), 8000, 50);
   }
-  throw lastErr || new Error('Не удалось загрузить CKEditor 4.25.1-lts');
 }
 
 /* Остальные ensure* — без изменений */
