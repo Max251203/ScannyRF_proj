@@ -65,6 +65,7 @@
     ├── config
         ├── __init__.py
         ├── asgi.py
+        ├── routing.py
         ├── settings.py
         ├── urls.py
         └── wsgi.py
@@ -75,7 +76,9 @@
         ├── models.py
         ├── tests.py
         ├── urls.py
-        └── views.py
+        ├── views.py
+        ├── ws_auth.py
+        └── ws_consumers.py
     ├── create_superuser.py
     ├── db.sqlite3
     ├── manage.py
@@ -202,6 +205,7 @@
         ├── main.jsx
         ├── pages
             ├── Calculators.jsx
+            ├── Editor copy.jsx
             ├── Editor.jsx
             ├── Help.jsx
             ├── Home.jsx
@@ -216,7 +220,8 @@
         ├── styles
             └── main.css
         └── utils
-            └── scriptLoader.js
+            ├── scriptLoader.js
+            └── wsClient.js
     └── vite.config.js
 ├── git
 ├── prob.py

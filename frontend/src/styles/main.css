@@ -17,9 +17,19 @@
   --ed-bottom-h-mobile: clamp(52px, 7vh, 68px);
 }
 
-@font-face{font-family:"Chicoree Em";src:url("/static/assets/fonts/chicoree.woff2") format("woff2"),url("/static/assets/fonts/Chicoree-Em.ttf") format("truetype"),url("../assets/fonts/chicoree.woff2") format("woff2"),url("../assets/fonts/ofont.ru_Chicoree.otf") format("truetype");font-weight:400;font-style:normal;font-display:swap}
+/* ФИКС: убрали несуществующие chicoree.woff2 и абсолютные /static пути */
+@font-face{
+  font-family:"Chicoree Em";
+  src:
+    url("../assets/fonts/ofont.ru_Chicoree.ttf") format("truetype"),
+    url("../assets/fonts/ofont.ru_Chicoree.otf") format("opentype");
+  font-weight:400;
+  font-style:normal;
+  font-display:swap
+}
 @font-face{font-family:"Ermilov";src:url("../assets/fonts/Ermilov-bold.otf") format("opentype");font-weight:700;font-style:normal;font-display:swap}
 @font-face{font-family:"Rabbits Elf";src:url("../assets/fonts/rabbits-elf.ttf") format("truetype");font-weight:400;font-style:normal;font-display:swap}
+
 *{box-sizing:border-box}
 html,body{overflow-x:hidden}
 body{margin:0;color:var(--text);background:var(--bg);font-family:system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif}
@@ -333,19 +343,20 @@ main{flex:1}
 .doc-editor .ed-page-dots{user-select:none;color:#aaa}
 .doc-editor .ed-page-add{border:1px solid #e5e5e5;background:#fff;border-radius:50%;width:40px;height:40px;display:flex;align-items:center;justify-content:center;cursor:pointer}
 .doc-editor .ed-page-add img{width:18px;height:18px}
-.ed-dim{position:fixed;inset:0;background:rgba(0,0,0,.2);z-index:50}
-.doc-editor .ed-bottom.desktop-only{display:flex !important;justify-content:center;height:var(--ed-bottom-h-desktop)}
-.doc-editor .ed-bottom.mobile-only{display:none !important}
+
+/* ЕДИНЫЙ нижний бар для обоих режимов */
+.doc-editor .ed-bottom{display:flex;justify-content:center;align-items:center;gap:12px;border-top:1px solid #eee;background:#fff;padding:8px 12px;height:var(--ed-bottom-h-desktop)}
 .doc-editor .ed-bottom .fab{flex-shrink:0;flex:0 0 44px;width:44px;height:44px;border-radius:50%;border:1px solid #eee;background:#fff;display:flex;align-items:center;justify-content:center;box-shadow:0 8px 16px rgba(0,0,0,.12)}
 .doc-editor .ed-bottom .ed-pager{display:flex;align-items:center;gap:10px;min-width:0;justify-content:center;flex:1 1 auto}
 .doc-editor .ed-bottom .ed-pager .pg{flex:0 0 auto;min-width:64px;text-align:center}
-.doc-editor .ed-bottom .ed-pager button{width:36px;height:36px;border:1px solid #eee;border-radius:50%;background:#fff;display:flex;align-items:center;justify-content:center}
-.doc-editor .ed-bottom .fab img{width:22px;height:22px;object-fit:contain}
 .doc-editor .ed-bottom .ed-pager img{width:18px;height:18px;object-fit:contain}
+.doc-editor .ed-bottom .fab img{width:22px;height:22px;object-fit:contain}
+
 .disabled,.btn.disabled,.ed-action.disabled,.ed-tool.disabled,.fab.disabled,.ed-menu>button.disabled{opacity:.45;filter:saturate(0);cursor:default;pointer-events:none}
 .btn.disabled{background:#f7f7f7;color:#aaa;border-color:#eee}
 .ed-action.disabled{background:#fafafa;border-color:#eee;color:#bbb}
 .fab.disabled{background:#f3f3f3;color:#aaa;border-color:#eee}
+
 .crop-modal{max-width:920px}
 .crop-modal .crop-row{display:flex;align-items:center;gap:8px;margin:6px 0 8px;justify-content:center}
 .crop-modal .crop-row select{height:40px;border:1px solid #e5e5e5;border-radius:8px;padding:0 10px;background:#fff}
@@ -354,6 +365,7 @@ main{flex:1}
 .crop-modal .thr-row{display:flex;align-items:center;gap:10px;justify-content:center}
 .crop-modal input[type=range]{width:min(520px,90%)}
 .crop-modal input[type=number]{width:64px;height:36px;border:1px solid #e5e5e5;border-radius:8px;padding:0 8px;text-align:center}
+
 .pay-modal .pay-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin:6px 0 12px}
 .pay-modal .pay-card{border:1px solid #eee;border-radius:14px;padding:14px;background:#fff;display:flex;flex-direction:column;gap:6px;align-items:center;cursor:pointer;transition:box-shadow .2s ease,border-color .2s ease}
 .pay-modal .pay-card:hover{box-shadow:0 10px 26px rgba(0,0,0,.06)}
@@ -369,8 +381,10 @@ main{flex:1}
 .pay-modal .promo.error .promo-row{border-color:#e66}
 .pay-modal .promo-err{color:#c33;font-size:12px}
 .pay-modal .pay-buttons{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+
 .ed-canvas-loading{position:fixed;inset:0;background:rgba(255,255,255,.6);display:flex;align-items:center;justify-content:center;z-index:120;font-weight:800;color:#333;gap:10px}
 .ed-canvas-loading .spinner{width:28px;height:28px;border:3px solid rgba(0,0,0,.2);border-top-color:#000;border-radius:50%;animation:spin .8s linear infinite}
+
 .defaults-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
 .defaults-grid .thumb{position:relative;width:100%;aspect-ratio:1/1;border:1px solid #eee;border-radius:12px;background:#f6f6f6;display:flex;align-items:center;justify-content:center;overflow:hidden}
 .defaults-grid .thumb .thumb-x{position:absolute;right:4px;top:4px;width:18px;height:18px;border-radius:50%;border:1px solid #e5e5e5;background:#fff;color:#000;line-height:16px;text-align:center;font-weight:800;cursor:pointer}
@@ -409,12 +423,12 @@ main{flex:1}
 
   .doc-editor .ed-body{grid-template-columns:1fr}
   .doc-editor .ed-left,.doc-editor .ed-right{display:none}
-  .doc-editor .ed-canvas-wrap{height:calc(100vh - var(--hdr-h) - var(--ed-top-h) - var(--ed-bottom-h-mobile) - 16px);min-height:auto;padding-bottom:calc(var(--ed-bottom-h-mobile) + 16px);overflow:hidden}
-  .doc-editor .ed-page-x{display:none}
+  .doc-editor .ed-canvas-wrap{height:calc(100vh - var(--hdr-h) - var(--ed-top-h) - var(--ed-bottom-h-mobile) - 16px);min-height:auto;padding-bottom:16px;overflow:hidden}
   .doc-editor .ed-toolbar{flex-wrap:nowrap; gap: 4px; padding: 4px;}
   .doc-editor .ed-toolbar select, .doc-editor .ed-toolbar input[type=color], .doc-editor .ed-toolbar button { height: 30px; padding: 0 6px; font-size: 14px; }
   .doc-editor .ed-toolbar .val { font-size: 14px; min-width: 24px; }
   .doc-editor .ed-toolbar .sep { margin: 0 2px; }
-  .doc-editor .ed-bottom.desktop-only{display:none !important}
-  .doc-editor .ed-bottom.mobile-only{display:flex !important}
+
+  /* единый нижний бар в моб. */
+  .doc-editor .ed-bottom{height:var(--ed-bottom-h-mobile)}
 }

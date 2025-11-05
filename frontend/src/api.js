@@ -422,20 +422,21 @@ export const AuthAPI = {
     });
   },
 
-  // --- ИСПРАВЛЕНО: Новый метод для надежной отправки при закрытии страницы ---
-  saveDraftBeacon(data) {
-    if (!hasAccess() || !navigator.sendBeacon || !data) return false;
-    const url = API + '/draft/save/';
-    const headers = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${getAccess()}` };
-    // sendBeacon не отправляет кастомные заголовки, поэтому токен нужно передать в теле или URL.
-    // Но наш JWTAuthMiddleware в Django Channels умеет читать токен из query string,
-    // что было бы идеально, если бы этот endpoint был WebSocket.
-    // Для REST API, передадим его в теле, а на сервере придется это обработать.
-    // Однако, самый простой способ - не менять бэкенд, а просто сделать блоб.
-    const blob = new Blob([JSON.stringify({ data })], { type: 'application/json' });
-    return navigator.sendBeacon(url, blob);
+  // Надёжная отправка при закрытии страницы — через fetch с keepalive и заголовком Authorization
+  saveDraftOnUnload(data) {
+    if (!hasAccess() || !data) return false;
+    try {
+      fetch(API + '/draft/save/', {
+        method: 'POST',
+        keepalive: true,
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${getAccess()}` },
+        body: JSON.stringify({ data }),
+      }).catch(()=>{});
+      return true;
+    } catch {
+      return false;
+    }
   },
-  // --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 
   clearDraft() {
     if (!hasAccess()) return Promise.reject(new Error('Требуется авторизация'));

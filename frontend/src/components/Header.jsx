@@ -18,7 +18,7 @@ export default function Header() {
   const [menuOpen, setMenuOpen] = useState(false)
   const redirectRef = useRef(null)
 
-  // Открываем авторизацию, если попали с RequireAuth
+  // Открываем авторизацию, если попали на защищённый роут (RequireAuth перекинул на /)
   useEffect(() => {
     const need = loc.state && loc.state.redirectTo
     const authed = !!localStorage.getItem('access')
@@ -69,11 +69,18 @@ export default function Header() {
   const label = (user?.username && user.username.trim()) ? user.username.trim() : (user?.email || 'Профиль')
   const avatarSrc = user?.avatar_url || avatarDefault
 
+  // ИЗМЕНЕНО: больше не редиректим в редактор «просто при входе».
+  // Перекидываем только если до логина пользователь пытался попасть на защищённую страницу (redirectRef).
   const onAuthSuccess = (u) => {
     setUser(u)
-    const to = redirectRef.current || '/editor'
+    const to = redirectRef.current
     redirectRef.current = null
-    nav(to, { replace: true })
+    if (to) {
+      nav(to, { replace: true })
+    } else {
+      // остаёмся на текущей странице
+      setAuthOpen(false)
+    }
   }
 
   return (

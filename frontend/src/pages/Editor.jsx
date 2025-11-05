@@ -1,4 +1,4 @@
-// src/pages/Editor.jsx (Часть 1 из 3)
+// src/pages/Editor.jsx
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import { toast } from '../components/Toast.jsx'
 import { AuthAPI } from '../api'
@@ -227,8 +227,8 @@ export default function Editor(){
     const commitOnUnload = () => {
       const data = draftCacheRef.current;
       if (data) {
-        const blob = new Blob([JSON.stringify({ data })], { type: 'application/json' });
-        navigator.sendBeacon(AuthAPI.getApiBase() + '/draft/save/', blob);
+        // надёжная отправка через keepalive
+        try { AuthAPI.saveDraftOnUnload(data) } catch {}
       }
     };
     window.addEventListener('pagehide', commitOnUnload);
@@ -407,7 +407,9 @@ export default function Editor(){
   }
   function fitCanvas(idx){ const p=pages[idx]; if(!p||!p.canvas) return; fitCanvasForPage(p) }
 
-// src/pages/Editor.jsx (Часть 2 из 3)
+// src/pages/Editor.jsx (продолжение)
+
+  // ---------- Canvas / объекты ----------
   async function ensureCanvas(page){
     await ensureFabric()
     if(page.canvas) return page.canvas
@@ -473,6 +475,7 @@ export default function Editor(){
     }catch{}
   }
 
+  // ---------- Работа с документом ----------
   async function removeDocument(){
     if (!hasDoc) return
     if (!window.confirm('Удалить весь документ?')) return
@@ -542,6 +545,7 @@ export default function Editor(){
     }
   }
 
+  // ---------- Загрузка/добавление файлов ----------
   function pickDocument(){ docFileRef.current?.click() }
   async function onPickDocument(e){ const files=Array.from(e.target.files||[]); e.target.value=''; if(!files.length) return; await handleFiles(files) }
   async function onPickBgFile(e){ const files=Array.from(e.target.files||[]); e.target.value=''; if(!files.length) return; await assignFirstFileToCurrent(files[0]) }
@@ -766,7 +770,9 @@ export default function Editor(){
     page.meta = { type:'pdf', bytes: toUint8Copy(bytes), index: 0 }
   }
 
-// src/pages/Editor.jsx (Часть 3 из 3)
+// src/pages/Editor.jsx (часть 3 из 3)
+
+// ---------- Рендер оверлеев / экспорт ----------
   function getOverlayObjects(cv, page){
     const all = cv.getObjects() || []
     return all.filter(o => o !== page.bgObj)
@@ -790,6 +796,26 @@ export default function Editor(){
     return mul
   }
 
+  async function ensureSerializableSrcForImage(obj){
+    const el = obj?._originalElement || obj?._element
+    const src = el?.src || ''
+    if (!src) return ''
+    if (src.startsWith('data:')) return src
+    // пробуем переложить в dataURL через canvas
+    const w = el.naturalWidth || el.width || obj.getScaledWidth() || 1
+    const h = el.naturalHeight || el.height || obj.getScaledHeight() || 1
+    const c = document.createElement('canvas')
+    c.width = Math.max(1, Math.round(w)); c.height = Math.max(1, Math.round(h))
+    const ctx = c.getContext('2d')
+    try {
+      ctx.drawImage(el, 0, 0, c.width, c.height)
+      return c.toDataURL('image/png')
+    } catch {
+      return src // в крайнем случае сохраняем исходный src
+    }
+  }
+
+  // ---------- Библиотека подписей ----------
   function pickSignature(){ signFileRef.current?.click() }
   async function onPickSignature(e){
     const f=e.target.files?.[0]; e.target.value=''
@@ -871,6 +897,7 @@ export default function Editor(){
     }
   }
 
+  // ---------- Текст ----------
   async function addText(){
     if(!hasDoc){ toast('Сначала добавьте страницу','error'); return }
     await ensureFabric()
@@ -896,16 +923,20 @@ export default function Editor(){
 
   useEffect(()=>{ if(panelOpen) applyPanel() },[panelOpen, applyPanel])
 
+  // ---------- Вращение/Undo ----------
   async function rotatePage(){
     if(!hasDoc) return
     const page = pages[cur]; await ensureCanvas(page)
-    
+
+    // переворачиваем ориентацию "логически"
     page.landscape = !page.landscape;
     [page.worldW, page.worldH] = [page.worldH, page.worldW];
 
+    // меняем реальные размеры canvas
     page.canvas.setWidth(page.worldW);
     page.canvas.setHeight(page.worldH);
-    
+
+    // пересчитываем фоновое изображение
     const bg = page.bgObj
     if (bg) {
       const el = bg._originalElement || bg._element
@@ -913,10 +944,10 @@ export default function Editor(){
       const ih = el?.naturalHeight || el?.height || 1
       const s = Math.min(page.worldW / iw, page.worldH / ih)
       bg.set({ left: 0, top: 0, scaleX: s, scaleY: s, angle: 0 });
-      page.canvas.centerObject(bg);
-      page.canvas.requestRenderAll();
+      page.canvas.requestRenderAll()
     }
-    
+
+    // критично: сходить в fitCanvasForPage — он учитывает размеры видимой области (и на мобиле тоже)
     fitCanvasForPage(page)
     markDirty('rotate_page')
   }
@@ -929,9 +960,7 @@ export default function Editor(){
     markDirty('undo')
   }
 
-  function baseName(){ const nm=(fileNameRef.current||'').trim(); if(!nm){ toast('Введите название файла вверху','error'); return null } return sanitizeName(nm) }
-  function freeLeft(){ return billing?.free_left ?? 0 }
-  
+  // ---------- Экспорт ----------
   async function exportOverlayAsPNGBytes(page, cv, targetW, targetH){
     if (!cv) return null
     const objs = cv.getObjects() || []
@@ -1059,6 +1088,7 @@ export default function Editor(){
     }catch(e){ console.error(e); toast(e.message||'Не удалось выгрузить PDF','error') }
   }
 
+  // ---------- DnD / промокоды ----------
   function onCanvasDrop(e){
     e.preventDefault(); const dt=e.dataTransfer; if(!dt) return
     const types=Array.from(dt.types||[])
@@ -1086,6 +1116,7 @@ export default function Editor(){
   const onRenameChange = (e) => { setFileName(sanitizeName(e.target.value)); markDirty('rename') }
   const onRenameBlur = () => { if(hasDoc) markDirty('rename_blur').catch(()=>{}) }
 
+  // Горячие клавиши удаления
   useEffect(()=>{
     const onKey=(e)=>{
       const tag = String(e.target?.tagName || '').toLowerCase()
@@ -1104,6 +1135,79 @@ export default function Editor(){
     document.addEventListener('keydown', onKey)
     return ()=>document.removeEventListener('keydown', onKey)
   },[pages, cur, markDirty])
+
+  // ---------- Восстановление из серверного черновика ----------
+  async function restoreDocumentFromDraft(snapshot){
+    try{
+      const clientId = snapshot.client_id || randDocId()
+      const name = snapshot.name || genDefaultName()
+      setDocId(clientId)
+      setFileName(name)
+
+      for (const p of (snapshot.pages || [])) {
+        const worldW = Math.max(1, p.world_w || PAGE_W)
+        const worldH = Math.max(1, p.world_h || PAGE_H)
+        if (p.type === 'pdf' && p.bytes_b64) {
+          const bytes = b64ToU8(p.bytes_b64)
+          await setPageBackgroundFromFirstPDFPage(
+            await (async () => {
+              // создаём временную пустую страницу нужного размера
+              const id='p_'+Math.random().toString(36).slice(2), elId='cv_'+id
+              const page={ id, elId, canvas:null, bgObj:null, landscape: worldW>worldH, worldW, worldH,
+                meta:{ type:'pdf', bytes, index: p.index || 0 } }
+              setPages(prev=>{ const arr=[...prev,page]; setCur(arr.length-1); return arr })
+              await new Promise(r=>requestAnimationFrame(r))
+              return pagesRef.current.length-1
+            })(),
+            bytes
+          )
+        } else if ((p.type === 'image' || p.type === 'raster') && p.src) {
+          await createPageFromImage(p.src, p.w || worldW, p.h || worldH, p.mime || 'image/png', !!p.landscape)
+        } else if (p.src) {
+          await createPageFromImage(p.src, p.w || worldW, p.h || worldH, p.mime || 'image/png', !!p.landscape)
+        }
+        // Наложения: добавим после инициализации canvas
+        const pageObj = pagesRef.current[pagesRef.current.length-1]
+        const cv = await ensureCanvas(pageObj)
+        if (Array.isArray(p.overlays)) {
+          for (const ov of p.overlays) {
+            if (ov.t === 'tb') {
+              const tb = new fabric.Textbox(ov.text || '', {
+                left: ov.left || 0, top: ov.top || 0, angle: ov.angle || 0,
+                fontFamily: ov.fontFamily || 'Arial', fontSize: ov.fontSize || 42,
+                fontStyle: ov.fontStyle || 'normal',
+                fontWeight: ov.fontWeight || 'normal',
+                fill: ov.fill || '#000', width: Math.max(20, ov.width || 200),
+                textAlign: ov.textAlign || 'left', scaleX: ov.scaleX || 1, scaleY: ov.scaleY || 1,
+              })
+              ensureDeleteControlFor(tb); cv.add(tb)
+            } else if (ov.t === 'im' && ov.src) {
+              const imgEl = await loadImageEl(ov.src)
+              const im = new fabric.Image(imgEl, {
+                left: ov.left || 0, top: ov.top || 0, angle: ov.angle || 0,
+                scaleX: ov.scaleX || 1, scaleY: ov.scaleY || 1, flipX: !!ov.flipX, flipY: !!ov.flipY
+              })
+              ensureDeleteControlFor(im); cv.add(im)
+            }
+          }
+          cv.requestRenderAll()
+        }
+      }
+    } catch (e) {
+      console.error('restoreDocumentFromDraft error', e)
+    }
+  }
+
+  // ---------- Рендер ----------
+  // Унифицированный нижний блок с пагинатором
+  const [pgText, setPgText] = useState('1')
+  useEffect(() => { setPgText(String(hasDoc ? (cur+1) : 0)) }, [cur, hasDoc, pages.length])
+
+  const onPagerGo = (v) => {
+    if (!hasDoc) return
+    const n = Math.max(1, Math.min(pages.length, Number(v)||1))
+    setCur(n-1)
+  }
 
   return (
     <div className="doc-editor page" style={{ paddingTop: 0 }}>
@@ -1166,26 +1270,6 @@ export default function Editor(){
             )}
             {loading && <div className="ed-canvas-loading"><div className="spinner" aria-hidden="true"></div>Загрузка…</div>}
           </div>
-          
-          <div className="ed-bottom desktop-only">
-            <DesktopPager pages={pages} current={cur} onSelect={setCur} onAdd={pickDocument} />
-          </div>
-
-          <div className="ed-bottom mobile-only">
-            <button className={`fab fab-add ${hasDoc?'':'disabled'}`} onClick={()=>{ if(hasDoc){ setMenuAddOpen(o=>!o) } }} title="Добавить">
-              <img src={icPlus} alt="+" />
-            </button>
-            <div className="ed-pager">
-              <button onClick={()=>setCur(i=>Math.max(0, i-1))} disabled={!canPrev} title="Предыдущая"><img src={icPrev} alt="Prev" /></button>
-              <span className="pg">{hasDoc ? `${cur+1}/${pages.length}` : '0/0'}</span>
-              <button onClick={()=>{ if(canNext) setCur(i=>Math.min(pages.length-1, i+1)); else pickDocument() }} title={canNext ? 'Следующая' : 'Добавить документ'}>
-                {canNext ? <img src={icPrev} alt="Next" style={{ transform:'rotate(180deg)' }} /> : <img src={icPlus} alt="+" />}
-              </button>
-            </div>
-            <button className={`fab fab-dl ${!hasDoc?'disabled':''}`} onClick={()=>{ if(!hasDoc) return; setMenuDownloadOpen(o=>!o) }} title="Скачать">
-              <img src={icDownload} alt="↓" />
-            </button>
-          </div>
         </section>
 
         <aside className="ed-right">
@@ -1209,6 +1293,32 @@ export default function Editor(){
             </div>
           </div>
         </aside>
+      </div>
+
+      {/* ЕДИНЫЙ НИЖНИЙ БЛОК */}
+      <div className="ed-bottom" style={{ height: isMobile ? 'var(--ed-bottom-h-mobile)' : 'var(--ed-bottom-h-desktop)', display:'flex', alignItems:'center', justifyContent:'center', gap:12 }}>
+        {/* Мобильные меню-кнопки слева/справа */}
+        <button className={`fab fab-add mobile-only ${hasDoc?'':'disabled'}`} onClick={()=>{ if(hasDoc){ setMenuAddOpen(o=>!o) } }} title="Добавить">
+          <img src={icPlus} alt="+" />
+        </button>
+
+        <UnifiedPager
+          total={pages.length}
+          current={cur}
+          pgText={pgText}
+          setPgText={setPgText}
+          onGo={onPagerGo}
+          onPrev={()=>setCur(i=>Math.max(0, i-1))}
+          onNext={()=>{ if(canNext) setCur(i=>Math.min(pages.length-1, i+1)); else pickDocument() }}
+          canPrev={canPrev}
+          canNext={canNext}
+          hasDoc={hasDoc}
+          onAdd={pickDocument}
+        />
+
+        <button className={`fab fab-dl mobile-only ${!hasDoc?'disabled':''}`} onClick={()=>{ if(!hasDoc) return; setMenuDownloadOpen(o=>!o) }} title="Скачать">
+          <img src={icDownload} alt="↓" />
+        </button>
       </div>
 
       {menuActionsOpen && (
@@ -1294,52 +1404,60 @@ export default function Editor(){
   )
 }
 
-function DesktopPager({ pages, current, onSelect, onAdd }) {
-  const total = pages.length;
-
-  if (total === 0) {
-    return <div className="ed-pages" />;
+// Унифицированный пагинатор (десктоп + мобильный)
+function UnifiedPager({ total, current, pgText, setPgText, onGo, onPrev, onNext, canPrev, canNext, hasDoc, onAdd }) {
+  const onChange = (e) => {
+    const v = e.target.value.replace(/[^\d]/g,'')
+    setPgText(v)
   }
-
-  const items = [];
-  if (total <= 5) {
-    for (let i = 0; i < total; i++) {
-      items.push(i);
-    }
-  } else {
-    items.push(0, 1);
-    if (current > 2 && current < total - 3) {
-      items.push('...');
-      items.push(current);
-      items.push('...');
-    } else if (current <= 2) {
-      items.push(2, '...');
-    } else { 
-      items.push('...');
-    }
-    items.push(total - 2, total - 1);
+  const onBlur = () => {
+    if (!hasDoc) return
+    onGo(pgText)
   }
-  
-  const finalItems = [...new Set(items)].filter((v, i, arr) => !(v === '...' && arr[i-1] === '...'));
+  const onKeyDown = (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      onGo(pgText)
+    }
+  }
 
   return (
-    <div className="ed-pages">
-      {finalItems.map((item, index) =>
-        item === '...' ? (
-          <span key={`dot-${index}`} className="ed-page-dots">...</span>
+    <div className="ed-pager" style={{ display:'flex', alignItems:'center', gap:10 }}>
+      <button onClick={onPrev} disabled={!canPrev} title="Предыдущая">
+        <img src={icPrev} alt="Prev" />
+      </button>
+
+      <div className="pg" style={{ display:'inline-flex', alignItems:'center', gap:6 }}>
+        {hasDoc ? (
+          <>
+            <input
+              type="number"
+              min={1}
+              max={Math.max(1,total)}
+              value={pgText}
+              onChange={onChange}
+              onBlur={onBlur}
+              onKeyDown={onKeyDown}
+              style={{ width:64, textAlign:'center', height:36, border:'1px solid #eee', borderRadius:8, background:'#fff' }}
+            />
+            <span style={{opacity:.8}}>/ {total || 0}</span>
+          </>
         ) : (
-          <button
-            key={item}
-            className={`ed-page-btn ${current === item ? 'active' : ''}`}
-            onClick={() => onSelect(item)}
-          >
-            {item + 1}
-          </button>
-        )
-      )}
-      <button className="ed-page-add" onClick={onAdd} title="Добавить документ">
+          <span>0/0</span>
+        )}
+      </div>
+
+      <button
+        onClick={onNext}
+        title={canNext ? 'Следующая' : 'Добавить документ'}
+      >
+        {canNext ? <img src={icPrev} alt="Next" style={{ transform:'rotate(180deg)' }} /> : <img src={icPlus} alt="+" />}
+      </button>
+
+      {/* на десктопе добавим кнопку "добавить" справа для удобства */}
+      <button className="ed-page-add desktop-only" onClick={onAdd} title="Добавить документ">
         <img src={icPlus} alt="+" />
       </button>
     </div>
-  );
+  )
 }
