@@ -1,18 +1,16 @@
-// Lightweight WebSocket client for Editor events without timers.
-// Lazily connects on first send; if socket is closed, next send will reconnect.
-// No auto-heartbeats or intervals.
+// frontend/src/utils/wsClient.js
+
+// Lightweight WebSocket client for Editor events.
+// Подключается лениво при первой отправке, повторные попытки ограничены по времени.
 
 function apiBaseToWsBase(apiBase) {
-  // apiBase like: http://127.0.0.1:8000/api
   try {
     const u = new URL(apiBase);
     const proto = u.protocol === 'https:' ? 'wss:' : 'ws:';
     const host = u.host;
-    // strip trailing /api
     const basePath = u.pathname.replace(/\/api\/?$/, '') || '/';
     return `${proto}//${host}${basePath}`.replace(/\/+$/, '');
   } catch {
-    // fallback to current location
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const host = location.host;
     return `${proto}//${host}`;
@@ -26,8 +24,10 @@ export class EditorWS {
     this.wsBase = apiBaseToWsBase(apiBase || (import.meta?.env?.VITE_API_URL || ''));
     this.socket = null;
     this.ready = false;
-    this.queue = []; // queued messages until 'open'
-    this.closing = false;
+    this.queue = [];        // сообщения до открытия соединения
+    this.onmessage = null;  // внешняя обработка onmessage
+    this._nextAllowed = 0;  // троттлинг попыток подключения
+    this._connecting = false;
   }
 
   get url() {
@@ -36,69 +36,69 @@ export class EditorWS {
     return `${this.wsBase}/ws/editor/${encodeURIComponent(this.clientId)}/${q}`;
   }
 
-  connectIfNeeded() {
-    if (this.ready || this.socket) return;
+  _connectIfNeeded() {
+    if (this.ready || this.socket || this._connecting) return;
     const url = this.url;
     if (!url) return;
 
+    const now = Date.now();
+    if (now < this._nextAllowed) return; // ждём окно
+
+    this._connecting = true;
     try {
       this.socket = new WebSocket(url);
     } catch {
       this.socket = null;
+      this._connecting = false;
+      this._nextAllowed = now + 2000;
       return;
     }
 
     this.socket.onopen = () => {
       this.ready = true;
-      // flush queue
+      this._connecting = false;
       try {
-        for (const msg of this.queue) {
-          this.socket?.send(JSON.stringify(msg));
-        }
+        for (const msg of this.queue) this.socket?.send(JSON.stringify(msg));
       } catch {}
       this.queue = [];
     };
 
     this.socket.onmessage = (ev) => {
-      // Consumers may attach external handler if needed
       if (typeof this.onmessage === 'function') {
         try { this.onmessage(ev); } catch {}
       }
     };
 
-    this.socket.onclose = () => {
+    const onEnd = () => {
       this.ready = false;
+      this._connecting = false;
       this.socket = null;
-      // no auto-reconnect here — next send() will connect lazily
+      this._nextAllowed = Date.now() + 2000; // не чаще раза в 2 секунды
     };
-
-    this.socket.onerror = () => {
-      // Just drop; next send() will try to reconnect
-    };
+    this.socket.onclose = onEnd;
+    this.socket.onerror = onEnd;
   }
 
   _send(msg) {
     if (!this.clientId) return;
     if (!this.ready || !this.socket) {
       this.queue.push(msg);
-      this.connectIfNeeded();
+      this._connectIfNeeded();
       return;
     }
     try {
       this.socket.send(JSON.stringify(msg));
     } catch {
-      // fallback to queue and reconnect on next call
       this.ready = false;
       try { this.socket.close(); } catch {}
       this.socket = null;
       this.queue.push(msg);
+      this._connectIfNeeded();
     }
   }
 
   setToken(token) {
-    // Token can be rotated by JWT refresh
     this.token = String(token || '');
-    // Reconnect on next send to apply new token
     if (this.socket) {
       try { this.socket.close(); } catch {}
       this.socket = null;
@@ -120,7 +120,6 @@ export class EditorWS {
   }
 
   sendEvents(events = []) {
-    // events: [{ kind, payload }, ...]
     const safe = Array.isArray(events) ? events.map(e => ({
       kind: String(e?.kind || 'unknown'),
       payload: (e && e.payload) || {},
@@ -129,7 +128,6 @@ export class EditorWS {
   }
 
   commit(snapshot) {
-    // Final snapshot (full serializeDocument)
     this._send({ type: 'commit', snapshot: snapshot || {} });
   }
 
@@ -140,9 +138,12 @@ export class EditorWS {
   close() {
     this.queue = [];
     this.ready = false;
+    this._connecting = false;
     if (this.socket) {
       try { this.socket.close(); } catch {}
       this.socket = null;
     }
   }
 }
+
+export default EditorWS;
