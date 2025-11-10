@@ -165,7 +165,6 @@ export default function Editor(){
   const [fileName, setFileName] = useState('')
 
   // page: { id, elId, canvas, bgObj, landscape, meta }
-  // meta: image|pdf|raster
   const [pages, setPages] = useState([])
   const [cur, setCur] = useState(0)
   const [loading, setLoading] = useState(true)
@@ -426,7 +425,8 @@ export default function Editor(){
     })
   }
 
-  // Подгон полотна под доступную область. На десктопе — без излишнего увеличения (только центрирование).
+  // Подгон полотна под доступную область.
+  // На десктопе не увеличиваем сверх 1 (строгое центрирование), на мобиле — вписываем в доступную область.
   function fitCanvasForPage(page){
     if(!page || !page.canvas) return
     const cv = page.canvas
@@ -435,35 +435,38 @@ export default function Editor(){
     const box = wrap.getBoundingClientRect()
     if(!box || box.width<10 || box.height<10){ requestAnimationFrame(()=>fitCanvasForPage(page)); return }
 
-    const marginX = 8, marginY = 8
+    const marginX = 12, marginY = 12
     const availW = Math.max(50, box.width - marginX*2)
     const availH = Math.max(50, box.height - marginY*2)
 
-    // Базовый «лист» A4 в портрет/альбом
     const tW = page.landscape ? PAGE_H : PAGE_W
     const tH = page.landscape ? PAGE_W : PAGE_H
 
-    // На десктопе не увеличиваем сверх 1 (убираем «подрастягивание» при повороте),
-    // на мобиле — подгоняем под доступную ширину/высоту.
     let s = Math.min(availW/tW, availH/tH)
-    if (!isMobile) s = Math.min(1, s)
+    if (!isMobile) s = Math.min(1, s) // не растягиваем на десктопе
     s = Math.max(0.1, s)
 
     const cssW = Math.max(1, Math.round(tW * s))
     const cssH = Math.max(1, Math.round(tH * s))
 
     const lower = cv.lowerCanvasEl, upper = cv.upperCanvasEl
-    const cont  = lower?.parentElement, edCanvasEl = cont?.parentElement
+    const cont  = lower?.parentElement         // .canvas-container
+    const edCanvasEl = cont?.parentElement     // .ed-canvas
 
     if (lower) { lower.style.width = cssW+'px'; lower.style.height = cssH+'px'; lower.style.maxWidth='none'; lower.style.maxHeight='none' }
     if (upper) { upper.style.width = cssW+'px'; upper.style.height = cssH+'px'; upper.style.maxWidth='none'; upper.style.maxHeight='none' }
-    if (cont)  { cont.style.width  = cssW+'px'; cont.style.height  = cssH+'px' }
-    if (edCanvasEl) { edCanvasEl.style.width = cssW+'px'; edCanvasEl.style.height = cssH+'px' }
+    if (cont)  { cont.style.width  = cssW+'px'; cont.style.height  = cssH+'px'; cont.style.transform='none' }
+    if (edCanvasEl) {
+      edCanvasEl.style.width = cssW+'px'
+      edCanvasEl.style.height = cssH+'px'
+      edCanvasEl.style.transform = 'none'
+      edCanvasEl.style.margin = '0 auto' // центрирование по горизонтали
+    }
 
     cv.setWidth(cssW)
     cv.setHeight(cssH)
     cv.requestRenderAll()
-    adjustBgObject(page) // держим фон по центру
+    adjustBgObject(page) // фон по центру, масштабируется в границы канвы
   }
   function fitCanvas(idx){ const p=pages[idx]; if(!p||!p.canvas) return; fitCanvasForPage(p) }
 
@@ -474,6 +477,13 @@ export default function Editor(){
     await waitForElm(page.elId)
     // eslint-disable-next-line no-undef
     const c=new fabric.Canvas(page.elId,{ backgroundColor:'#fff', preserveObjectStacking:true, selection:true })
+    // Улучшаем управляемость объектов
+    c.set({ selection:true, preserveObjectStacking:true })
+    c.targetFindTolerance = 10
+    c.perPixelTargetFind = true
+    c.defaultCursor = 'default'
+    c.hoverCursor = 'move'
+
     page.canvas = c
     fitCanvasForPage(page)
 
@@ -481,7 +491,7 @@ export default function Editor(){
     c.on('selection:updated', onSelectionChanged)
     c.on('selection:cleared', ()=>setPanelOpen(false))
 
-    // события для автосохранения и WS
+    // события для автосохранения/WS
     c.on('object:moving',  () => markDirty('obj_moving'))
     c.on('object:scaling', () => markDirty('obj_scaling'))
     c.on('object:rotating',() => markDirty('obj_rotating'))
@@ -533,6 +543,15 @@ export default function Editor(){
     try{
       // eslint-disable-next-line no-undef
       if (obj && obj.controls && window.__scannyDelControl) obj.controls.tr = window.__scannyDelControl
+      // базовые визуальные контролы для удобства
+      obj.set({
+        hasControls: true,
+        hasBorders: true,
+        lockUniScaling: false,
+        transparentCorners: false,
+        cornerStyle: 'circle',
+        cornerColor: '#E26D5C',
+      })
     }catch{}
   }
 
@@ -553,7 +572,8 @@ export default function Editor(){
       const w=cv.getWidth(),h=cv.getHeight()
       const s=Math.min(1,(w*0.35)/(img.width||1))
       img.set({left:Math.round(w*0.15),top:Math.round(h*0.15),scaleX:s,scaleY:s,selectable:true})
-      img.__scannyId=uniqueObjId(); ensureDeleteControlFor(img)
+      ensureDeleteControlFor(img)
+      img.__scannyId=uniqueObjId()
       cv.add(img); cv.setActiveObject(img); cv.requestRenderAll()
       setUndoStack(stk=>[...stk,{type:'add_one',page:cur,id:img.__scannyId}])
       markDirty('place_from_library')
@@ -666,23 +686,39 @@ export default function Editor(){
     if (pages.length<=1){ await removeDocument(); return }
     if (!window.confirm('Удалить текущую страницу?')) return
     const target = pages[idx]; try{ target.canvas?.dispose?.() }catch{}
-    setPages(prev=>prev.filter((_,i)=>i!==idx))
+    const nextPages = pages.filter((_,i)=>i!==idx)
+    setPages(nextPages)
     setCur(i=>Math.max(0, idx-1))
     setUndoStack(stk=>stk.filter(x=>!(x.page===idx)))
+    // Сразу перезапишем черновик без удалённой страницы
+    try{
+      const snapshot = await serializeDocument()
+      if (snapshot) {
+        draftCacheRef.current = snapshot
+        await AuthAPI.saveDraft(snapshot)
+      }
+    }catch{}
     markDirty('remove_page')
     toast('Страница удалена','success')
   }
 
+  // Дублирование выделенного объекта на все страницы
   async function applyToAllPages(){
     if(!hasDoc) return
-    const srcPage=pages[cur], cvSrc=await ensureCanvas(srcPage), obj=cvSrc.getActiveObject()
+    const srcPage = pages[cur]
+    const cvSrc = await ensureCanvas(srcPage)
+    const obj = cvSrc.getActiveObject()
     if(!obj){ toast('Выберите объект на странице','error'); return }
-    const clones=[]
+
+    const clones = []
     // eslint-disable-next-line no-undef
-    const F=fabric
+    const F = fabric
+
     for(let i=0;i<pages.length;i++){
       if(i===cur) continue
-      const dstPage=pages[i], cvDst=await ensureCanvas(dstPage)
+      const dstPage = pages[i]
+      const cvDst = await ensureCanvas(dstPage)
+
       if(obj.type==='textbox'){
         const tb=new F.Textbox(obj.text||'',{
           left:(obj.left||0)*cvDst.getWidth()/cvSrc.getWidth(),
@@ -699,8 +735,10 @@ export default function Editor(){
           scaleX: obj.scaleX || 1,
           scaleY: obj.scaleY || 1,
         })
-        tb.__scannyId=uniqueObjId(); ensureDeleteControlFor(tb)
-        cvDst.add(tb); cvDst.requestRenderAll(); clones.push({page:i,id:tb.__scannyId})
+        tb.__scannyId = uniqueObjId()
+        ensureDeleteControlFor(tb)
+        cvDst.add(tb); cvDst.requestRenderAll()
+        clones.push({page:i,id:tb.__scannyId})
       }else if(obj.type==='image'){
         const src=(obj._originalElement?.src||obj._element?.src)
         const imgEl=await loadImageEl(src)
@@ -714,10 +752,13 @@ export default function Editor(){
           top:(obj.top||0)*cvDst.getHeight()/cvSrc.getHeight(),
           scaleX:sUni, scaleY:sUni
         })
-        im.__scannyId=uniqueObjId(); ensureDeleteControlFor(im)
-        cvDst.add(im); cvDst.requestRenderAll(); clones.push({page:i,id:im.__scannyId})
+        im.__scannyId = uniqueObjId()
+        ensureDeleteControlFor(im)
+        cvDst.add(im); cvDst.requestRenderAll()
+        clones.push({page:i,id:im.__scannyId})
       }
     }
+
     if(clones.length){
       setUndoStack(stk=>[...stk,{type:'apply_all',clones}])
       markDirty('apply_all')
@@ -726,12 +767,23 @@ export default function Editor(){
   }
 
   // ---------- Загрузка/страницы ----------
-  async function onPickDocument(e){ const files=Array.from(e.target.files||[]); e.target.value=''; if(!files.length) return; await handleFiles(files) }
+  const filePickBusyRef = useRef(false)
+  function pickDocument(){
+    if (filePickBusyRef.current) return
+    filePickBusyRef.current = true
+    try { docFileRef.current?.click() } finally {
+      setTimeout(()=>{ filePickBusyRef.current=false }, 1500)
+    }
+  }
+  async function onPickDocument(e){ const files=Array.from(e.target.files||[]); e.target.value=''; if(!files.length) return; await handleFiles(files); filePickBusyRef.current=false }
   async function onPickBgFile(e){ const files=Array.from(e.target.files||[]); e.target.value=''; if(!files.length) return; await assignFirstFileToCurrent(files[0]) }
 
   async function handleFiles(files){
     setLoading(true)
     try{
+      // Сбросить локальный кэш перед заменой документа
+      draftCacheRef.current = null
+
       let curDocId = docIdRef.current
       if (!curDocId) { curDocId = randDocId(); setDocId(curDocId) }
       ensureWS()
@@ -759,7 +811,15 @@ export default function Editor(){
         }
       }
 
-      if (addedPages>0) markDirty('add_files')
+      if (addedPages>0) {
+        // Прямое сохранение нового документа как единственного актуального черновика
+        const snapshot = await serializeDocument()
+        if (snapshot) {
+          draftCacheRef.current = snapshot
+          await AuthAPI.saveDraft(snapshot)
+        }
+        markDirty('add_files')
+      }
 
       try{
         if (isAuthed && addedPages>0) {
@@ -780,6 +840,7 @@ export default function Editor(){
     await new Promise(r=>requestAnimationFrame(r))
     const cv=await ensureCanvas(page)
     await ensureFabric()
+    await new Promise(r=>requestAnimationFrame(r))
     // eslint-disable-next-line no-undef
     const img=new fabric.Image(await loadImageEl(dataUrl),{ selectable:false, evented:false })
     placeBgObject(cv,page,img)
@@ -811,6 +872,7 @@ export default function Editor(){
       await new Promise(r=>requestAnimationFrame(r))
       const cv=await ensureCanvas(page)
       await ensureFabric()
+      await new Promise(r=>requestAnimationFrame(r))
       // eslint-disable-next-line no-undef
       const img=new fabric.Image(await loadImageEl(url),{ selectable:false, evented:false })
       placeBgObject(cv,page,img)
@@ -938,12 +1000,18 @@ export default function Editor(){
     const page=pages[cur]; const cv=await ensureCanvas(page)
     // eslint-disable-next-line no-undef
     const tb=new fabric.Textbox('Вставьте текст',{
-      left:Math.round(cv.getWidth()*0.1), top:Math.round(cv.getHeight()*0.15),
-      fontSize:48, fill:'#000000', fontFamily:'Arial', fontWeight:'bold',
-      width: Math.round(cv.getWidth()*0.6), textAlign: 'left',
+      left:Math.round(cv.getWidth()*0.1),
+      top:Math.round(cv.getHeight()*0.15),
+      fontSize:48,
+      fill:'#000000',
+      fontFamily:'Arial',
+      fontWeight:'bold',
+      width: Math.round(cv.getWidth()*0.6),
+      textAlign: 'left',
+      selectable:true
     })
-    tb.__scannyId=uniqueObjId()
     ensureDeleteControlFor(tb)
+    tb.__scannyId=uniqueObjId()
     cv.add(tb); cv.setActiveObject(tb); cv.requestRenderAll(); setPanelOpen(true)
     setUndoStack(stk=>[...stk,{type:'add_one',page:cur,id:tb.__scannyId}])
     markDirty('add_textbox')
@@ -962,16 +1030,31 @@ export default function Editor(){
     if(!hasDoc) return
     const page = pages[cur]; await ensureCanvas(page)
     page.landscape = !page.landscape
-    fitCanvasForPage(page)   // пересчёт размеров канвы с учётом ориентации
-    adjustBgObject(page)     // центрирование фона
+    // Пересчёт канвы и центрирование
+    fitCanvasForPage(page)
+    adjustBgObject(page)
     markDirty('rotate_page')
   }
 
   // ---------- Undo ----------
   function undo(){
     const stk=[...undoStack], last=stk.pop(); if(!last) return
-    if(last.type==='add_one'){ const p=pages[last.page], cv=p?.canvas; if(cv){ const obj=cv.getObjects().find(o=>o.__scannyId===last.id); if(obj){ cv.remove(obj); cv.discardActiveObject(); cv.requestRenderAll() } } }
-    else if(last.type==='apply_all'){ last.clones.forEach(({page,id})=>{ const p=pages[page], cv=p?.canvas; if(cv){ const obj=cv.getObjects().find(o=>o.__scannyId===id); if(obj){ cv.remove(obj) } cv.requestRenderAll() } }) }
+    if(last.type==='add_one'){
+      const p=pages[last.page], cv=p?.canvas
+      if(cv){
+        const obj=cv.getObjects().find(o=>o.__scannyId===last.id)
+        if(obj){ cv.remove(obj); cv.discardActiveObject(); cv.requestRenderAll() }
+      }
+    }else if(last.type==='apply_all'){
+      last.clones.forEach(({page,id})=>{
+        const p=pages[page], cv=p?.canvas
+        if(cv){
+          const obj=cv.getObjects().find(o=>o.__scannyId===id)
+          if(obj){ cv.remove(obj) }
+          cv.requestRenderAll()
+        }
+      })
+    }
     setUndoStack(stk)
     markDirty('undo')
   }
@@ -990,10 +1073,8 @@ export default function Editor(){
         const p=pages[i], cv=await ensureCanvas(p)
         const targetW = Math.max(1, cv.getWidth())
         const targetH = Math.max(1, cv.getHeight())
-        // база — текущее полотно
         const urlBase = cv.toDataURL({ format:'jpeg', quality:0.95, multiplier: 3 })
         const blobBase = await (await fetch(urlBase)).blob()
-        // накладываем оверлей, если есть
         const overlayBytes = await exportOverlayAsPNGBytes(p, cv, targetW, targetH)
         if (overlayBytes) {
           const off = document.createElement('canvas'); off.width = targetW; off.height = targetH
@@ -1039,7 +1120,6 @@ export default function Editor(){
             pageRef.drawImage(png, { x:0, y:0, width, height })
           }
         } else {
-          // отрисуем текущую канву как PNG и положим на PDF-страницу
           const w = cv.getWidth(), h = cv.getHeight()
           const mul = 3
           const url = cv.toDataURL({ format:'png', multiplier: mul })
@@ -1119,22 +1199,20 @@ export default function Editor(){
       const pagesData = Array.isArray(draft?.pages) ? draft.pages : []
       const created = []
 
-      // Создаём заготовки страниц
+      // Заготовки страниц (без рендера фона сразу, чтобы избежать «пустых» канв)
       for (let i=0;i<pagesData.length;i++){
         const pg = pagesData[i]
         const id='p_'+Math.random().toString(36).slice(2), elId='cv_'+id
-        const pageStub = {
+        created.push({
           id, elId, canvas:null, bgObj:null, landscape: !!pg.landscape,
-          meta: (pg.type==='pdf')
-            ? { type:'pdf', bytes: b64ToU8(pg.bytes_b64 || ''), index: Number(pg.index||0) }
+          meta: (pg.type==='pdf' && pg.bytes_b64)
+            ? { type:'pdf', bytes: b64ToU8(pg.bytes_b64), index: Number(pg.index||0) }
             : (pg.type==='image' || pg.type==='raster')
               ? { type: pg.type, src: pg.src, w: pg.w||PAGE_W, h: pg.h||PAGE_H, mime: pg.mime||'image/png' }
               : { type:'raster', src:'', w: PAGE_W, h: PAGE_H, mime:'image/png' },
-        }
-        created.push(pageStub)
+        })
       }
 
-      // Применяем стейт разом
       setPages(created)
       setCur(created.length ? 0 : 0)
       setFileName((draft?.name||'').trim() || genDefaultName())
@@ -1143,11 +1221,12 @@ export default function Editor(){
       await new Promise(r=>requestAnimationFrame(r))
       await ensureFabric()
 
-      // Для каждой страницы — фон, затем оверлеи (последовательно)
+      // Фон и оверлеи — строго по порядку, для каждой страницы: ensureCanvas -> rAF -> фон -> fit -> overlays
       for (let i=0;i<created.length;i++){
         const pg = pagesData[i] || {}
         const page = created[i]
         const cv = await ensureCanvas(page)
+        await new Promise(r=>requestAnimationFrame(r)) // стабильность контейнера перед фоном
 
         // фон
         if (pg.type === 'pdf' && pg.bytes_b64){
@@ -1156,17 +1235,18 @@ export default function Editor(){
           const pdf = await pdfjsLib.getDocument({data: b64ToU8(pg.bytes_b64).slice()}).promise
           const url = await renderPDFPageToDataURL(pdf, (pg.index||0)+1, 2.0)
           // eslint-disable-next-line no-undef
-          const img=new fabric.Image(await loadImageEl(url),{ selectable:false, evented:false })
+          const img = new fabric.Image(await loadImageEl(url),{ selectable:false, evented:false })
           placeBgObject(cv, page, img)
           page.meta = { type:'pdf', bytes: b64ToU8(pg.bytes_b64), index: Number(pg.index||0) }
         } else if (pg.type === 'image' || pg.type === 'raster'){
           // eslint-disable-next-line no-undef
-          const img=new fabric.Image(await loadImageEl(pg.src),{ selectable:false, evented:false })
+          const img = new fabric.Image(await loadImageEl(pg.src),{ selectable:false, evented:false })
           placeBgObject(cv, page, img)
           page.meta = { type: pg.type, src: pg.src, w: pg.w||PAGE_W, h: pg.h||PAGE_H, mime: pg.mime||'image/png' }
         }
 
         fitCanvasForPage(page)
+        adjustBgObject(page)
 
         // оверлеи
         const overlays = Array.isArray(pg.overlays) ? pg.overlays : []
@@ -1180,6 +1260,7 @@ export default function Editor(){
               fill:o.fill||'#000', width: Math.max(20, Number(o.width||200)),
               textAlign: o.textAlign || 'left',
               scaleX: Number(o.scaleX||1), scaleY: Number(o.scaleY||1),
+              selectable:true
             })
             ensureDeleteControlFor(tb); cv.add(tb)
           } else if (o.t === 'im' && o.src){
@@ -1188,6 +1269,7 @@ export default function Editor(){
               left:o.left||0, top:o.top||0, angle:o.angle||0,
               flipX: !!o.flipX, flipY: !!o.flipY,
               scaleX: Number(o.scaleX||1), scaleY: Number(o.scaleY||1),
+              selectable:true
             })
             ensureDeleteControlFor(im); cv.add(im)
           }
@@ -1207,16 +1289,6 @@ export default function Editor(){
     if (!hasDoc) return
     const n = Math.max(1, Math.min(pages.length, Number(v)||1))
     setCur(n-1)
-  }
-
-  // защита от двойного показа диалога выбора файлов
-  const filePickBusyRef = useRef(false)
-  function pickDocument(){
-    if (filePickBusyRef.current) return
-    filePickBusyRef.current = true
-    try { docFileRef.current?.click() } finally {
-      setTimeout(()=>{ filePickBusyRef.current=false }, 1500)
-    }
   }
 
   return (
@@ -1257,7 +1329,15 @@ export default function Editor(){
             {signLib.map(item=>(
               <div key={item.id} className="thumb" draggable onDragStart={(e)=>startDragSign(item.url,e)}>
                 <img src={item.url} alt="" onClick={()=>placeFromLib(item.url)} style={{width:'100%',height:'100%',objectFit:'contain',cursor:'pointer'}}/>
-                <button className="thumb-x" onClick={async ()=>{ if(!window.confirm('Удалить элемент из библиотеки?')) return; try{ await (item.is_default && item.gid ? AuthAPI.hideDefaultSign(item.gid) : AuthAPI.deleteSign(item.id)); loadLibrary(); markDirty('remove_from_library'); toast('Удалено','success') }catch(e){ toast(e.message||'Не удалось удалить','error') } }}>×</button>
+                <button className="thumb-x" onClick={async ()=>{
+                  if(!window.confirm('Удалить элемент из библиотеки?')) return
+                  try{
+                    await (item.is_default && item.gid ? AuthAPI.hideDefaultSign(item.gid) : AuthAPI.deleteSign(item.id))
+                    await loadLibrary()
+                    markDirty('remove_from_library')
+                    toast('Удалено','success')
+                  }catch(e){ toast(e.message||'Не удалось удалить','error') }
+                }}>×</button>
               </div>
             ))}
           </div>
@@ -1267,7 +1347,8 @@ export default function Editor(){
           <div className="ed-canvas-wrap" ref={canvasWrapRef} onDragOver={(e)=>e.preventDefault()} onDrop={onCanvasDrop}>
             {pages.map((p,idx)=>(
               <div key={p.id} className={`ed-canvas ${idx===cur?'active':''}`}>
-                <button className="ed-page-x desktop-only" title="Удалить эту страницу" onClick={()=>removePage(idx)}>×</button>
+                {/* Увеличенный крестик и размещение в зоне видимости */}
+                <button className="ed-page-x desktop-only" title="Удалить эту страницу" onClick={()=>removePage(idx)} style={{ right:-12, top:-12, width:32, height:32, fontSize:18 }}>×</button>
                 <canvas id={p.elId}/>
               </div>
             ))}
@@ -1391,7 +1472,7 @@ export default function Editor(){
 
       {cropOpen && (
         <div className="modal-overlay" onClick={()=>setCropOpen(false)}>
-                    <div className="modal crop-modal" onClick={e=>e.stopPropagation()}>
+          <div className="modal crop-modal" onClick={e=>e.stopPropagation()}>
             <button className="modal-x" onClick={()=>setCropOpen(false)}>×</button>
             <h3 className="modal-title">1. Выделите область</h3>
 
@@ -1410,114 +1491,57 @@ export default function Editor(){
             <div className="crop-controls">
               <h4>2. Настройте прозрачность фона:</h4>
               <div className="thr-row">
-                <input
-                  type="range"
-                  min="0"
-                  max="100"
-                  value={cropThresh}
-                  onChange={e=>setCropThresh(Number(e.target.value))}
-                />
-                <input
-                  type="number"
-                  min="0"
-                  max="100"
-                  value={cropThresh}
-                  onChange={e=>{
-                    const v = Math.max(0, Math.min(100, Number(e.target.value) || 0))
-                    setCropThresh(v)
-                  }}
-                />
+                <input type="range" min="0" max="100" value={cropThresh} onChange={e=>setCropThresh(Number(e.target.value))}/>
+                <input type="number" min="0" max="100" value={cropThresh} onChange={e=>{ const v=Math.max(0,Math.min(100,Number(e.target.value)||0)); setCropThresh(v) }}/>
                 <span>%</span>
               </div>
 
-              <button
-                className="btn"
-                onClick={async ()=>{
-                  try {
-                    const cr = cropperRef.current; if (!cr) return
-                    const c = cr.getCroppedCanvas({ imageSmoothingEnabled:true, imageSmoothingQuality:'high' })
-                    let dataUrl = c.toDataURL('image/png')
-                    const thr = Math.round(255 * (cropThresh / 100))
-                    dataUrl = await removeWhiteBackground(dataUrl, thr)
+              <button className="btn" onClick={async ()=>{
+                try{
+                  const cr=cropperRef.current; if(!cr) return
+                  const c=cr.getCroppedCanvas({ imageSmoothingEnabled:true, imageSmoothingQuality:'high' })
+                  let dataUrl = c.toDataURL('image/png')
+                  const thr = Math.round(255 * (cropThresh / 100))
+                  dataUrl = await removeWhiteBackground(dataUrl, thr)
 
-                    // 1) Добавляем в библиотеку (если авторизован)
-                    try {
-                      await AuthAPI.addSign({ kind: cropType, data_url: dataUrl })
-                      await loadLibrary()
-                      markDirty('add_to_library')
-                    } catch {}
+                  // 1) Добавляем в библиотеку
+                  try { await AuthAPI.addSign({ kind: cropType, data_url: dataUrl }); await loadLibrary(); markDirty('add_to_library') } catch {}
 
-                    // 2) Добавляем на текущую страницу (если документ есть)
-                    if (pages.length > 0) {
-                      const page = pages[cur]
-                      const cv = await ensureCanvas(page)
-                      // eslint-disable-next-line no-undef
-                      const image = new fabric.Image(await loadImageEl(dataUrl))
-                      const W = cv.getWidth(), H = cv.getHeight()
-                      const s = Math.min(1, (W * 0.35) / (image.width || 1))
-                      image.set({
-                        left: Math.round(W * 0.15),
-                        top: Math.round(H * 0.15),
-                        scaleX: s, scaleY: s,
-                        selectable: true
-                      })
-                      image.__scannyId = uniqueObjId()
-                      ensureDeleteControlFor(image)
-                      cv.add(image)
-                      cv.setActiveObject(image)
-                      cv.requestRenderAll()
-                      setUndoStack(stk => [...stk, { type: 'add_one', page: cur, id: image.__scannyId }])
-                      markDirty('add_signature_on_canvas')
-                    }
-
-                    setCropOpen(false)
-                  } catch (e) {
-                    toast(e.message || 'Не удалось обработать изображение', 'error')
+                  // 2) Добавляем на страницу (если есть документ)
+                  if (pages.length > 0) {
+                    const page = pages[cur]
+                    const cv = await ensureCanvas(page)
+                    // eslint-disable-next-line no-undef
+                    const image = new fabric.Image(await loadImageEl(dataUrl))
+                    const W = cv.getWidth(), H = cv.getHeight()
+                    const s = Math.min(1, (W * 0.35) / (image.width || 1))
+                    image.set({ left: Math.round(W * 0.15), top: Math.round(H * 0.15), scaleX: s, scaleY: s, selectable: true })
+                    ensureDeleteControlFor(image)
+                    image.__scannyId = uniqueObjId()
+                    cv.add(image); cv.setActiveObject(image); cv.requestRenderAll()
+                    setUndoStack(stk => [...stk, { type: 'add_one', page: cur, id: image.__scannyId }])
+                    markDirty('add_signature_on_canvas')
                   }
-                }}
-              >
-                <span className="label">Готово</span>
-              </button>
+
+                  setCropOpen(false)
+                }catch(e){ toast(e.message || 'Не удалось обработать изображение', 'error') }
+              }}><span className="label">Готово</span></button>
             </div>
           </div>
         </div>
       )}
 
       {/* инпуты выбора файлов */}
-      <input
-        ref={docFileRef}
-        type="file"
-        accept={ACCEPT_DOC}
-        hidden
-        multiple
-        onChange={(e)=>{ onPickDocument(e).finally(()=>{ filePickBusyRef.current=false }) }}
-      />
-      <input
-        ref={bgFileRef}
-        type="file"
-        accept={ACCEPT_DOC}
-        hidden
-        onChange={onPickBgFile}
-      />
-      <input
-        ref={signFileRef}
-        type="file"
-        accept=".png,.jpg,.jpeg"
-        hidden
-        onChange={(e)=>{
-          const f = e.target.files?.[0] || null
-          e.target.value = ''
-          if (!f) return
-          const reader = new FileReader()
-          reader.onload = () => {
-            setCropSrc(String(reader.result || ''))
-            setCropOpen(true)
-            setCropType('signature')
-            setCropThresh(40)
-          }
-          reader.readAsDataURL(f)
-        }}
-      />
+      <input ref={docFileRef} type="file" accept={ACCEPT_DOC} hidden multiple onChange={onPickDocument}/>
+      <input ref={bgFileRef} type="file" accept={ACCEPT_DOC} hidden onChange={onPickBgFile}/>
+      <input ref={signFileRef} type="file" accept=".png,.jpg,.jpeg" hidden onChange={(e)=>{
+        const f=e.target.files?.[0]||null
+        e.target.value=''
+        if(!f) return
+        const reader=new FileReader()
+        reader.onload=()=>{ setCropSrc(String(reader.result||'')); setCropOpen(true); setCropType('signature'); setCropThresh(40) }
+        reader.readAsDataURL(f)
+      }}/>
     </div>
   )
 }
@@ -1525,7 +1549,7 @@ export default function Editor(){
 // Унифицированный пагинатор (единый для всех экранов)
 function UnifiedPager({ total, current, pgText, setPgText, onGo, onPrev, onNext, canPrev, canNext, hasDoc, onAdd }) {
   const onChange = (e) => {
-    const v = e.target.value.replace(/[^\d]/g, '')
+    const v = e.target.value.replace(/[^\d]/g,'')
     setPgText(v)
   }
   const onBlur = () => {
@@ -1552,7 +1576,7 @@ function UnifiedPager({ total, current, pgText, setPgText, onGo, onPrev, onNext,
               className="pg-input"
               type="number"
               min={1}
-              max={Math.max(1, total)}
+              max={Math.max(1,total)}
               value={pgText}
               onChange={onChange}
               onBlur={onBlur}
@@ -1567,9 +1591,7 @@ function UnifiedPager({ total, current, pgText, setPgText, onGo, onPrev, onNext,
       </div>
 
       <button className="pager-btn" onClick={onNext} title={canNext ? 'Следующая' : 'Добавить документ'}>
-        {canNext
-          ? <img src={icPrev} alt="Next" style={{ transform:'rotate(180deg)' }} />
-          : <img src={icPlus} alt="+" onClick={onAdd} />}
+        {canNext ? <img src={icPrev} alt="Next" style={{ transform:'rotate(180deg)' }} /> : <img src={icPlus} alt="+" onClick={onAdd}/>}
       </button>
     </div>
   )
