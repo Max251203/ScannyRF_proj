@@ -334,6 +334,7 @@ export default function Editor(){
       if (hasDoc || isDeletingRef.current) { setLoading(false); return; }
       try{
         if (localStorage.getItem('access')) {
+          setLoading(true)
           const srv = await AuthAPI.getDraft()
           if (isDeletingRef.current) return;
           if (srv && srv.exists && srv.data) {
@@ -354,6 +355,63 @@ export default function Editor(){
       setSignLib(Array.isArray(list)?list:[])
     }catch{ setSignLib([]) } finally{ setLibLoading(false) }
   }
+  useEffect(()=>{ loadLibrary() },[])
+
+  // --- Cropper / прозрачность для модалки подписи ---
+  function removeWhiteBackground(src, threshold = 245){
+    return new Promise(async (resolve, reject) => {
+      try {
+        const img = await loadImageEl(src)
+        const w = img.naturalWidth || img.width
+        const h = img.naturalHeight || img.height
+        const c = document.createElement('canvas')
+        c.width = w; c.height = h
+        const ctx = c.getContext('2d')
+        ctx.drawImage(img, 0, 0)
+        const data = ctx.getImageData(0, 0, w, h)
+        const d = data.data
+        for (let i = 0; i < d.length; i += 4) {
+          const r = d[i], g = d[i+1], b = d[i+2]
+          if (r > threshold && g > threshold && b > threshold) d[i+3] = 0
+          else {
+            const avg = (r+g+b)/3
+            if (avg > 220) d[i+3] = Math.max(0, d[i+3] - 120)
+          }
+        }
+        ctx.putImageData(data, 0, 0)
+        resolve(c.toDataURL('image/png'))
+      } catch (e) { reject(e) }
+    })
+  }
+
+  useEffect(() => {
+    if (!cropOpen) return
+    ;(async () => {
+      await ensureCropper()
+      if (cropperRef.current) { try { cropperRef.current.destroy() } catch {}; cropperRef.current = null }
+      const img = cropImgRef.current; if (!img) return
+      /* eslint-disable no-undef */
+      const inst = new Cropper(img, { viewMode: 1, dragMode: 'move', guides: true, background: false, autoCrop: true })
+      /* eslint-enable */
+      cropperRef.current = inst
+    })()
+    return () => {
+      if (cropperRef.current) { try { cropperRef.current.destroy() } catch {}; cropperRef.current = null }
+    }
+  }, [cropOpen])
+
+  useEffect(() => {
+    (async () => {
+      if (!cropOpen || !cropperRef.current || !cropSrc) return
+      const thr = Math.round(255 * (cropThresh / 100))
+      try {
+        const url = await removeWhiteBackground(cropSrc, thr)
+        cropperRef.current.replace(url, true)
+      } catch {}
+    })()
+  }, [cropThresh, cropOpen, cropSrc])
+
+  // === Продолжение Editor.jsx (часть 2/3) ===
 
   function uniqueObjId(){ return 'obj_'+Math.random().toString(36).slice(2) }
   async function waitForElm(id, timeout=8000){
@@ -368,7 +426,7 @@ export default function Editor(){
     })
   }
 
-  // Подгон полотна под доступную область. На десктопе — без излишнего увеличения.
+  // Подгон полотна под доступную область. На десктопе — без излишнего увеличения (только центрирование).
   function fitCanvasForPage(page){
     if(!page || !page.canvas) return
     const cv = page.canvas
@@ -381,11 +439,14 @@ export default function Editor(){
     const availW = Math.max(50, box.width - marginX*2)
     const availH = Math.max(50, box.height - marginY*2)
 
+    // Базовый «лист» A4 в портрет/альбом
     const tW = page.landscape ? PAGE_H : PAGE_W
     const tH = page.landscape ? PAGE_W : PAGE_H
 
+    // На десктопе не увеличиваем сверх 1 (убираем «подрастягивание» при повороте),
+    // на мобиле — подгоняем под доступную ширину/высоту.
     let s = Math.min(availW/tW, availH/tH)
-    if (!isMobile) s = Math.min(1, s)               // на десктопе не увеличиваем сверх 1
+    if (!isMobile) s = Math.min(1, s)
     s = Math.max(0.1, s)
 
     const cssW = Math.max(1, Math.round(tW * s))
@@ -420,7 +481,7 @@ export default function Editor(){
     c.on('selection:updated', onSelectionChanged)
     c.on('selection:cleared', ()=>setPanelOpen(false))
 
-    // события для автосохранения
+    // события для автосохранения и WS
     c.on('object:moving',  () => markDirty('obj_moving'))
     c.on('object:scaling', () => markDirty('obj_scaling'))
     c.on('object:rotating',() => markDirty('obj_rotating'))
@@ -665,8 +726,6 @@ export default function Editor(){
   }
 
   // ---------- Загрузка/страницы ----------
-  function pickDocument(){ docFileRef.current?.click() }
-  function pickBgForCurrent(){ bgFileRef.current?.click() }
   async function onPickDocument(e){ const files=Array.from(e.target.files||[]); e.target.value=''; if(!files.length) return; await handleFiles(files) }
   async function onPickBgFile(e){ const files=Array.from(e.target.files||[]); e.target.value=''; if(!files.length) return; await assignFirstFileToCurrent(files[0]) }
 
@@ -1046,6 +1105,7 @@ export default function Editor(){
           e.preventDefault()
           cv.remove(obj); cv.discardActiveObject(); cv.requestRenderAll()
           markDirty('delete_by_key')
+          toast('Объект удалён','success')
         }
       }
     }
@@ -1053,33 +1113,28 @@ export default function Editor(){
     return ()=>document.removeEventListener('keydown', onKey)
   },[pages, cur, markDirty])
 
-  // ---------- Восстановление из серверного черновика ----------
+  // ---------- Восстановление из серверного черновика (последовательно, без пропусков) ----------
   async function restoreDocumentFromDraft(draft){
     try{
       const pagesData = Array.isArray(draft?.pages) ? draft.pages : []
       const created = []
-      const bgUrls = []
+
+      // Создаём заготовки страниц
       for (let i=0;i<pagesData.length;i++){
         const pg = pagesData[i]
         const id='p_'+Math.random().toString(36).slice(2), elId='cv_'+id
-        if (pg.type==='pdf' && pg.bytes_b64){
-          await ensurePDFJS()
-          // eslint-disable-next-line no-undef
-          const bytes = b64ToU8(pg.bytes_b64)
-          // eslint-disable-next-line no-undef
-          const pdf = await pdfjsLib.getDocument({data: bytes.slice()}).promise
-          const url = await renderPDFPageToDataURL(pdf, (pg.index||0)+1, 2.0)
-          bgUrls[i] = url
-          created.push({ id, elId, canvas:null, bgObj:null, landscape:!!pg.landscape, meta:{ type:'pdf', bytes: toUint8Copy(bytes), index: pg.index||0 } })
-        } else if (pg.type==='image' || pg.type==='raster'){
-          bgUrls[i] = pg.src
-          created.push({ id, elId, canvas:null, bgObj:null, landscape:!!pg.landscape, meta:{ type: pg.type, src: pg.src, w: pg.w||PAGE_W, h: pg.h||PAGE_H, mime: pg.mime||'image/png' } })
-        } else {
-          // неизвестный тип — пропускаем
-          bgUrls[i] = null
-          created.push({ id, elId, canvas:null, bgObj:null, landscape:!!pg.landscape, meta:{ type:'raster', src:'', w: PAGE_W, h: PAGE_H, mime:'image/png' } })
+        const pageStub = {
+          id, elId, canvas:null, bgObj:null, landscape: !!pg.landscape,
+          meta: (pg.type==='pdf')
+            ? { type:'pdf', bytes: b64ToU8(pg.bytes_b64 || ''), index: Number(pg.index||0) }
+            : (pg.type==='image' || pg.type==='raster')
+              ? { type: pg.type, src: pg.src, w: pg.w||PAGE_W, h: pg.h||PAGE_H, mime: pg.mime||'image/png' }
+              : { type:'raster', src:'', w: PAGE_W, h: PAGE_H, mime:'image/png' },
         }
+        created.push(pageStub)
       }
+
+      // Применяем стейт разом
       setPages(created)
       setCur(created.length ? 0 : 0)
       setFileName((draft?.name||'').trim() || genDefaultName())
@@ -1088,23 +1143,32 @@ export default function Editor(){
       await new Promise(r=>requestAnimationFrame(r))
       await ensureFabric()
 
-      // фон
+      // Для каждой страницы — фон, затем оверлеи (последовательно)
       for (let i=0;i<created.length;i++){
+        const pg = pagesData[i] || {}
         const page = created[i]
         const cv = await ensureCanvas(page)
-        const url = bgUrls[i]
-        if (url){
+
+        // фон
+        if (pg.type === 'pdf' && pg.bytes_b64){
+          await ensurePDFJS()
+          // eslint-disable-next-line no-undef
+          const pdf = await pdfjsLib.getDocument({data: b64ToU8(pg.bytes_b64).slice()}).promise
+          const url = await renderPDFPageToDataURL(pdf, (pg.index||0)+1, 2.0)
           // eslint-disable-next-line no-undef
           const img=new fabric.Image(await loadImageEl(url),{ selectable:false, evented:false })
           placeBgObject(cv, page, img)
+          page.meta = { type:'pdf', bytes: b64ToU8(pg.bytes_b64), index: Number(pg.index||0) }
+        } else if (pg.type === 'image' || pg.type === 'raster'){
+          // eslint-disable-next-line no-undef
+          const img=new fabric.Image(await loadImageEl(pg.src),{ selectable:false, evented:false })
+          placeBgObject(cv, page, img)
+          page.meta = { type: pg.type, src: pg.src, w: pg.w||PAGE_W, h: pg.h||PAGE_H, mime: pg.mime||'image/png' }
         }
-      }
 
-      // оверлеи
-      for (let i=0;i<created.length;i++){
-        const page = created[i]
-        const cv = await ensureCanvas(page)
-        const pg = pagesData[i] || {}
+        fitCanvasForPage(page)
+
+        // оверлеи
         const overlays = Array.isArray(pg.overlays) ? pg.overlays : []
         for (const o of overlays){
           if (o.t === 'tb'){
@@ -1113,11 +1177,9 @@ export default function Editor(){
               left:o.left||0, top:o.top||0, angle:o.angle||0,
               fontFamily:o.fontFamily||'Arial', fontSize:o.fontSize||42,
               fontStyle:o.fontStyle||'normal', fontWeight:o.fontWeight||'normal',
-              fill:o.fill||'#000',
-              width: Math.max(20, Number(o.width||200)),
+              fill:o.fill||'#000', width: Math.max(20, Number(o.width||200)),
               textAlign: o.textAlign || 'left',
-              scaleX: Number(o.scaleX||1),
-              scaleY: Number(o.scaleY||1),
+              scaleX: Number(o.scaleX||1), scaleY: Number(o.scaleY||1),
             })
             ensureDeleteControlFor(tb); cv.add(tb)
           } else if (o.t === 'im' && o.src){
@@ -1145,6 +1207,16 @@ export default function Editor(){
     if (!hasDoc) return
     const n = Math.max(1, Math.min(pages.length, Number(v)||1))
     setCur(n-1)
+  }
+
+  // защита от двойного показа диалога выбора файлов
+  const filePickBusyRef = useRef(false)
+  function pickDocument(){
+    if (filePickBusyRef.current) return
+    filePickBusyRef.current = true
+    try { docFileRef.current?.click() } finally {
+      setTimeout(()=>{ filePickBusyRef.current=false }, 1500)
+    }
   }
 
   return (
@@ -1185,7 +1257,7 @@ export default function Editor(){
             {signLib.map(item=>(
               <div key={item.id} className="thumb" draggable onDragStart={(e)=>startDragSign(item.url,e)}>
                 <img src={item.url} alt="" onClick={()=>placeFromLib(item.url)} style={{width:'100%',height:'100%',objectFit:'contain',cursor:'pointer'}}/>
-                <button className="thumb-x" onClick={()=>{ if(window.confirm('Удалить элемент из библиотеки?')){ AuthAPI.deleteSign?.(item.id).catch(()=>{}); loadLibrary() } }}>×</button>
+                <button className="thumb-x" onClick={async ()=>{ if(!window.confirm('Удалить элемент из библиотеки?')) return; try{ await (item.is_default && item.gid ? AuthAPI.hideDefaultSign(item.gid) : AuthAPI.deleteSign(item.id)); loadLibrary(); markDirty('remove_from_library'); toast('Удалено','success') }catch(e){ toast(e.message||'Не удалось удалить','error') } }}>×</button>
               </div>
             ))}
           </div>
@@ -1195,6 +1267,7 @@ export default function Editor(){
           <div className="ed-canvas-wrap" ref={canvasWrapRef} onDragOver={(e)=>e.preventDefault()} onDrop={onCanvasDrop}>
             {pages.map((p,idx)=>(
               <div key={p.id} className={`ed-canvas ${idx===cur?'active':''}`}>
+                <button className="ed-page-x desktop-only" title="Удалить эту страницу" onClick={()=>removePage(idx)}>×</button>
                 <canvas id={p.elId}/>
               </div>
             ))}
@@ -1235,7 +1308,7 @@ export default function Editor(){
 
       {/* ЕДИНАЯ нижняя панель (и для десктопа, и для мобилки) */}
       <div className="ed-bottom">
-        {/* слева/справа FAB показываем только на мобилке */}
+        {/* слева/справа FAB только на мобилке */}
         <button className="fab fab-add mobile-only" onClick={()=>{ if(hasDoc){ setMenuAddOpen(o=>!o) } else { pickDocument() } }} title="Добавить">
           <img src={icPlus} alt="+" />
         </button>
@@ -1259,12 +1332,12 @@ export default function Editor(){
         </button>
       </div>
 
-      {/* Меню действий — позиционируем под кнопкой (мобила) */}
+      {/* Меню действий — под кнопкой (мобила) */}
       {menuActionsOpen && (
         <div
           className="ed-sheet"
           ref={sheetActionsRef}
-          style={{ position: 'fixed', top: menuPos.top, left: menuPos.left }}
+          style={{ position: 'fixed', top: menuPos.top, left: menuPos.left, maxWidth:'96vw', minWidth:240 }}
         >
           <button className={hasDoc?'':'disabled'} onClick={()=>{ setMenuActionsOpen(false); rotatePage() }}><img src={icRotate} alt="" style={{width:18,height:18,marginRight:10}}/>Повернуть страницу</button>
           <button className={(hasDoc && pages.length>1)?'':'disabled'} onClick={()=>{ setMenuActionsOpen(false); removePage() }}><img src={icDelete} alt="" style={{width:18,height:18,marginRight:10}}/>Удалить страницу</button>
@@ -1318,9 +1391,10 @@ export default function Editor(){
 
       {cropOpen && (
         <div className="modal-overlay" onClick={()=>setCropOpen(false)}>
-          <div className="modal crop-modal" onClick={e=>e.stopPropagation()}>
+                    <div className="modal crop-modal" onClick={e=>e.stopPropagation()}>
             <button className="modal-x" onClick={()=>setCropOpen(false)}>×</button>
             <h3 className="modal-title">1. Выделите область</h3>
+
             <div className="crop-row">
               <select value={cropType} onChange={e=>setCropType(e.target.value)}>
                 <option value="signature">подпись</option>
@@ -1328,51 +1402,122 @@ export default function Editor(){
                 <option value="round_seal">круглая печать</option>
               </select>
             </div>
-            <div className="crop-area"><img ref={cropImgRef} src={cropSrc} alt="" style={{maxWidth:'100%',maxHeight:'46vh'}}/></div>
+
+            <div className="crop-area">
+              <img ref={cropImgRef} src={cropSrc} alt="" style={{maxWidth:'100%',maxHeight:'46vh'}}/>
+            </div>
+
             <div className="crop-controls">
               <h4>2. Настройте прозрачность фона:</h4>
               <div className="thr-row">
-                <input type="range" min="0" max="100" value={cropThresh} onChange={e=>setCropThresh(Number(e.target.value))}/>
-                <input type="number" min="0" max="100" value={cropThresh} onChange={e=>{ const v=Math.max(0,Math.min(100,Number(e.target.value)||0)); setCropThresh(v) }}/>
+                <input
+                  type="range"
+                  min="0"
+                  max="100"
+                  value={cropThresh}
+                  onChange={e=>setCropThresh(Number(e.target.value))}
+                />
+                <input
+                  type="number"
+                  min="0"
+                  max="100"
+                  value={cropThresh}
+                  onChange={e=>{
+                    const v = Math.max(0, Math.min(100, Number(e.target.value) || 0))
+                    setCropThresh(v)
+                  }}
+                />
                 <span>%</span>
               </div>
-              <button className="btn" onClick={async()=>{
-                try{
-                  const cr=cropperRef.current; if(!cr) return
-                  const c=cr.getCroppedCanvas({ imageSmoothingEnabled:true, imageSmoothingQuality:'high' })
-                  let dataUrl = c.toDataURL('image/png')
-                  const thr = Math.round(255 * (cropThresh / 100))
-                  // удаляем белый фон
-                  const img=await loadImageEl(dataUrl); const w=img.naturalWidth||img.width; const h=img.naturalHeight||img.height
-                  const cc=document.createElement('canvas'), ctx=cc.getContext('2d'); cc.width=w; cc.height=h
-                  ctx.drawImage(img,0,0); const d=ctx.getImageData(0,0,w,h); const a=d.data
-                  for(let i=0;i<a.length;i+=4){ const r=a[i],g=a[i+1],b=a[i+2]; if(r>thr&&g>thr&&b>thr) a[i+3]=0; else { const avg=(r+g+b)/3; if(avg>220) a[i+3]=Math.max(0,a[i+3]-120) } }
-                  ctx.putImageData(d,0,0); dataUrl=cc.toDataURL('image/png')
 
-                  if (hasDoc) {
-                    const page = pages[cur]
-                    const cv = await ensureCanvas(page)
-                    // eslint-disable-next-line no-undef
-                    const image = new fabric.Image(await loadImageEl(dataUrl))
-                    const W = cv.getWidth(), H = cv.getHeight()
-                    const s = Math.min(1, (W * 0.35) / (image.width || 1))
-                    image.set({ left: Math.round(W * 0.15), top: Math.round(H * 0.15), scaleX: s, scaleY: s, selectable: true })
-                    image.__scannyId = uniqueObjId(); ensureDeleteControlFor(image)
-                    cv.add(image); cv.setActiveObject(image); cv.requestRenderAll()
-                    setUndoStack(stk => [...stk, { type: 'add_one', page: cur, id: image.__scannyId }])
-                    markDirty('add_signature_on_canvas')
+              <button
+                className="btn"
+                onClick={async ()=>{
+                  try {
+                    const cr = cropperRef.current; if (!cr) return
+                    const c = cr.getCroppedCanvas({ imageSmoothingEnabled:true, imageSmoothingQuality:'high' })
+                    let dataUrl = c.toDataURL('image/png')
+                    const thr = Math.round(255 * (cropThresh / 100))
+                    dataUrl = await removeWhiteBackground(dataUrl, thr)
+
+                    // 1) Добавляем в библиотеку (если авторизован)
+                    try {
+                      await AuthAPI.addSign({ kind: cropType, data_url: dataUrl })
+                      await loadLibrary()
+                      markDirty('add_to_library')
+                    } catch {}
+
+                    // 2) Добавляем на текущую страницу (если документ есть)
+                    if (pages.length > 0) {
+                      const page = pages[cur]
+                      const cv = await ensureCanvas(page)
+                      // eslint-disable-next-line no-undef
+                      const image = new fabric.Image(await loadImageEl(dataUrl))
+                      const W = cv.getWidth(), H = cv.getHeight()
+                      const s = Math.min(1, (W * 0.35) / (image.width || 1))
+                      image.set({
+                        left: Math.round(W * 0.15),
+                        top: Math.round(H * 0.15),
+                        scaleX: s, scaleY: s,
+                        selectable: true
+                      })
+                      image.__scannyId = uniqueObjId()
+                      ensureDeleteControlFor(image)
+                      cv.add(image)
+                      cv.setActiveObject(image)
+                      cv.requestRenderAll()
+                      setUndoStack(stk => [...stk, { type: 'add_one', page: cur, id: image.__scannyId }])
+                      markDirty('add_signature_on_canvas')
+                    }
+
+                    setCropOpen(false)
+                  } catch (e) {
+                    toast(e.message || 'Не удалось обработать изображение', 'error')
                   }
-                  setCropOpen(false)
-                }catch(e){ toast(e.message || 'Не удалось обработать изображение', 'error') }
-              }}><span className="label">Готово</span></button>
+                }}
+              >
+                <span className="label">Готово</span>
+              </button>
             </div>
           </div>
         </div>
       )}
 
-      <input ref={docFileRef} type="file" accept={ACCEPT_DOC} hidden multiple onChange={onPickDocument}/>
-      <input ref={bgFileRef} type="file" accept={ACCEPT_DOC} hidden onChange={onPickBgFile}/>
-      <input ref={signFileRef} type="file" accept=".png,.jpg,.jpeg" hidden onChange={(e)=>{ const f=e.target.files?.[0]||null; e.target.value=''; if(!f) return; const reader=new FileReader(); reader.onload=()=>{ setCropSrc(String(reader.result||'')); setCropOpen(true); setCropType('signature'); setCropThresh(40) }; reader.readAsDataURL(f) }}/>
+      {/* инпуты выбора файлов */}
+      <input
+        ref={docFileRef}
+        type="file"
+        accept={ACCEPT_DOC}
+        hidden
+        multiple
+        onChange={(e)=>{ onPickDocument(e).finally(()=>{ filePickBusyRef.current=false }) }}
+      />
+      <input
+        ref={bgFileRef}
+        type="file"
+        accept={ACCEPT_DOC}
+        hidden
+        onChange={onPickBgFile}
+      />
+      <input
+        ref={signFileRef}
+        type="file"
+        accept=".png,.jpg,.jpeg"
+        hidden
+        onChange={(e)=>{
+          const f = e.target.files?.[0] || null
+          e.target.value = ''
+          if (!f) return
+          const reader = new FileReader()
+          reader.onload = () => {
+            setCropSrc(String(reader.result || ''))
+            setCropOpen(true)
+            setCropType('signature')
+            setCropThresh(40)
+          }
+          reader.readAsDataURL(f)
+        }}
+      />
     </div>
   )
 }
@@ -1380,7 +1525,7 @@ export default function Editor(){
 // Унифицированный пагинатор (единый для всех экранов)
 function UnifiedPager({ total, current, pgText, setPgText, onGo, onPrev, onNext, canPrev, canNext, hasDoc, onAdd }) {
   const onChange = (e) => {
-    const v = e.target.value.replace(/[^\d]/g,'')
+    const v = e.target.value.replace(/[^\d]/g, '')
     setPgText(v)
   }
   const onBlur = () => {
@@ -1407,7 +1552,7 @@ function UnifiedPager({ total, current, pgText, setPgText, onGo, onPrev, onNext,
               className="pg-input"
               type="number"
               min={1}
-              max={Math.max(1,total)}
+              max={Math.max(1, total)}
               value={pgText}
               onChange={onChange}
               onBlur={onBlur}
@@ -1422,7 +1567,9 @@ function UnifiedPager({ total, current, pgText, setPgText, onGo, onPrev, onNext,
       </div>
 
       <button className="pager-btn" onClick={onNext} title={canNext ? 'Следующая' : 'Добавить документ'}>
-        {canNext ? <img src={icPrev} alt="Next" style={{ transform:'rotate(180deg)' }} /> : <img src={icPlus} alt="+" onClick={onAdd}/>}
+        {canNext
+          ? <img src={icPrev} alt="Next" style={{ transform:'rotate(180deg)' }} />
+          : <img src={icPlus} alt="+" onClick={onAdd} />}
       </button>
     </div>
   )
