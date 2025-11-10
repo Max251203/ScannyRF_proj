@@ -14,7 +14,7 @@
 
   --hdr-h:64px;
   --ed-top-h:52px;
-  --ed-bottom-h:64px; /* историческая переменная */
+  --ed-bottom-h:64px; /* историческая переменная (не удаляем) */
   --ed-bottom-h-desktop:64px;
   --ed-bottom-h-mobile:clamp(52px,7vh,68px);
 }
@@ -53,8 +53,10 @@ body.no-footer .site-footer{display:none!important}
 img{max-width:100%;display:block}
 a{color:inherit;text-decoration:none}
 
+/* ВАЖНО: убираем лишний отступ под шапкой на всех страницах */
 .container{max-width:1200px;margin:0 auto;padding:0 24px}
-.page{padding-top:20px;overflow-x:hidden}
+.page{padding-top:0;overflow-x:hidden}
+
 .section{padding:64px 0}
 .section h2{font-family:"Ermilov",system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;font-size:36px;line-height:1.2;margin:0 0 16px}
 main>.section:first-child{padding-top:28px}
@@ -86,6 +88,18 @@ main{flex:1}
 .burger-btn{display:none;width:40px;height:40px;border-radius:10px;border:1px solid #e5e5e5;background:#fff;align-items:center;justify-content:center;cursor:pointer}
 .burger-btn img{width:22px;height:22px;object-fit:contain}
 .nav-close{display:none}
+
+/* Иконки в кнопках строго по центру */
+.btn img,
+.ed-tool img,
+.ed-action img,
+.ed-dl-row img,
+.pager-btn img,
+.doc-editor .ed-bottom .fab img,
+.doc-editor .ed-bottom .ed-pager img {
+  display:block;
+  margin:0 auto;
+}
 
 /* Hero */
 .hero{background:linear-gradient(180deg,var(--beige) 0%,var(--sage) 100%)}
@@ -321,9 +335,15 @@ main{flex:1}
 .doc-editor .ed-menu-btn img{width:18px;height:18px}
 .doc-editor .ed-docid{font-weight:700;opacity:.85}
 
-/* Лист действий (по умолчанию) — на мобиле переопределяется позиционированием из JS */
+/* Лист действий (по умолчанию) — на мобиле позиция переопределяется селекторами ниже/JS */
 .doc-editor .ed-menu{position:absolute;left:12px;top:110px;background:#fff;border:1px solid #eee;border-radius:12px;box-shadow:0 12px 28px rgba(0,0,0,.12);padding:8px;z-index:70;display:flex;flex-direction:column;min-width:240px}
-.ed-sheet{position:fixed;left:12px;top:110px;background:#fff;border:1px solid #eee;border-radius:12px;box-shadow:0 12px 28px rgba(0,0,0,.12);padding:8px;z-index:110;display:flex;flex-direction:column;min-width:240px;max-width:96vw;max-height:calc(100vh - var(--hdr-h) - 120px);overflow:auto}
+
+/* Общий лист */
+.ed-sheet{
+  position:fixed;left:12px;top:110px;background:#fff;border:1px solid #eee;border-radius:12px;
+  box-shadow:0 12px 28px rgba(0,0,0,.12);padding:8px;z-index:110;display:flex;flex-direction:column;
+  min-width:240px;max-width:96vw;max-height:calc(100vh - var(--hdr-h) - 120px);overflow:auto
+}
 .ed-sheet>button:not(.btn):not(.btn-lite){border:none;background:transparent;cursor:pointer;text-align:left;padding:10px 12px;border-radius:8px;display:flex;align-items:center}
 .ed-sheet>button:not(.btn):not(.btn-lite):hover{background:#f6f6f6}
 /* Кнопки как на десктопе (платные/бесплатные) */
@@ -355,12 +375,13 @@ main{flex:1}
 .doc-editor .ed-namebar{display:flex;align-items:center;justify-content:center;margin:8px auto 8px;max-width:980px}
 .doc-editor .ed-filename{width:min(640px,92%);height:44px;border:1px solid #e5e5e5;border-radius:10px;padding:8px 12px;font-size:16px;background:#fff}
 
-/* ВАЖНО: фиксированная область предпросмотра (центрирование и без вертикального скролла) */
+/* ВАЖНО: область предпросмотра. Центрируем по обеим осям.
+   Высота считает шапку, верхнюю панель и нижнюю панель (десктоп). */
 .doc-editor .ed-canvas-wrap{
   background:#f6f9f8;border:1px solid #f0f0f0;border-radius:12px;
-  height:calc(100vh - var(--hdr-h) - 180px);
-  min-height:420px;display:flex;align-items:flex-start;justify-content:center;
-  padding:20px 12px;overflow:hidden;position:relative
+  height:calc(100vh - var(--hdr-h) - var(--ed-top-h) - var(--ed-bottom-h-desktop) - 24px);
+  min-height:420px;display:flex;align-items:center;justify-content:center;
+  padding:12px;overflow:hidden;position:relative
 }
 .doc-editor .ed-canvas{position:relative;display:none;margin:0 auto}
 .doc-editor .ed-canvas.active{display:block}
@@ -394,7 +415,7 @@ main{flex:1}
 .doc-editor .ed-page-add img{width:18px;height:18px}
 .ed-dim{position:fixed;inset:0;background:rgba(0,0,0,.2);z-index:50}
 
-/* НИЖНЯЯ ПАНЕЛЬ (единая для десктопа и мобилы) + Пагинатор */
+/* === НИЖНЯЯ ПАНЕЛЬ (единая для десктопа и мобилы) + Пагинатор === */
 .doc-editor .ed-bottom{
   display:flex;
   align-items:center;
@@ -419,7 +440,6 @@ main{flex:1}
   justify-content:center;
   box-shadow:0 8px 16px rgba(0,0,0,.12);
 }
-.doc-editor .ed-bottom .fab img{ width:22px;height:22px;object-fit:contain }
 
 .doc-editor .ed-bottom .ed-pager{
   display:flex;
@@ -448,8 +468,9 @@ main{flex:1}
   box-shadow:0 6px 16px rgba(0,0,0,.08);
   cursor:pointer;
 }
-.doc-editor .ed-bottom .ed-pager .pager-btn img{ width:20px;height:20px;object-fit:contain }
-.doc-editor .ed-bottom .ed-pager .pager-btn:disabled{ opacity:.45; filter:saturate(0); cursor:default; box-shadow:none }
+.doc-editor .ed-bottom .ed-pager .pager-btn:disabled{
+  opacity:.45; filter:saturate(0); cursor:default; box-shadow:none;
+}
 
 .doc-editor .ed-bottom .ed-pager .pg-input{
   width:86px;
@@ -467,13 +488,15 @@ main{flex:1}
   opacity:.9;
 }
 
-/* Состояния disabled (совместимость) */
-.disabled,.btn.disabled,.ed-action.disabled,.ed-tool.disabled,.fab.disabled,.ed-menu>button.disabled{opacity:.45;filter:saturate(0);cursor:default;pointer-events:none}
+/* === Состояния disabled (совместимость) === */
+.disabled,.btn.disabled,.ed-action.disabled,.ed-tool.disabled,.fab.disabled,.ed-menu>button.disabled{
+  opacity:.45;filter:saturate(0);cursor:default;pointer-events:none
+}
 .btn.disabled{background:#f7f7f7;color:#aaa;border-color:#eee}
 .ed-action.disabled{background:#fafafa;border-color:#eee;color:#bbb}
 .fab.disabled{background:#f3f3f3;color:#aaa;border-color:#eee}
 
-/* КРОП-МОДАЛКА, ОПЛАТА и прочее */
+/* === КРОП-МОДАЛКА, ОПЛАТА и прочее === */
 .crop-modal{max-width:920px}
 .crop-modal .crop-row{display:flex;align-items:center;gap:8px;margin:6px 0 8px;justify-content:center}
 .crop-modal .crop-row select{height:40px;border:1px solid #e5e5e5;border-radius:8px;padding:0 10px;background:#fff}
@@ -499,18 +522,18 @@ main{flex:1}
 .pay-modal .promo-err{color:#c33;font-size:12px}
 .pay-modal .pay-buttons{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 
-/* Загрузка на канве */
+/* === Индикатор загрузки канвы === */
 .ed-canvas-loading{position:fixed;inset:0;background:rgba(255,255,255,.6);display:flex;align-items:center;justify-content:center;z-index:120;font-weight:800;color:#333;gap:10px}
 .ed-canvas-loading .spinner{width:28px;height:28px;border:3px solid rgba(0,0,0,.2);border-top-color:#000;border-radius:50%;animation:spin .8s linear infinite}
 
-/* Глобальная библиотека дефолтных подписей/печати */
+/* === Глобальная библиотека дефолтных подписей/печати === */
 .defaults-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
 .defaults-grid .thumb{position:relative;width:100%;aspect-ratio:1/1;border:1px solid #eee;border-radius:12px;background:#f6f6f6;display:flex;align-items:center;justify-content:center;overflow:hidden}
 .defaults-grid .thumb .thumb-x{position:absolute;right:4px;top:4px;width:18px;height:18px;border-radius:50%;border:1px solid #e5e5e5;background:#fff;color:#000;line-height:16px;text-align:center;font-weight:800;cursor:pointer}
 @media (max-width:1100px){.defaults-grid{grid-template-columns:repeat(2,1fr)}}
 @media (max-width:600px){.defaults-grid{grid-template-columns:1fr}}
 
-/* Мобильные правки (панели, листы меню, адаптация тулбара) */
+/* === Мобильные правки (панели, листы меню, адаптация тулбара) === */
 @media (max-width:960px){
   .header-inner{gap:10px}
   .nav{position:fixed;top:0;right:0;bottom:0;left:auto;width:min(320px,86vw);background:#fff;border-left:1px solid #eee;flex-direction:column;align-items:flex-start;gap:0;padding:16px;transform:translate3d(100%,0,0);transition:transform .25s ease;z-index:60;pointer-events:none;will-change:transform}
@@ -546,14 +569,16 @@ main{flex:1}
   .doc-editor .ed-body{grid-template-columns:1fr}
   .doc-editor .ed-left,.doc-editor .ed-right{display:none}
 
-  /* Без вертикального скролла и без ухода под нижнюю панель */
+  /* Без вертикального скролла и без ухода под нижнюю панель.
+     Строго центрируем; учитываем safe-area iOS. */
   .doc-editor .ed-canvas-wrap{
-    padding-bottom:96px;
-    height:calc(100vh - var(--hdr-h) - var(--ed-top-h) - var(--ed-bottom-h-mobile) - 16px);
-    min-height:auto;overflow:hidden
+    padding-bottom:calc(12px + env(safe-area-inset-bottom, 0px));
+    height:calc(100vh - var(--hdr-h) - var(--ed-top-h) - var(--ed-bottom-h-mobile) - 16px - env(safe-area-inset-bottom, 0px));
+    min-height:auto;overflow:hidden;
+    align-items:center;justify-content:center;
   }
 
-  /* Единая нижняя панель — фиксируем по низу, учитываем safe-area (iOS) */
+  /* Единая нижняя панель — фиксируем по низу */
   .doc-editor .ed-bottom{
     position:fixed;left:0;right:0;bottom:0;z-index:100;
     height:var(--ed-bottom-h-mobile);
@@ -561,9 +586,17 @@ main{flex:1}
     border-top:1px solid #eee;background:#fff;
   }
 
-  /* Листы меню на мобиле — снизу над панелью */
-  .ed-sheet{left:12px;right:12px;top:auto;bottom:calc(var(--ed-bottom-h-mobile) + 12px)}
-  /* Тулбар текста — более компактный */
+  /* Листы меню на мобиле:
+     нижние (bottom-left/right) — у нижней панели,
+     обычные (по кнопке сверху) — размеры ограничены и позиционируются из JS (top/left) */
+  .ed-sheet{max-height:calc(100vh - var(--hdr-h) - var(--ed-bottom-h-mobile) - 24px);overflow:auto}
+  .ed-sheet.bottom-left,
+  .ed-sheet.bottom-right{
+    left:12px; right:12px; top:auto !important;
+    bottom:calc(var(--ed-bottom-h-mobile) + 12px);
+  }
+
+  /* Тулбар текста — компактнее, чтобы не было переносов */
   .doc-editor .ed-toolbar{flex-wrap:nowrap; gap:4px; padding:4px; max-width:100%}
   .doc-editor .ed-toolbar select,
   .doc-editor .ed-toolbar input[type=color],
