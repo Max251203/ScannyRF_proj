@@ -60,13 +60,13 @@ db.sqlite3
 db.sqlite3-journal
 
 # Environments
-.env
-.venv
-venv/
-ENV/
-env/
-env.bak/
-venv.bak/
+# .env
+# .venv
+# venv/
+# ENV/
+# env/
+# env.bak/
+# venv.bak/
 
 # Node.js
 node_modules/
@@ -74,8 +74,8 @@ npm-debug.log
 yarn-error.log
 pnpm-debug.log
 
-# Frontend build output
-/frontend/dist
+# # Frontend build output
+# /frontend/dist
 
 # IDE files
 .idea/
@@ -85,10 +85,10 @@ pnpm-debug.log
 .DS_Store
 Thumbs.db
 
-# Environment files (САМОЕ ВАЖНОЕ!)
-.env
-backend/.env
-frontend/.env
+# # Environment files (САМОЕ ВАЖНОЕ!)
+# .env
+# backend/.env
+# frontend/.env
 
 # Медиа-файлы, загружаемые пользователями
 /backend/media/
