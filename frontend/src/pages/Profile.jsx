@@ -5,7 +5,7 @@ import { toast } from '../components/Toast.jsx'
 import UserModal from '../components/UserModal.jsx'
 import eyeOpen from '../assets/icons/eye-open.png'
 import eyeClosed from '../assets/icons/eye-closed.png'
-import { ensureCropper } from '../utils/scriptLoader'
+import CropModal from '../components/CropModal.jsx'
 
 function PasswordField({ value, onChange, placeholder, id }) {
   const [show, setShow] = useState(false)
@@ -533,13 +533,13 @@ function PromoModal({ open, onClose, initial=null, onSaved }){
 function DefaultSignsAdmin(){
   const [list, setList] = useState([])
   const [loading, setLoading] = useState(false)
+  const fileRef = useRef(null)
+
+  // Кроп модалка (общая)
   const [cropOpen, setCropOpen] = useState(false)
   const [cropSrc, setCropSrc] = useState('')
-  const [cropType, setCropType] = useState('signature')
-  const [cropThresh, setCropThresh] = useState(40)
-  const cropImgRef = useRef(null)
-  const cropperRef = useRef(null)
-  const fileRef = useRef(null)
+  const [cropKind, setCropKind] = useState('signature')
+  const [cropThresh] = useState(40)
 
   const load = async () => {
     setLoading(true)
@@ -561,49 +561,10 @@ function DefaultSignsAdmin(){
     const reader = new FileReader()
     reader.onload = () => {
       setCropSrc(String(reader.result || ''))
+      setCropKind('signature')
       setCropOpen(true)
-      setCropType('signature')
-      setCropThresh(40)
     }
     reader.readAsDataURL(f)
-  }
-
-  useEffect(()=>{ if(!cropOpen) return; (async()=>{ await ensureCropper(); if(cropperRef.current){ try{ cropperRef.current.destroy() }catch{}; cropperRef.current=null } const img=cropImgRef.current; if(!img) return; /* eslint-disable no-undef */ const inst=new Cropper(img,{viewMode:1,dragMode:'move',guides:true,background:false,autoCrop:true}); /* eslint-enable */ cropperRef.current=inst })(); return ()=>{ if(cropperRef.current){ try{ cropperRef.current.destroy() }catch{}; cropperRef.current=null } } },[cropOpen])
-  useEffect(()=>{ if(!cropOpen||!cropperRef.current||!cropSrc) return; (async()=>{ const thr=Math.round(255*(cropThresh/100)); const url=await removeWhiteBackground(cropSrc,thr); try{ cropperRef.current.replace(url,true) }catch{} })() },[cropThresh,cropOpen,cropSrc])
-
-  async function removeWhiteBackground(src,threshold=245){
-    const img = new Image()
-    img.crossOrigin='anonymous'
-    const url = await new Promise((resolve,reject)=>{
-      img.onload=()=>resolve()
-      img.onerror=reject
-      img.src=src
-    }).then(()=>src)
-    const w=img.naturalWidth||img.width; const h=img.naturalHeight||img.height
-    const c=document.createElement('canvas'), ctx=c.getContext('2d'); c.width=w; c.height=h
-    ctx.drawImage(img,0,0); const data=ctx.getImageData(0,0,w,h); const d=data.data
-    for(let i=0;i<d.length;i+=4){
-      const r=d[i],g=d[i+1],b=d[i+2]
-      if(r>threshold&&g>threshold&&b>threshold) d[i+3]=0
-      else { const avg=(r+g+b)/3; if(avg>220) d[i+3]=Math.max(0,d[i+3]-120) }
-    }
-    ctx.putImageData(data,0,0); return c.toDataURL('image/png')
-  }
-
-  const cropConfirm = async () => {
-    try {
-      const cr=cropperRef.current; if(!cr) return
-      const c=cr.getCroppedCanvas({ imageSmoothingEnabled:true, imageSmoothingQuality:'high' })
-      let dataUrl=c.toDataURL('image/png')
-      const thr=Math.round(255*(cropThresh/100))
-      dataUrl=await removeWhiteBackground(dataUrl,thr)
-      await AuthAPI.adminAddDefault({ kind: cropType, data_url: dataUrl })
-      setCropOpen(false)
-      toast('Добавлено','success')
-      load()
-    } catch (e) {
-      toast(e.message || 'Не удалось добавить', 'error')
-    }
   }
 
   const del = async (it) => {
@@ -644,31 +605,23 @@ function DefaultSignsAdmin(){
         {list.length===0 && !loading && <div style={{gridColumn:'1 / -1',opacity:.7}}>Пока пусто</div>}
       </div>
 
-      {cropOpen && (
-        <div className="modal-overlay" onClick={()=>setCropOpen(false)}>
-          <div className="modal crop-modal" onClick={e=>e.stopPropagation()}>
-            <button className="modal-x" onClick={()=>setCropOpen(false)}>×</button>
-            <h3 className="modal-title">1. Выделите область</h3>
-            <div className="crop-row">
-              <select value={cropType} onChange={e=>setCropType(e.target.value)}>
-                <option value="signature">подпись</option>
-                <option value="sig_seal">подпись + печать</option>
-                <option value="round_seal">круглая печать</option>
-              </select>
-            </div>
-            <div className="crop-area"><img ref={cropImgRef} src={cropSrc} alt="" style={{maxWidth:'100%',maxHeight:'46vh'}}/></div>
-            <div className="crop-controls">
-              <h4>2. Настройте прозрачность фона:</h4>
-              <div className="thr-row">
-                <input type="range" min="0" max="100" value={cropThresh} onChange={e=>setCropThresh(Number(e.target.value))}/>
-                <input type="number" min="0" max="100" value={cropThresh} onChange={e=>{ const v=Math.max(0,Math.min(100,Number(e.target.value)||0)); setCropThresh(v) }}/>
-                <span>%</span>
-              </div>
-              <button className="btn" onClick={cropConfirm}><span className="label">Готово</span></button>
-            </div>
-          </div>
-        </div>
-      )}
+      <CropModal
+        open={cropOpen}
+        src={cropSrc}
+        defaultKind={cropKind}
+        defaultThreshold={cropThresh}
+        onClose={()=>setCropOpen(false)}
+        onConfirm={async (kind, dataUrl) => {
+          try {
+            await AuthAPI.adminAddDefault({ kind, data_url: dataUrl })
+            toast('Добавлено','success')
+            setCropOpen(false)
+            load()
+          } catch (e) {
+            toast(e.message || 'Не удалось добавить', 'error')
+          }
+        }}
+      />
     </div>
   )
 }

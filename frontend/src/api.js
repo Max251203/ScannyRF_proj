@@ -414,6 +414,16 @@ export const AuthAPI = {
     });
   },
 
+  // NEW: лёгкие патчи к черновику
+  patchDraft(ops = []) {
+    if (!hasAccess()) return Promise.reject(new Error('Требуется авторизация'));
+    return requestAuthed('/draft/patch/', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ops }),
+    });
+  },
+
   // Надёжная отправка при закрытии страницы — через fetch с keepalive и заголовком Authorization
   saveDraftOnUnload(data) {
     if (!hasAccess() || !data) return false;

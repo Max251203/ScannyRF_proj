@@ -1,5 +1,6 @@
 import time
 import base64
+import copy
 from datetime import timedelta
 
 import requests
@@ -18,7 +19,7 @@ from .models import (
     GlobalSignImage,
     HiddenDefaultSign,
     Upload,
-    DocumentDraft,  # <-- добавили
+    DocumentDraft,
 )
 
 # ---------- Ключевая ставка ЦБ ----------
@@ -116,11 +117,8 @@ def _billing_status(user):
             "plan": sub.plan,
             "expires_at": sub.expires_at.isoformat()
         } if sub else None),
-        # заменили историю скачиваний на историю загрузок
         "uploads": list(uploads),
-        # TTL (часы) для временного хранилища
         "draft_ttl_hours": _get_ttl_hours(),
-        # публичные цены (можно подсвечивать в UI)
         **_get_prices_dict(),
     }
 
@@ -190,7 +188,6 @@ class BillingConfigView(APIView):
             'price_year': 3999,
         })
 
-        # опциональные поля
         fval = request.data.get('free_daily_quota', None)
         tval = request.data.get('draft_ttl_hours', None)
         p_single = request.data.get('price_single', None)
@@ -215,7 +212,6 @@ class BillingConfigView(APIView):
             except Exception:
                 return Response({'detail': 'draft_ttl_hours должен быть неотрицательным числом'}, status=400)
 
-        # цены — неотрицательные целые
         def _set_price(name, val):
             try:
                 ival = int(val)
@@ -250,9 +246,6 @@ class BillingConfigView(APIView):
 
 
 class PublicBillingConfigView(APIView):
-    """
-    Публичные цены для фронтенда (AllowAny), чтобы динамически показывать стоимость.
-    """
     permission_classes = [permissions.AllowAny]
 
     def get(self, request):
@@ -365,14 +358,11 @@ class UserSignsListCreate(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        # Пользовательские
         qs_user = SignImage.objects.filter(user=request.user).order_by('-created_at')[:200]
         user_items = [_sign_to_dict(i) for i in qs_user]
-        # Глобальные (за исключением скрытых пользователем)
         hidden_ids = HiddenDefaultSign.objects.filter(user=request.user).values_list('sign_id', flat=True)
         qs_global = GlobalSignImage.objects.exclude(id__in=hidden_ids).order_by('-created_at')[:200]
         default_items = [_default_sign_to_dict(i) for i in qs_global]
-        # Объединяем: приоритет пользовательских
         items = [*user_items, *default_items]
         return Response(items)
 
@@ -381,7 +371,6 @@ class UserSignsListCreate(APIView):
         if kind not in ('signature', 'sig_seal', 'round_seal'):
             return Response({'detail': 'kind должен быть signature|sig_seal|round_seal'}, status=400)
 
-        # Файл или data URL
         if 'image' in request.FILES:
             f = request.FILES['image']
             data = f.read()
@@ -458,7 +447,6 @@ class DefaultSignDetail(APIView):
 
     def delete(self, request, pk):
         self.get_obj(pk).delete()
-        # Также удаляем скрытия этого объекта у пользователей
         HiddenDefaultSign.objects.filter(sign_id=pk).delete()
         return Response(status=204)
 
@@ -485,8 +473,7 @@ class HideDefaultSignView(APIView):
             HiddenDefaultSign.objects.filter(user=request.user, sign_id=sign_id).delete()
 
         return Response({'ok': True})
-
-
+    
 # ---------- Платежи (заглушка-редирект) ----------
 class PaymentCreateView(APIView):
     permission_classes = [permissions.IsAuthenticated]
@@ -566,6 +553,114 @@ class UploadDeleteView(APIView):
 
 
 # ---------- Серверное хранилище черновика документа ----------
+
+def _ensure_overlay_ids(page_dict: dict):
+    """
+    Гарантируем наличие id у каждого overlay для корректной адресации патчами.
+    """
+    overlays = page_dict.get('overlays') or []
+    changed = False
+    for idx, o in enumerate(overlays):
+        if 'id' not in o or not o['id']:
+            o['id'] = f"ov_{int(time.time()*1000)}_{idx}"
+            changed = True
+    return changed
+
+
+def _apply_patch_ops(snapshot: dict, ops: list[dict]) -> dict:
+    """
+    Применение лёгких патч-операций к snapshot черновика.
+    Поддерживаемые операции:
+      - {"op":"set_name", "name": str}
+      - {"op":"rotate_page", "page": int, "landscape": bool}
+      - {"op":"overlay_upsert", "page": int, "obj": {..., "id": str}}
+      - {"op":"overlay_remove", "page": int, "id": str}
+      - {"op":"page_set_meta", "page": int, "meta": {...}}  # полная замена метаданных страницы (с сохранением overlays/landscape)
+      - {"op":"page_add", "index": int, "page": {...}}      # опционально
+      - {"op":"page_remove", "index": int}                  # опционально
+    """
+    if not isinstance(snapshot, dict):
+        return snapshot or {}
+
+    pages = snapshot.get('pages') or []
+
+    for op in ops or []:
+        try:
+            kind = (op.get('op') or '').lower()
+
+            if kind == 'set_name':
+                nm = (op.get('name') or '').strip()
+                if nm:
+                    snapshot['name'] = nm
+
+            elif kind == 'rotate_page':
+                i = int(op.get('page'))
+                if 0 <= i < len(pages):
+                    pages[i]['landscape'] = bool(op.get('landscape'))
+
+            elif kind == 'overlay_upsert':
+                i = int(op.get('page'))
+                obj = op.get('obj') or {}
+                if 0 <= i < len(pages) and isinstance(obj, dict):
+                    _ensure_overlay_ids(pages[i])
+                    ov = pages[i].setdefault('overlays', [])
+                    oid = obj.get('id')
+                    if not oid:
+                        oid = f"ov_{int(time.time()*1000)}_{len(ov)}"
+                        obj['id'] = oid
+                    replaced = False
+                    for k, ex in enumerate(ov):
+                        if ex.get('id') == oid:
+                            ov[k] = obj
+                            replaced = True
+                            break
+                    if not replaced:
+                        ov.append(obj)
+
+            elif kind == 'overlay_remove':
+                i = int(op.get('page'))
+                oid = op.get('id')
+                if 0 <= i < len(pages) and oid:
+                    ov = pages[i].get('overlays') or []
+                    pages[i]['overlays'] = [x for x in ov if x.get('id') != oid]
+
+            elif kind == 'page_set_meta':
+                i = int(op.get('page'))
+                meta = op.get('meta') or {}
+                if 0 <= i < len(pages) and isinstance(meta, dict):
+                    overlays = pages[i].get('overlays') or []
+                    landscape = bool(pages[i].get('landscape'))
+                    pages[i] = {
+                        **meta,
+                        'overlays': overlays,
+                        'landscape': landscape,
+                    }
+
+            elif kind == 'page_add':
+                idx = int(op.get('index'))
+                page_obj = op.get('page') or {}
+                if isinstance(page_obj, dict):
+                    page_obj.setdefault('overlays', [])
+                    page_obj.setdefault('landscape', False)
+                    if idx < 0:
+                        idx = 0
+                    if idx > len(pages):
+                        idx = len(pages)
+                    pages.insert(idx, page_obj)
+
+            elif kind == 'page_remove':
+                idx = int(op.get('index'))
+                if 0 <= idx < len(pages):
+                    pages.pop(idx)
+
+        except Exception:
+            # Пропускаем битые операции
+            continue
+
+    snapshot['pages'] = pages
+    return snapshot
+
+
 class DraftGetView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -577,11 +672,15 @@ class DraftGetView(APIView):
         if d.is_expired():
             d.delete()
             return Response({"exists": False})
+        # гарантируем id у overlays
+        snap = copy.deepcopy(d.data or {})
+        for p in (snap.get('pages') or []):
+            _ensure_overlay_ids(p)
         return Response({
             "exists": True,
             "updated_at": d.updated_at.isoformat(),
             "expires_at": d.expires_at.isoformat(),
-            "data": d.data,
+            "data": snap,
         })
 
 
@@ -594,12 +693,53 @@ class DraftSaveView(APIView):
             return Response({'detail': 'Ожидается объект data'}, status=400)
         ttl_h = _get_ttl_hours()
         exp = timezone.now() + timedelta(hours=ttl_h)
+        # нормализуем overlays -> наличие id
+        snap = copy.deepcopy(data)
+        for p in (snap.get('pages') or []):
+            _ensure_overlay_ids(p)
+
         d, _ = DocumentDraft.objects.update_or_create(
             user=request.user,
-            defaults={'data': data, 'expires_at': exp}
+            defaults={'data': snap, 'expires_at': exp}
         )
         return Response({
             "saved": True,
+            "updated_at": d.updated_at.isoformat(),
+            "expires_at": d.expires_at.isoformat(),
+        })
+
+
+class DraftPatchView(APIView):
+    """
+    Применение лёгких патчей к существующему черновику без полной пересылки snapshot.
+    body: { "ops": [ {op, ...}, ... ] }
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        ops = request.data.get('ops')
+        if not isinstance(ops, list):
+            return Response({'detail': 'Ожидается массив ops'}, status=400)
+
+        d = getattr(request.user, 'document_draft', None)
+        if not d:
+            return Response({'detail': 'Черновик не найден'}, status=404)
+
+        # TTL продлеваем
+        ttl_h = _get_ttl_hours()
+        d.expires_at = timezone.now() + timedelta(hours=ttl_h)
+
+        snap = copy.deepcopy(d.data or {})
+        if 'pages' not in snap or not isinstance(snap['pages'], list):
+            snap['pages'] = []
+
+        new_snap = _apply_patch_ops(snap, ops)
+
+        d.data = new_snap
+        d.save(update_fields=['data', 'expires_at', 'updated_at'])
+
+        return Response({
+            "patched": True,
             "updated_at": d.updated_at.isoformat(),
             "expires_at": d.expires_at.isoformat(),
         })
@@ -615,7 +755,7 @@ class DraftClearView(APIView):
         return Response({"ok": True})
 
 
-# backend/core/views.py (в конец файла)
+# ---------- SPA (React) ----------
 from django.views.generic import TemplateView
 
 

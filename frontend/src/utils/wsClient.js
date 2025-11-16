@@ -1,8 +1,7 @@
 // frontend/src/utils/wsClient.js
-
-// Lightweight WebSocket client for Editor events.
-// Подключается лениво при первой отправке, повторные попытки ограничены по времени,
-// не коннектится в неактивной вкладке, умеет восстанавливаться при возврате.
+// Лёгкий WS‑клиент для редактора без авто‑таймеров/авто‑реконнектов.
+// Подключаемся только по явному вызову connect() или при первой отправке.
+// Имеется очередь сообщений (ограниченная), фолбэк: если нет соединения — сообщения копятся.
 
 function apiBaseToWsBase(apiBase) {
   try {
@@ -31,18 +30,7 @@ export class EditorWS {
     this._connecting = false;
     this._closed = false;
 
-    // Ограничим размер очереди сообщений (защита от переполнения)
-    this._maxQueue = 100;
-
-    // Автовосстановление соединения при возврате во вкладку
-    this._onVis = () => {
-      if (document.visibilityState === 'visible') {
-        this._connectIfNeeded();
-      }
-    };
-    try {
-      document.addEventListener('visibilitychange', this._onVis);
-    } catch {}
+    this._maxQueue = 100;   // ограничение очереди
   }
 
   get url() {
@@ -51,13 +39,16 @@ export class EditorWS {
     return `${this.wsBase}/ws/editor/${encodeURIComponent(this.clientId)}/${q}`;
   }
 
+  // Явное подключение: вызываем из кода редактора
+  connect() {
+    this._connectIfNeeded();
+  }
+
   _connectIfNeeded() {
     if (this._closed) return;
-    // не коннектимся в фоновом табе/без токена/клиента/идёт переподключение
     if (this.ready || this.socket || this._connecting) return;
     if (!this.clientId || !this.token) return;
     if (typeof WebSocket === 'undefined') return;
-    if (document.visibilityState === 'hidden') return;
 
     const url = this.url;
     if (!url) return;
@@ -94,23 +85,26 @@ export class EditorWS {
       this.ready = false;
       this._connecting = false;
       this.socket = null;
-      // увеличим «минимальный» бэкофф
+      // лёгкий бэкофф чтобы не долбиться постоянно
       this._nextAllowed = Date.now() + 3000;
     };
     this.socket.onclose = onEnd;
     this.socket.onerror = onEnd;
   }
 
+  _enqueue(msg) {
+    if (this.queue.length >= this._maxQueue) {
+      this.queue.shift();
+    }
+    this.queue.push(msg);
+  }
+
   _send(msg) {
     if (this._closed) return;
     if (!this.clientId || !this.token) return;
     if (!this.ready || !this.socket) {
-      // ограничиваем рост очереди
-      if (this.queue.length >= this._maxQueue) {
-        this.queue.shift();
-      }
-      this.queue.push(msg);
-      this._connectIfNeeded();
+      this._enqueue(msg);
+      // НЕ автоконнектим здесь — оставляем на явный connect() или на уже открытое соединение
       return;
     }
     try {
@@ -119,18 +113,13 @@ export class EditorWS {
       this.ready = false;
       try { this.socket.close(); } catch {}
       this.socket = null;
-      if (this.queue.length >= this._maxQueue) {
-        this.queue.shift();
-      }
-      this.queue.push(msg);
-      this._connectIfNeeded();
+      this._enqueue(msg);
     }
   }
 
   setToken(token) {
     this.token = String(token || '');
     if (!this.token) {
-      // нет токена — больше не пытаемся подключаться
       this.queue = [];
       this.ready = false;
       this._connecting = false;
@@ -148,7 +137,6 @@ export class EditorWS {
   setClientId(clientId) {
     this.clientId = String(clientId || '');
     if (!this.clientId || !this.token) {
-      // нет данных для коннекта — гасим всё
       this.queue = [];
       this.ready = false;
       this._connecting = false;
@@ -163,16 +151,11 @@ export class EditorWS {
     }
   }
 
-  sendEvent(kind, payload = {}) {
-    this._send({ type: 'event', kind, payload });
-  }
+  // API
 
-  sendEvents(events = []) {
-    const safe = Array.isArray(events) ? events.map(e => ({
-      kind: String(e?.kind || 'unknown'),
-      payload: (e && e.payload) || {},
-    })) : [];
-    this._send({ type: 'events', events: safe });
+  sendPatch(ops = []) {
+    const safe = Array.isArray(ops) ? ops.map(op => ({ ...op })) : [];
+    this._send({ type: 'patch', ops: safe });
   }
 
   commit(snapshot) {
@@ -192,9 +175,10 @@ export class EditorWS {
       try { this.socket.close(); } catch {}
       this.socket = null;
     }
-    try {
-      document.removeEventListener('visibilitychange', this._onVis);
-    } catch {}
+  }
+
+  destroy() {
+    this.close();
   }
 }
 

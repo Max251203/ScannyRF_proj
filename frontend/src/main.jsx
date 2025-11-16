@@ -4,20 +4,20 @@ import { HashRouter } from 'react-router-dom'
 import App from './App.jsx'
 import './styles/main.css'
 import { AuthAPI } from './api'
-import { prewarmPdfAndFabric } from './utils/scriptLoader'
 
-// Подогреваем pdf.js (с workerSrc) и fabric ДО монтирования приложения,
-// затем тихо восстанавливаем сессию, и только потом рендерим React.
-;(async () => {
-  try {
-    await prewarmPdfAndFabric()
-  } catch {}
-  try {
-    await AuthAPI.bootstrap()
-  } catch {}
-  ReactDOM.createRoot(document.getElementById('root')).render(
-    <HashRouter>
-      <App />
-    </HashRouter>
-  )
-})()
+// Монтируем приложение сразу (без "прогрева" библиотек)
+ReactDOM.createRoot(document.getElementById('root')).render(
+  <HashRouter>
+    <App />
+  </HashRouter>
+)
+
+// Тихое восстановление сессии в фоне (без блокировки UI)
+try { AuthAPI.bootstrap().catch(()=>{}) } catch {}
+
+// Слушатель межвкладочного обновления токенов (опционально)
+window.addEventListener('storage', (e) => {
+  if (e.key === 'access' || e.key === 'refresh') {
+    // другая вкладка обновила токены — текущая вкладка их прочитает при следующем запросе
+  }
+})

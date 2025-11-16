@@ -8,7 +8,7 @@ from .views import (
     PaymentCreateView,
     DefaultSignsListCreate, DefaultSignDetail, HideDefaultSignView,
     UploadRecordView, UploadDeleteView,
-    DraftGetView, DraftSaveView, DraftClearView,
+    DraftGetView, DraftSaveView, DraftPatchView, DraftClearView,
 )
 
 urlpatterns = [
@@ -35,7 +35,6 @@ urlpatterns = [
     # Глобальные подписи/печати (админ)
     path('library/default-signs/', DefaultSignsListCreate.as_view()),
     path('library/default-signs/<int:pk>/', DefaultSignDetail.as_view()),
-    # Скрыть/показать дефолтную подпись у конкретного пользователя
     path('library/default-signs/hide/', HideDefaultSignView.as_view()),
 
     # Платежи (заглушка)
@@ -48,5 +47,6 @@ urlpatterns = [
     # Серверное хранилище черновика
     path('draft/get/', DraftGetView.as_view()),
     path('draft/save/', DraftSaveView.as_view()),
+    path('draft/patch/', DraftPatchView.as_view()),  # Лёгкие патчи к черновику
     path('draft/clear/', DraftClearView.as_view()),
 ]
