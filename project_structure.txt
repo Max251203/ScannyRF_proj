@@ -11378,6 +11378,7 @@
                 ├── eye-closed.png
                 ├── eye-open.png
                 ├── kebab.png
+                ├── library.png
                 ├── logout.png
                 ├── next.png
                 ├── page-add.png

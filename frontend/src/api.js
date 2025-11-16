@@ -31,15 +31,6 @@ function buildError(text) {
   return new Error('Ошибка запроса');
 }
 
-function isTokenProblem(text) {
-  const data = parseJsonSafe(text);
-  if (!data) return false;
-  if (data.code === 'token_not_valid') return true;
-  if (data.detail && /token/i.test(String(data.detail)) && /expired|not valid/i.test(String(data.detail))) return true;
-  if (Array.isArray(data.messages)) return true;
-  return false;
-}
-
 async function refreshAccessToken() {
   const refresh = getRefresh();
   if (!refresh) return null;
@@ -73,8 +64,9 @@ async function request(path, options = {}, _retried = false) {
   const res = await fetch(url, options);
   const text = await res.text();
 
+  // Любой 401 на авт. запрос — один раз пробуем refresh и повторяем
   const hadAuthHeader = !!(options.headers && (options.headers.Authorization || options.headers.authorization));
-  if (res.status === 401 && !_retried && hadAuthHeader && isTokenProblem(text)) {
+  if (res.status === 401 && !_retried && hadAuthHeader) {
     const newAccess = await refreshAccessToken();
     if (newAccess) {
       const headers = { ...(options.headers || {}), Authorization: `Bearer ${newAccess}` };
