@@ -8,8 +8,8 @@ import {
 } from '../utils/scriptLoader'
 import { EditorWS } from '../utils/wsClient' // WS-клиент
 
-import ProgressOverlay from '../components/ProgressOverlay.jsx'
 import CropModal from '../components/CropModal.jsx'
+import ProgressOverlay from '../components/ProgressOverlay.jsx'
 
 import icMore from '../assets/icons/kebab.png'
 import icText from '../assets/icons/text.png'
@@ -37,7 +37,7 @@ const PAGE_H = 1123
 const ACCEPT_DOC = '.jpg,.jpeg,.png,.pdf,.doc,.docx,.xls,.xlsx'
 const FONTS = ['Arial','Times New Roman','Ermilov','Segoe UI','Roboto','Georgia']
 
-// Качество превью: рендер PDF под фактический размер канвы × dpr, без «потолка»
+// Превью PDF рендерим под фактическую ширину холста × dpr (без «потолка»)
 const PDF_RENDER_SCALE = 3
 const RASTER_RENDER_SCALE = 3
 
@@ -171,17 +171,6 @@ export default function Editor(){
   const [pages, setPages] = useState([])
   const [cur, setCur] = useState(0)
 
-  // Индикатор прогресса
-  const [poOpen, setPoOpen] = useState(false)
-  const [poLabel, setPoLabel] = useState('Загрузка')
-  const [poPct, setPoPct] = useState(0)
-  const [poInd, setPoInd] = useState(true)
-  const showProgress = (label, ind=true) => { setPoLabel(label); setPoInd(ind); setPoPct(0); setPoOpen(true) }
-  const updateProgress = (p) => { setPoPct(Math.max(0, Math.min(100, Math.round(p)))) }
-  const hideProgress = () => { setPoOpen(false); setPoPct(0); }
-
-  const [loading, setLoading] = useState(false)
-
   const hasDoc = pages.length>0
   const canPrev = hasDoc && cur>0
   const canNext = hasDoc && cur<pages.length-1
@@ -203,7 +192,7 @@ export default function Editor(){
 
   const [payOpen, setPayOpen] = useState(false)
 
-  // Единая кроп‑модалка
+  // Кроп‑модалка
   const [cropOpen, setCropOpen] = useState(false)
   const [cropSrc, setCropSrc] = useState('')
   const [cropKind, setCropKind] = useState('signature')
@@ -226,7 +215,7 @@ export default function Editor(){
   const [undoStack, setUndoStack] = useState([])
   const canUndo = undoStack.length>0
 
-  // Локальный верхний баннер
+  // Верхний баннер
   const [banner, setBanner] = useState('')
   const showBanner = (text, timeout=1800) => {
     setBanner(text)
@@ -248,7 +237,7 @@ export default function Editor(){
   const draftExistsRef = useRef(false)
   const isDeletingRef = useRef(false)
 
-  // Флаг для «первичного» рендера после setPages(created)
+  // Для «первичного» рендера после setPages(created)
   const initialRenderPendingRef = useRef(false)
 
   // Дебаунс REST‑патчей как резерв, если WS не доставит
@@ -266,10 +255,18 @@ export default function Editor(){
   function sendPatch(ops){
     if (!isAuthed || !ops || ops.length === 0) return
     try { wsRef.current?.sendPatch(ops) } catch {}
-    // дублируем в REST‑буфер с дебаунсом как страховку
     restPatchBufferRef.current.push(...ops)
     flushRestPatchesSoon()
   }
+
+  // Индикатор прогресса (новый ProgressOverlay)
+  const [poOpen, setPoOpen] = useState(false)
+  const [poLabel, setPoLabel] = useState('Загрузка')
+  const [poPct, setPoPct] = useState(0)
+  const [poInd, setPoInd] = useState(true)
+  const showProgress = (label, ind=true) => { setPoLabel(label); setPoInd(ind); setPoPct(0); setPoOpen(true) }
+  const updateProgress = (p) => { setPoPct(Math.max(0, Math.min(100, Math.round(p)))) }
+  const hideProgress = () => { setPoOpen(false); setPoPct(0) }
 
   // прячем футер
   useEffect(() => {
@@ -578,13 +575,12 @@ export default function Editor(){
     }
   }, [])
 
-  // Восстановление черновика (никаких ошибок/индикатора если пусто/404)
+  // Восстановление черновика (индикатор только если есть что восстанавливать)
   useEffect(()=>{
     (async ()=>{
-      if (hasDoc || isDeletingRef.current) return;
+      if (pagesRef.current.length || isDeletingRef.current) return;
       if (!localStorage.getItem('access')) return;
 
-      // Пробуем получить черновик без поднятия loading/старого спиннера
       const srv = await AuthAPI.getDraft().catch(()=>null)
       if (isDeletingRef.current) return
       if (srv && srv.exists && srv.data) {
@@ -595,7 +591,7 @@ export default function Editor(){
         showBanner('Восстановлен последний документ')
       }
     })()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   },[])
 
   // Контекст и фабрика отрисовки страницы
@@ -837,7 +833,7 @@ export default function Editor(){
     const cv = page.canvas
     const targetW = cv.getWidth()
     const dpr = Math.max(1, window.devicePixelRatio || 1)
-    const scale = Math.max(1, (targetW * dpr) / Math.max(1, vp1.width)) // без cap
+    const scale = Math.max(1, (targetW * dpr) / Math.max(1, vp1.width))
     const off = await renderPDFPageToCanvas(pdf, index, scale)
     const url = off.toDataURL('image/png')
     // eslint-disable-next-line no-undef
@@ -886,7 +882,7 @@ export default function Editor(){
           const vp1 = p.getViewport({ scale: 1 })
           const targetW = cv.getWidth()
           const dpr = Math.max(1, window.devicePixelRatio || 1)
-          const scale = Math.max(1, (targetW * dpr) / Math.max(1, vp1.width)) // без потолка
+          const scale = Math.max(1, (targetW * dpr) / Math.max(1, vp1.width))
           const off = await renderPDFPageToCanvas(pdf, (pg.index||0)+1, scale)
           const url = off.toDataURL('image/png')
           // eslint-disable-next-line no-undef
@@ -957,9 +953,7 @@ export default function Editor(){
           await AuthAPI.saveDraft(snapshot)
           wsRef.current?.commit?.(snapshot)
           draftExistsRef.current = true
-        } catch (e) {
-          // ignore
-        }
+        } catch {}
       }
       return
     }
@@ -1041,7 +1035,7 @@ export default function Editor(){
       const p = await pdf.getPage(i)
       const vp1 = p.getViewport({ scale: 1 })
       // быстрый превью‑растр для экрана
-      const off = await renderPDFPageToCanvas(pdf, i, 2.5)
+      await renderPDFPageToCanvas(pdf, i, 2) // создаём offscreen, но не сохраняем — фон построим при ensurePageRendered
       const id='p_'+Math.random().toString(36).slice(2)
       const elId='cv_'+id
       const page={
@@ -1085,7 +1079,7 @@ export default function Editor(){
   async function onPickBgFile(e){ const files=Array.from(e.target.files||[]); e.target.value=''; if(!files.length) return; await assignFirstFileToCurrent(files[0]) }
 
   async function estimateUnits(files){
-    // Оцениваем "вес" в страницах, чтобы показывать проценты
+    // Оценка "веса" в псевдо‑страницах для процентов
     let total = 0
     for (const f of files){
       const ext=(f.name.split('.').pop()||'').toLowerCase()
@@ -1098,7 +1092,7 @@ export default function Editor(){
           total += pdf.numPages || 1
         } catch { total += 1 }
       } else if (['docx','doc','xls','xlsx'].includes(ext)) {
-        total += 2  // грубая оценка
+        total += 2
       } else {
         total += 1
       }
@@ -1107,7 +1101,6 @@ export default function Editor(){
   }
 
   async function handleFiles(files) {
-    setLoading(true)
     showProgress('Загрузка', false)
     try {
       let curDocId = docIdRef.current
@@ -1201,14 +1194,12 @@ export default function Editor(){
       console.error(err); toast(err.message || 'Ошибка загрузки файлов', 'error')
     } finally {
       hideProgress()
-      setLoading(false)
     }
   }
 
   async function assignFirstFileToCurrent(file){
     const ext=(file.name.split('.').pop()||'').toLowerCase()
     const page=pages[cur]; if(!page) return
-    setLoading(true)
     showProgress('Загрузка', true)
     try{
       if(['jpg','jpeg','png'].includes(ext)){
@@ -1236,7 +1227,7 @@ export default function Editor(){
         draftExistsRef.current = true
       }
     }catch(e){ toast(e.message||'Не удалось назначить страницу','error') }
-    finally{ hideProgress(); setLoading(false) }
+    finally{ hideProgress() }
   }
 
   async function setPageBackgroundFromImage(idx, dataUrl){
@@ -1409,7 +1400,7 @@ export default function Editor(){
       await rerenderPdfBackgroundAtCurrentWidth(page)
     }
 
-    // При альбом -> портрет: поджать только по оси X внутрь холста
+    // При альбом -> портрет: поджать только по оси X внутрь холста (и это новая позиция)
     if (wasLandscape && !page.landscape) {
       const cv = page.canvas
       const objs = (cv.getObjects()||[]).filter(o => o !== page.bgObj)
@@ -1425,7 +1416,7 @@ export default function Editor(){
       }
       cv.requestRenderAll()
     }
-    // При портрет -> альбом: не трогаем объекты
+    // При портрет -> альбом: объекты не трогаем вообще
 
     sendPatch([{ op: 'rotate_page', page: cur, landscape: !!page.landscape }])
   }
@@ -1501,7 +1492,7 @@ export default function Editor(){
           e.preventDefault()
           const id = obj.__scannyId || null
           cv.remove(obj); cv.discardActiveObject(); cv.requestRenderAll()
-          if (id) sendPatch([{ op: 'overlay_remove', page: cur, id }])
+          if (id) sendPatch([{ op: 'overlay_remove', page: cur, id: id }])
           toast('Объект удалён','success')
         }
       }
@@ -1695,95 +1686,101 @@ export default function Editor(){
   }
 
   // ---------- Экспорт с прогрессом ----------
-  async function exportJPG(){
-    try{
-      if(!pagesRef.current || pagesRef.current.length === 0) return
-      const bn = baseName(); if(!bn) return
-      const count = pagesRef.current.length
-      if((billing?.free_left ?? 0) < count){ setPlan('single'); setPayOpen(true); return }
+  // ---------- Экспорт с прогрессом (JPEG) ----------
+// ---------- Экспорт с прогрессом (JPEG) ----------
+async function exportJPG(){
+  try{
+    if(!pagesRef.current || pagesRef.current.length === 0) return
+    const bn = baseName(); if(!bn) return
+    const count = pagesRef.current.length
+    if((billing?.free_left ?? 0) < count){ setPlan('single'); setPayOpen(true); return }
 
-      showProgress('Скачивание', false)
-      setPoPct(0)
+    showProgress('Скачивание', false)
+    setPoPct(0)
 
-      await ensureJSZip()
-      await ensurePDFJS()
-      // eslint-disable-next-line no-undef
-      const zip=new JSZip()
+    await ensureJSZip()
+    await ensurePDFJS()
+    // eslint-disable-next-line no-undef
+    const zip=new JSZip()
 
-      // вспомогательная отрисовка фонового изображения "contain" в (destW x destH)
-      const drawContain = (ctx, img, destW, destH) => {
-        const iw = img.naturalWidth || img.width
-        const ih = img.naturalHeight || img.height
-        const s = Math.min(destW/iw, destH/ih)
-        const dw = Math.round(iw*s)
-        const dh = Math.round(ih*s)
-        const dx = Math.floor((destW - dw)/2)
-        const dy = Math.floor((destH - dh)/2)
-        ctx.drawImage(img, dx, dy, dw, dh)
+    // Масштабирование "cover" (заполнение без пустых полей), по центру
+    const drawCover = (ctx, img, destW, destH) => {
+      const iw = img.naturalWidth || img.width
+      const ih = img.naturalHeight || img.height
+      const s = Math.max(destW/iw, destH/ih)
+      const dw = Math.round(iw*s)
+      const dh = Math.round(ih*s)
+      const dx = Math.floor((destW - dw)/2)
+      const dy = Math.floor((destH - dh)/2)
+      ctx.drawImage(img, dx, dy, dw, dh)
+    }
+
+    for(let i=0;i<pagesRef.current.length;i++){
+      await ensurePageRendered(i)
+      const p=pagesRef.current[i], cv=p.canvas
+
+      // Итоговый размер страницы: горизонтальная — реально горизонтальная
+      let baseCanvas = document.createElement('canvas')
+      let bctx = baseCanvas.getContext('2d', { alpha:false, desynchronized:true, willReadFrequently: true })
+      try { bctx.textBaseline='alphabetic' } catch {}
+      bctx.fillStyle = '#fff'
+
+      if (p.meta?.type === 'pdf' && p.meta.bytes) {
+        // eslint-disable-next-line no-undef
+        const pdf = await pdfjsLib.getDocument({ data: p.meta.bytes.slice() }).promise
+        const off = await renderPDFPageToCanvas(pdf, (p.meta.index||0)+1, 4) // HQ-превью
+        const destW = p.landscape ? off.height : off.width
+        const destH = p.landscape ? off.width  : off.height
+        baseCanvas.width = destW; baseCanvas.height = destH
+        bctx.fillRect(0,0,destW,destH)
+        // Фон кладём cover — без пустых полей
+        drawCover(bctx, off, destW, destH)
+      } else if ((p.meta?.type === 'image' || p.meta?.type === 'raster') && p.meta?.src) {
+        const im = await loadImageEl(p.meta.src)
+        const w = p.meta.w || im.naturalWidth || im.width
+        const h = p.meta.h || im.naturalHeight || im.height
+        const destW = p.landscape ? h : w
+        const destH = p.landscape ? w : h
+        baseCanvas.width = destW; baseCanvas.height = destH
+        bctx.fillRect(0,0,destW,destH)
+        drawCover(bctx, im, destW, destH)
+      } else {
+        // Фолбэк — скрин канвы
+        const w = cv.getWidth(), h = cv.getHeight()
+        const destW = p.landscape ? h : w
+        const destH = p.landscape ? w : h
+        baseCanvas.width = destW; baseCanvas.height = destH
+        bctx.fillRect(0,0,destW,destH)
+        const url = cv.toDataURL({ format:'png', multiplier: 2 })
+        const bim = await loadImageEl(url)
+        drawCover(bctx, bim, destW, destH)
       }
 
-      for(let i=0;i<pagesRef.current.length;i++){
-        await ensurePageRendered(i)
-        const p=pagesRef.current[i], cv=p.canvas
-
-        // База (фон) в натуральном размере страницы
-        let baseCanvas = document.createElement('canvas')
-        let bctx = baseCanvas.getContext('2d', { alpha:false, desynchronized:true, willReadFrequently: true })
-        try { bctx.textBaseline='alphabetic' } catch {}
-        bctx.fillStyle = '#fff'
-
-        if (p.meta?.type === 'pdf' && p.meta.bytes) {
-          // eslint-disable-next-line no-undef
-          const pdf = await pdfjsLib.getDocument({ data: p.meta.bytes.slice() }).promise
-          const off = await renderPDFPageToCanvas(pdf, (p.meta.index||0)+1, 4) // HQ
-          const destW = p.landscape ? off.height : off.width
-          const destH = p.landscape ? off.width : off.height
-          baseCanvas.width = destW; baseCanvas.height = destH
-          bctx.fillRect(0,0,destW,destH)
-          drawContain(bctx, off, destW, destH) // НЕ вращаем контент, поворачиваем только холст (размеры)
-        } else if ((p.meta?.type === 'image' || p.meta?.type === 'raster') && p.meta?.src) {
-          const im = await loadImageEl(p.meta.src)
-          const w = p.meta.w || im.naturalWidth || im.width
-          const h = p.meta.h || im.naturalHeight || im.height
-          const destW = p.landscape ? h : w
-          const destH = p.landscape ? w : h
-          baseCanvas.width = destW; baseCanvas.height = destH
-          bctx.fillRect(0,0,destW,destH)
-          drawContain(bctx, im, destW, destH)
-        } else {
-          // Фолбэк — скрин канвы
-          const w = cv.getWidth(), h = cv.getHeight()
-          const destW = p.landscape ? h : w
-          const destH = p.landscape ? w : h
-          baseCanvas.width = destW; baseCanvas.height = destH
-          bctx.fillRect(0,0,destW,destH)
-          const url = cv.toDataURL({ format:'png', multiplier: 2 })
-          const bim = await loadImageEl(url)
-          drawContain(bctx, bim, destW, destH)
-        }
-
-        // Оверлеи поверх (строго в размер страницы)
-        let ovUrl = await captureOverlaysAsPNG(p, baseCanvas.width, baseCanvas.height)
-        if (ovUrl){
-          const ovImg = await loadImageEl(ovUrl)
-          bctx.drawImage(ovImg, 0, 0, baseCanvas.width, baseCanvas.height)
-        }
-
-        const outBlob = await new Promise(res => baseCanvas.toBlob(b => res(b), 'image/jpeg', 0.95))
-        zip.file(`${bn}-p${i+1}.jpg`, outBlob)
-
-        updateProgress(Math.min(95, Math.round(((i+1)/pagesRef.current.length)*90)))
+      // Снимаем оверлеи в родном размере канвы (без поворота) и так же рисуем cover.
+      // Это критично: ТЕ ЖЕ преобразования, что у фона, => идеальное совпадение.
+      const cvW = cv.getWidth()
+      const cvH = cv.getHeight()
+      let ovUrl = await captureOverlaysAsPNG(p, cvW, cvH)
+      if (ovUrl){
+        const ovImg = await loadImageEl(ovUrl)
+        drawCover(bctx, ovImg, baseCanvas.width, baseCanvas.height)
       }
 
-      const out=await zip.generateAsync({type:'blob', compression: 'DEFLATE'}, (meta) => {
-        updateProgress(90 + Math.min(10, (meta.percent||0)/10))
-      })
-      const a=document.createElement('a'); const href=URL.createObjectURL(out); a.href=href; a.download=`${bn}.zip`; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(href),1500)
-      try{ AuthAPI.recordDownload('jpg', pagesRef.current.length, bn, 'free').catch(()=>{}) }catch{}
-      toast(`Скачано страниц: ${pagesRef.current.length}`,'success')
-    }catch(e){ console.error(e); toast(e.message||'Не удалось выгрузить JPG','error') }
-    finally{ hideProgress() }
-  }
+      const outBlob = await new Promise(res => baseCanvas.toBlob(b => res(b), 'image/jpeg', 0.95))
+      zip.file(`${bn}-p${i+1}.jpg`, outBlob)
+
+      updateProgress(Math.min(95, Math.round(((i+1)/pagesRef.current.length)*90)))
+    }
+
+    const out=await zip.generateAsync({type:'blob', compression: 'DEFLATE'}, (meta) => {
+      updateProgress(90 + Math.min(10, (meta.percent||0)/10))
+    })
+    const a=document.createElement('a'); const href=URL.createObjectURL(out); a.href=href; a.download=`${bn}.zip`; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(href),1500)
+    try{ AuthAPI.recordDownload('jpg', pagesRef.current.length, bn, 'free').catch(()=>{}) }catch{}
+    toast(`Скачано страниц: ${pagesRef.current.length}`,'success')
+  }catch(e){ console.error(e); toast(e.message||'Не удалось выгрузить JPG','error') }
+  finally{ hideProgress() }
+}
 
   async function exportPDF(){
     try{
@@ -1803,7 +1800,6 @@ export default function Editor(){
 
         if (p.meta?.type === 'pdf' && p.meta.bytes) {
           if (!p.landscape) {
-            // Портрет — copyPages (вектор)
             const srcDoc = await PDFLib.PDFDocument.load(p.meta.bytes)
             const [copied] = await out.copyPages(srcDoc, [p.meta.index])
             const pageRef = out.addPage(copied)
@@ -1815,14 +1811,12 @@ export default function Editor(){
               pageRef.drawImage(png, { x:0, y:0, width, height })
             }
           } else {
-            // Ландшафт — поворачиваем страницу (холст), контент портретный "contain"
-            // Встраиваем исходную PDF-страницу как XObject
+            // Ландшафт: рисуем портретный PDF на странице [h,w] как contain без поворота контента
             const embeddedPages = await out.embedPdf(p.meta.bytes, [p.meta.index])
             const embedded = embeddedPages[0]
             const pageRef = out.addPage([embedded.height, embedded.width]) // [h,w]
             const pageW = pageRef.getWidth()
             const pageH = pageRef.getHeight()
-            // contain
             const s = Math.min(pageW/embedded.width, pageH/embedded.height)
             const w = embedded.width * s
             const h = embedded.height * s
@@ -1847,12 +1841,10 @@ export default function Editor(){
           const pageRef = out.addPage([pageW, pageH])
 
           if (p.meta?.src) {
-            // embed original image
             const comma = p.meta.src.indexOf(',')
             const b64 = p.meta.src.slice(comma+1)
             const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0))
             const img = isPNG ? await out.embedPng(bytes) : await out.embedJpg(bytes)
-            // contain в рамку страницы
             const s = Math.min(pageW/img.width, pageH/img.height)
             const w = img.width * s
             const h = img.height * s
@@ -1860,7 +1852,6 @@ export default function Editor(){
             const y = (pageH - h)/2
             pageRef.drawImage(img, { x, y, width: w, height: h })
           } else {
-            // fallback — скрин канвы
             const url = cv.toDataURL({ format:'png', multiplier: 2 })
             const bytes = Uint8Array.from(atob(url.split(',')[1]||''), c => c.charCodeAt(0))
             const img = await out.embedPng(bytes)
@@ -1872,7 +1863,6 @@ export default function Editor(){
             pageRef.drawImage(img, { x, y, width: w, height: h })
           }
 
-          // overlay
           const ovUrl = await captureOverlaysAsPNG(p, pageW, pageH)
           if (ovUrl){
             const overlayBytes = new Uint8Array(await (await fetch(ovUrl)).arrayBuffer())
@@ -1905,6 +1895,7 @@ export default function Editor(){
 
   return (
     <div className="doc-editor page" style={{ paddingTop: 0 }}>
+      {/* Новый прогресс-бар */}
       <ProgressOverlay open={poOpen} label={poLabel} percent={poPct} indeterminate={poInd} />
 
       {banner && <div className="ed-banner">{banner}</div>}
@@ -1965,7 +1956,7 @@ export default function Editor(){
           <div className="ed-canvas-wrap" ref={canvasWrapRef} onDragOver={(e)=>e.preventDefault()} onDrop={onCanvasDrop}>
             {pages.map((p,idx)=>(
               <div key={p.id} className={`ed-canvas ${idx===cur?'active':''}`}>
-                                <button
+                <button
                   className="ed-page-x desktop-only"
                   title="Удалить эту страницу"
                   onClick={() => deletePageAt(idx)}
@@ -1979,11 +1970,6 @@ export default function Editor(){
                 <div className="dz-title">Загрузите документы</div>
                 <div className="dz-sub">Можно перетащить их в это поле</div>
                 <div className="dz-types">JPG, JPEG, PNG, PDF, DOC, DOCX, XLS, XLSX</div>
-              </div>
-            )}
-            {loading && !poOpen && (
-              <div className="ed-canvas-loading">
-                <div className="spinner" aria-hidden="true"></div>Загрузка…
               </div>
             )}
           </div>
@@ -2283,8 +2269,12 @@ function UnifiedPager({ total, current, pgText, setPgText, onGo, onPrev, onNext,
         )}
       </div>
 
-      <button className="pager-btn" onClick={onNext} title={canNext ? 'Следующая' : 'Добавить документ'}>
-        {canNext ? <img src={icPrev} alt="Next" style={{ transform:'rotate(180deg)' }} /> : <img src={icPlus} alt="+" onClick={onAdd}/>}
+            <button className="pager-btn" onClick={onNext} title={canNext ? 'Следующая' : 'Добавить документ'}>
+        {canNext ? (
+          <img src={icPrev} alt="Next" style={{ transform:'rotate(180deg)' }} />
+        ) : (
+          <img src={icPlus} alt="+" onClick={onAdd}/>
+        )}
       </button>
     </div>
   )
