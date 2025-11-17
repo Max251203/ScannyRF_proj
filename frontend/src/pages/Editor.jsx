@@ -180,7 +180,7 @@ export default function Editor(){
   const updateProgress = (p) => { setPoPct(Math.max(0, Math.min(100, Math.round(p)))) }
   const hideProgress = () => { setPoOpen(false); setPoPct(0); }
 
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(false)
 
   const hasDoc = pages.length>0
   const canPrev = hasDoc && cur>0
@@ -581,25 +581,21 @@ export default function Editor(){
   // Восстановление черновика (никаких ошибок/индикатора если пусто/404)
   useEffect(()=>{
     (async ()=>{
-      if (hasDoc || isDeletingRef.current) { setLoading(false); return; }
-      if (!localStorage.getItem('access')) { setLoading(false); return; }
+      if (hasDoc || isDeletingRef.current) return;
+      if (!localStorage.getItem('access')) return;
 
-      try{
-        setLoading(true)
-        const srv = await AuthAPI.getDraft().catch(()=>null)
-        if (isDeletingRef.current) return
-        if (srv && srv.exists && srv.data) {
-          showProgress('Восстановление', true)
-          draftExistsRef.current = true
-          await restoreDocumentFromDraft(srv.data)
-          hideProgress()
-          showBanner('Восстановлен последний документ')
-        }
-      } finally {
-        setLoading(false)
+      // Пробуем получить черновик без поднятия loading/старого спиннера
+      const srv = await AuthAPI.getDraft().catch(()=>null)
+      if (isDeletingRef.current) return
+      if (srv && srv.exists && srv.data) {
+        showProgress('Восстановление', true)
+        draftExistsRef.current = true
+        await restoreDocumentFromDraft(srv.data)
+        hideProgress()
+        showBanner('Восстановлен последний документ')
       }
     })()
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   },[])
 
   // Контекст и фабрика отрисовки страницы
@@ -1985,7 +1981,11 @@ export default function Editor(){
                 <div className="dz-types">JPG, JPEG, PNG, PDF, DOC, DOCX, XLS, XLSX</div>
               </div>
             )}
-            {loading && <div className="ed-canvas-loading"><div className="spinner" aria-hidden="true"></div>Загрузка…</div>}
+            {loading && !poOpen && (
+              <div className="ed-canvas-loading">
+                <div className="spinner" aria-hidden="true"></div>Загрузка…
+              </div>
+            )}
           </div>
         </section>
 

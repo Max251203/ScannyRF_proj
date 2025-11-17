@@ -231,9 +231,17 @@ function PlanSection({
 function HistorySection({ billing, isAdmin, onChanged }){
   const [now, setNow] = useState(Date.now())
   const [ttlHours, setTtlHours] = useState(() => Number(billing?.draft_ttl_hours ?? 24))
+  const [showTop, setShowTop] = useState(false)
 
   useEffect(()=>{ setTtlHours(Number(billing?.draft_ttl_hours ?? 24)) }, [billing?.draft_ttl_hours])
   useEffect(()=>{ const id=setInterval(()=>setNow(Date.now()),1000); return ()=>clearInterval(id) },[])
+
+  useEffect(()=>{
+    const onScroll=()=>setShowTop(window.scrollY>120)
+    window.addEventListener('scroll', onScroll, { passive:true })
+    onScroll()
+    return ()=>window.removeEventListener('scroll', onScroll)
+  },[])
 
   const uploads = Array.isArray(billing?.uploads) ? billing.uploads : []
 
@@ -261,7 +269,7 @@ function HistorySection({ billing, isAdmin, onChanged }){
   return (
     <div className="card">
       {isAdmin && (
-        <div className="two-col" style={{alignItems:'end', marginBottom: 10}}>
+        <div className="two-col stack-sm" style={{alignItems:'end', marginBottom: 10}}>
           <div>
             <label className="subhead with-colon">Автоудаление временных документов через (часы)</label>
             <input className="text-input admin-input" type="number" min="0" value={ttlHours} onChange={e=>setTtlHours(e.target.value)} />
@@ -297,6 +305,10 @@ function HistorySection({ billing, isAdmin, onChanged }){
             </tbody>
           </table>
         </div>
+      )}
+
+      {showTop && (
+        <button className="back-to-top" title="Наверх" onClick={()=>window.scrollTo({top:0,behavior:'smooth'})}>↑</button>
       )}
     </div>
   )
@@ -371,15 +383,17 @@ function InfoSection({user,onUpdated}){
 
   return (
     <div className="card">
-      <div className="form-grid">
-        <div>
+      <div className="form-grid profile-info-grid">
+        <div className="profile-avatar-col">
           <div className="avatar-uploader hint" onClick={()=>fileRef.current?.click()}>
             {previewSrc ? <img alt="" src={previewSrc}/> : <div className="avatar-placeholder"><img src={camIcon} alt="" className="cam-img"/><span>Добавить фото</span></div>}
             <input ref={fileRef} type="file" hidden accept="image/*" onChange={onFileChange}/>
           </div>
-          {(previewSrc || user?.avatar_url) && <button className="link-btn" onClick={removeAvatar}>Удалить фото</button>}
+          {(previewSrc || user?.avatar_url) && <div className="avatar-actions" style={{textAlign:'center', marginTop:-6}}>
+            <button className="link-btn" onClick={removeAvatar}>Удалить фото</button>
+          </div>}
         </div>
-        <div>
+        <div className="profile-fields-col">
           <div className="form-row"><input className="text-input" placeholder="E‑mail" value={email} onChange={e=>setEmail(e.target.value)} /></div>
           <div className="form-row"><input className="text-input" placeholder="Логин (необязательно)" value={username} onChange={e=>setUsername(e.target.value)} /></div>
           <div className="form-row"><button className="btn" onClick={saveProfile}><span className="label">Сохранить</span></button></div>
@@ -394,7 +408,7 @@ function InfoSection({user,onUpdated}){
         </div>
 
         {pwdMode==='known' ? (
-          <div className="two-col">
+          <div className="two-col stack-sm">
             <PasswordField id="old-pass" placeholder="Старый пароль" value={oldPwd} onChange={e=>setOldPwd(e.target.value)} />
             <PasswordField id="new-pass" placeholder="Новый пароль" value={newPwd} onChange={e=>setNewPwd(e.target.value)} />
             <button className="btn" onClick={changePassword}><span className="label">Изменить</span></button>
@@ -402,7 +416,7 @@ function InfoSection({user,onUpdated}){
         ) : (
           <>
             <div className="form-note">Мы отправим код на ваш e‑mail для подтверждения смены пароля.</div>
-            <div className="two-col">
+            <div className="two-col stack-sm">
               <button className="btn btn-lite" onClick={sendCode}><span className="label">Отправить код</span></button>
               <input className="text-input" placeholder="Код из письма" value={code} onChange={e=>setCode(e.target.value)}/>
               <PasswordField id="new-pass2" placeholder="Новый пароль" value={newPwd} onChange={e=>setNewPwd(e.target.value)} />
