@@ -393,13 +393,18 @@ main{flex:1}
 .doc-editor .ed-sign-list{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-top:12px}
 .doc-editor .thumb{position:relative;width:100%;aspect-ratio:1/1;border:1px solid #eee;border-radius:12px;background:#f6f6f6;display:flex;align-items:center;justify-content:center;overflow:hidden;cursor:pointer}
 .doc-editor .thumb.add{font-size:28px;color:#888}
-.doc-editor .thumb .thumb-x{position:absolute;right:4px;top:4px;width:18px;height:18px;border-radius:50%;border:1px solid #e5e5e5;background:#fff;color:#000;line-height:16px;text-align:center;font-weight:800;cursor:pointer}
+/* Центровка крестика удаления в библиотеке */
+.doc-editor .thumb .thumb-x{
+  position:absolute;right:4px;top:4px;width:18px;height:18px;border-radius:50%;
+  border:1px solid #e5e5e5;background:#fff;color:#000;
+  display:flex;align-items:center;justify-content:center;line-height:0;font-weight:800;font-size:14px;cursor:pointer
+}
 
 .doc-editor .ed-center{min-height:520px}
 .doc-editor .ed-namebar{display:flex;align-items:center;justify-content:center;margin:8px auto 8px;max-width:980px}
 .doc-editor .ed-filename{width:min(640px,92%);height:44px;border:1px solid #e5e5e5;border-radius:10px;padding:8px 12px;font-size:16px;background:#fff}
 
-/* Вписывание области предпросмотра. */
+/* Вписывание области предпросмотра + защита от горизонтального переполнения */
 .doc-editor .ed-canvas-wrap{
   width:100%;
   background:#f6f9f8;border:1px solid #f0f0f0;border-radius:12px;
@@ -409,6 +414,12 @@ main{flex:1}
 }
 .doc-editor .ed-canvas{position:relative;display:none;margin:0 auto}
 .doc-editor .ed-canvas.active{display:block}
+/* Глобально: не шире контейнера */
+.doc-editor .ed-canvas,
+.doc-editor .ed-canvas .canvas-container,
+.doc-editor .ed-canvas canvas {
+  max-width:100% !important;
+}
 .doc-editor .ed-canvas canvas.lower-canvas{display:block;background:#fff;border-radius:10px;border:1px solid #eaeaea;box-shadow:0 12px 26px rgba(0,0,0,.12);image-rendering:-webkit-optimize-contrast;image-rendering:crisp-edges}
 .doc-editor .ed-canvas canvas.upper-canvas{display:block;background:transparent!important;border-radius:10px;border:none;box-shadow:none}
 
@@ -556,7 +567,12 @@ main{flex:1}
 /* === Глобальная библиотека дефолтных подписей/печати === */
 .defaults-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
 .defaults-grid .thumb{position:relative;width:100%;aspect-ratio:1/1;border:1px solid #eee;border-radius:12px;background:#f6f6f6;display:flex;align-items:center;justify-content:center;overflow:hidden}
-.defaults-grid .thumb .thumb-x{position:absolute;right:4px;top:4px;width:18px;height:18px;border-radius:50%;border:1px solid #e5e5e5;background:#fff;color:#000;line-height:16px;text-align:center;font-weight:800;cursor:pointer}
+/* Центровка крестика удаления в админке стандартных объектов */
+.defaults-grid .thumb .thumb-x{
+  position:absolute;right:4px;top:4px;width:18px;height:18px;border-radius:50%;
+  border:1px solid #e5e5e5;background:#fff;color:#000;
+  display:flex;align-items:center;justify-content:center;line-height:0;font-weight:800;font-size:14px;cursor:pointer
+}
 @media (max-width:1100px){.defaults-grid{grid-template-columns:repeat(2,1fr)}}
 @media (max-width:600px){.defaults-grid{grid-template-columns:1fr}}
 
@@ -635,4 +651,14 @@ main{flex:1}
   .doc-editor .ed-toolbar button{height:30px;padding:0 6px;font-size:14px}
   .doc-editor .ed-toolbar .val{font-size:14px;min-width:24px}
   .doc-editor .ed-toolbar .sep{margin:0 2px}
+
+  /* История — двухколоночная сетка в один столбец (кнопка не уезжает) */
+  .two-col{
+    grid-template-columns:1fr !important;
+  }
+
+  /* Профиль: личные данные в одну колонку на мобилке */
+  #profile .form-grid{
+    grid-template-columns: 1fr !important;
+  }
 }
