@@ -335,6 +335,7 @@ export default function Editor(){
   useEffect(()=>{ fileNameRef.current = fileName }, [fileName])
 
   const wsRef = useRef(null)
+  const draftExistsRef = useRef(false)
   const isDeletingRef = useRef(false)
 
   // Флаг для «первичного» рендера после setPages(created)
@@ -359,6 +360,71 @@ export default function Editor(){
     restPatchBufferRef.current.push(...ops)
     flushRestPatchesSoon()
   }
+
+  // Единая фиксация изменений страниц (добавление/удаление) на сервере.
+// Если черновика ещё нет — один раз сохраняем полный снапшот и коммитим WS.
+  // Единая фиксация изменений страниц (добавление/удаление) на сервере.
+// Делает гарантированный REST-патч СРАЗУ (без дебаунса) + параллельно шлёт WS.
+// Если черновика ещё нет — сначала создаём его полным снапшотом.
+// Единая фиксация изменений страниц (page_add / page_remove).
+// 1) Если черновика ещё нет — создаём его полным снимком и выходим.
+// 2) Иначе: отправляем WS-патч (best-effort) и ОБЯЗАТЕЛЬНО фиксируем REST-патчем.
+// 3) Сразу после удачного REST-патча делаем saveDraft(текущий snapshot) как финальный консолидационный шаг.
+async function persistPageOps(ops = []) {
+  const list = Array.isArray(ops) ? ops.filter(Boolean) : []
+  if (list.length === 0) return
+
+  // 1) Нет серверного черновика — создаём снапшотом и выходим (патчи тут не нужны)
+  if (!draftExistsRef.current) {
+    const snapshot = await serializeDocument()
+    if (snapshot) {
+      try {
+        await AuthAPI.saveDraft(snapshot)
+        wsRef.current?.commit?.(snapshot)
+        draftExistsRef.current = true
+      } catch (e) {
+        console.debug('[persistPageOps] saveDraft (init) failed:', e)
+      }
+    }
+    return
+  }
+
+  // 2) отправляем WS-патч best-effort (не критично)
+  try { wsRef.current?.sendPatch?.(list) } catch (e) {
+    console.debug('[persistPageOps] ws sendPatch failed:', e)
+  }
+
+  // 2b) ГАРАНТИРОВАННАЯ фиксация REST-патчем
+  try {
+    await AuthAPI.patchDraft(list)
+  } catch (e) {
+    console.debug('[persistPageOps] REST patchDraft failed, fallback to full save:', e)
+    // Фолбэк: полноценный снапшот, чтобы не потерять состояние
+    try {
+      const snapshot = await serializeDocument()
+      if (snapshot) {
+        await AuthAPI.saveDraft(snapshot)
+        wsRef.current?.commit?.(snapshot)
+        draftExistsRef.current = true
+      }
+    } catch (e2) {
+      console.debug('[persistPageOps] fallback saveDraft failed:', e2)
+    }
+    return
+  }
+
+  // 3) Консолидация: сразу сохраняем полный актуальный снапшот,
+  // чтобы при восстановлении состояние было идентично локальному.
+  try {
+    const snapshot = await serializeDocument()
+    if (snapshot) {
+      await AuthAPI.saveDraft(snapshot)
+      wsRef.current?.commit?.(snapshot)
+    }
+  } catch (e) {
+    console.debug('[persistPageOps] saveDraft (consolidate) failed:', e)
+  }
+}
 
   // прячем футер
   useEffect(() => {
@@ -633,7 +699,9 @@ export default function Editor(){
         const srv = await AuthAPI.getDraft()
         if (isDeletingRef.current) return
         if (srv && srv.exists && srv.data) {
-          await restoreDocumentFromDraft(srv.data) // внутри ставится initialRenderPendingRef
+          // помечаем, что серверный черновик существует
+          draftExistsRef.current = true
+          await restoreDocumentFromDraft(srv.data)
           showBanner('Восстановлен последний документ')
         }
       } catch (e) {
@@ -941,43 +1009,106 @@ export default function Editor(){
   }
 
   // ---------- Операции над документом ----------
-  async function createPageFromImage(dataUrl, w, h, mime='image/png', landscape=false){
-    const id='p_'+Math.random().toString(36).slice(2), elId='cv_'+id
-    const page={ id, elId, canvas:null, bgObj:null, landscape:!!landscape, meta:{ type:'image', src:dataUrl, w:w, h:h, mime }, _bgRendered:false, _pendingOverlays:[] }
-    setPages(prev=>{ const arr=[...prev,page]; return arr })
-    await new Promise(r=>requestAnimationFrame(r))
+  async function createPageFromImage(dataUrl, w, h, mime = 'image/png', landscape = false, opsOut = null, index = null) {
+    const id = 'p_' + Math.random().toString(36).slice(2)
+    const elId = 'cv_' + id
+    const page = {
+      id, elId, canvas: null, bgObj: null, landscape: !!landscape,
+      meta: { type: 'image', src: dataUrl, w: w, h: h, mime },
+      _bgRendered: false, _pendingOverlays: []
+    }
+    setPages(prev => {
+      const arr = [...prev, page]
+      return arr
+    })
+    // Патч на добавление (если просили и указан индекс вставки)
+    if (Array.isArray(opsOut) && Number.isInteger(index)) {
+      opsOut.push({
+        op: 'page_add',
+        index,
+        page: {
+          type: 'image',
+          src: dataUrl,
+          w: Math.max(1, Math.round(w || 1)),
+          h: Math.max(1, Math.round(h || 1)),
+          mime: mime || 'image/png',
+          landscape: !!landscape,
+          overlays: []
+        }
+      })
+    }
+    await new Promise(r => requestAnimationFrame(r))
     return page
   }
 
-  async function addRasterPagesFromCanvas(canvas){
+  async function addRasterPagesFromCanvas(canvas, opsOut = null, indexStart = null) {
     const slices = sliceCanvasToPages(canvas)
     let count = 0
     for (const url of slices) {
       const im = await loadImageEl(url)
-      await createPageFromImage(url, im.naturalWidth||im.width, im.naturalHeight||im.height, 'image/png', false)
+      const w = im.naturalWidth || im.width
+      const h = im.naturalHeight || im.height
+      const idx = Number.isInteger(indexStart) ? indexStart + count : null
+      await createPageFromImage(url, w, h, 'image/png', false, opsOut, idx)
       count += 1
     }
     return count
   }
 
-  async function addPagesFromPDFBytes(bytes){
+  async function addPagesFromPDFBytes(bytes, opsOut = null, indexStart = null) {
     await ensurePDFJS()
     // eslint-disable-next-line no-undef
-    const pdf=await pdfjsLib.getDocument({data: bytes.slice()}).promise
+    const pdf = await pdfjsLib.getDocument({ data: bytes.slice() }).promise
     const total = pdf.numPages
+    const bytes_b64 = u8ToB64(bytes)
 
-    for(let i=1;i<=total;i++){
+    let added = 0
+    for (let i = 1; i <= total; i++) {
       const p = await pdf.getPage(i)
       const vp1 = p.getViewport({ scale: 1 })
       const off = await renderPDFPageToCanvas(pdf, i, 2.5)
       const url = off.toDataURL('image/png')
 
-      const id='p_'+Math.random().toString(36).slice(2), elId='cv_'+id
-      const page={ id, elId, canvas:null, bgObj:null, landscape:false, meta:{ type:'pdf', bytes: toUint8Copy(bytes), index:i-1, pdf_w: Math.round(vp1.width), pdf_h: Math.round(vp1.height) }, _bgRendered:false, _pendingOverlays:[] }
-      setPages(prev=>{ const arr=[...prev,page]; return arr })
-      await new Promise(r=>requestAnimationFrame(r))
+      const id = 'p_' + Math.random().toString(36).slice(2)
+      const elId = 'cv_' + id
+      const page = {
+        id, elId, canvas: null, bgObj: null, landscape: false,
+        meta: {
+          type: 'pdf',
+          bytes: toUint8Copy(bytes),
+          index: i - 1,
+          pdf_w: Math.round(vp1.width),
+          pdf_h: Math.round(vp1.height)
+        },
+        _bgRendered: false,
+        _pendingOverlays: []
+      }
+      setPages(prev => {
+        const arr = [...prev, page]
+        return arr
+      })
+
+      // Патч на добавление этой страницы (если просили)
+      if (Array.isArray(opsOut) && Number.isInteger(indexStart)) {
+        opsOut.push({
+          op: 'page_add',
+          index: indexStart + added,
+          page: {
+            type: 'pdf',
+            index: i - 1,
+            bytes_b64,
+            pdf_w: Math.round(vp1.width),
+            pdf_h: Math.round(vp1.height),
+            landscape: false,
+            overlays: []
+          }
+        })
+      }
+
+      added += 1
+      await new Promise(r => requestAnimationFrame(r))
     }
-    return total
+    return added
   }
 
   function baseName(){
@@ -998,61 +1129,92 @@ export default function Editor(){
   async function onPickDocument(e){ const files=Array.from(e.target.files||[]); e.target.value=''; if(!files.length) return; await handleFiles(files); filePickBusyRef.current=false }
   async function onPickBgFile(e){ const files=Array.from(e.target.files||[]); e.target.value=''; if(!files.length) return; await assignFirstFileToCurrent(files[0]) }
 
-  async function handleFiles(files){
+  async function handleFiles(files) {
     setLoading(true)
-    try{
+    try {
       let curDocId = docIdRef.current
       if (!curDocId) { curDocId = randDocId(); setDocId(curDocId) }
       ensureWS()
 
+      const hadDoc = (pagesRef.current?.length || 0) > 0
+      const baseIndex = pagesRef.current?.length || 0
+
       let addedPages = 0
       let initialName = fileNameRef.current
+      const opsAdd = []
 
-      for(const f of files){
-        const ext=(f.name.split('.').pop()||'').toLowerCase()
-        if(!initialName){ const base=f.name.replace(/\.[^.]+$/,''); initialName = sanitizeName(base); setFileName(initialName) }
+      for (const f of files) {
+        const ext = (f.name.split('.').pop() || '').toLowerCase()
+        if (!initialName) {
+          const base = f.name.replace(/\.[^.]+$/, '')
+          initialName = sanitizeName(base); setFileName(initialName)
+        }
 
-        if(['jpg','jpeg','png'].includes(ext)){
-          const url=await readAsDataURL(f); const img = await loadImageEl(url)
-          await createPageFromImage(url, img.naturalWidth||img.width, img.naturalHeight||img.height, f.type || (url.startsWith('data:image/png')?'image/png':'image/jpeg'), false)
+        if (['jpg', 'jpeg', 'png'].includes(ext)) {
+          const url = await readAsDataURL(f)
+          const img = await loadImageEl(url)
+          const idx = baseIndex + addedPages
+          await createPageFromImage(
+            url,
+            img.naturalWidth || img.width,
+            img.naturalHeight || img.height,
+            f.type || (url.startsWith('data:image/png') ? 'image/png' : 'image/jpeg'),
+            false,
+            opsAdd,
+            idx
+          )
           addedPages += 1
-        }else if(ext==='pdf'){
-          const ab = await f.arrayBuffer(); const bytes = toUint8Copy(ab)
-          addedPages += await addPagesFromPDFBytes(bytes)
-        }else if(['docx','doc'].includes(ext)){
-          const canv=await renderDOCXToCanvas(f); addedPages += await addRasterPagesFromCanvas(canv)
-        }else if(['xls','xlsx'].includes(ext)){
-          const canv=await renderXLSXToCanvas(f); addedPages += await addRasterPagesFromCanvas(canv)
-        }else{
-          toast(`Формат не поддерживается: ${ext}`,'error')
+        } else if (ext === 'pdf') {
+          const ab = await f.arrayBuffer()
+          const bytes = toUint8Copy(ab)
+          const n = await addPagesFromPDFBytes(bytes, opsAdd, baseIndex + addedPages)
+          addedPages += n
+        } else if (['docx', 'doc'].includes(ext)) {
+          const canv = await renderDOCXToCanvas(f)
+          const n = await addRasterPagesFromCanvas(canv, opsAdd, baseIndex + addedPages)
+          addedPages += n
+        } else if (['xls', 'xlsx'].includes(ext)) {
+          const canv = await renderXLSXToCanvas(f)
+          const n = await addRasterPagesFromCanvas(canv, opsAdd, baseIndex + addedPages)
+          addedPages += n
+        } else {
+          toast(`Формат не поддерживается: ${ext}`, 'error')
         }
       }
 
-      // Отрисовываем все страницы
-      await new Promise(r=>requestAnimationFrame(r))
-      for (let i=0;i<pagesRef.current.length;i++){
+      // Отрисовка
+      await new Promise(r => requestAnimationFrame(r))
+      for (let i = 0; i < pagesRef.current.length; i++) {
         await ensurePageRendered(i)
       }
 
-      // Сохраняем полный snapshot после импорта
-      if (addedPages>0) {
-        const snapshot = await serializeDocument()
-        if (snapshot) {
-          await AuthAPI.saveDraft(snapshot)
-          wsRef.current?.commit?.(snapshot)
+      // Фиксация на сервере
+      if (addedPages > 0) {
+        if (!hadDoc && !draftExistsRef.current) {
+          const snapshot = await serializeDocument()
+          if (snapshot) {
+            await AuthAPI.saveDraft(snapshot)
+            wsRef.current?.commit?.(snapshot)
+            draftExistsRef.current = true
+          }
+        } else {
+          await persistPageOps(opsAdd)
         }
       }
 
-      try{
-        if (isAuthed && addedPages>0) {
+      try {
+        if (isAuthed && addedPages > 0) {
           const nm = sanitizeName(initialName || fileNameRef.current || genDefaultName())
           await AuthAPI.recordUpload(curDocId, nm, addedPages)
         }
-      }catch{}
+      } catch {}
 
-      toast('Страницы добавлены','success')
-    }catch(err){ console.error(err); toast(err.message||'Ошибка загрузки файлов','error') }
-    finally{ setLoading(false) }
+      toast('Страницы добавлены', 'success')
+    } catch (err) {
+      console.error(err); toast(err.message || 'Ошибка загрузки файлов', 'error')
+    } finally {
+      setLoading(false)
+    }
   }
 
   async function assignFirstFileToCurrent(file){
@@ -1267,6 +1429,30 @@ export default function Editor(){
     }
 
     sendPatch([{ op: 'rotate_page', page: cur, landscape: !!page.landscape }])
+  }
+
+  async function deletePageAt(idx) {
+    if (!pagesRef.current?.length) return
+    // Если последняя страница — предлагаем удалить весь документ
+    if (pagesRef.current.length <= 1) {
+      if (!window.confirm('Удалить весь документ?')) return
+      pagesRef.current.forEach(pp => { try { pp.canvas?.dispose?.() } catch {} })
+      setPages([]); setCur(0); setPanelOpen(false); setFileName(''); setUndoStack([])
+      try { if (docIdRef.current) await AuthAPI.deleteUploadsByClient(docIdRef.current) } catch {}
+      try { await AuthAPI.clearDraft() } catch {}
+      draftExistsRef.current = false
+      setDocId(null)
+      toast('Документ удалён', 'success')
+      return
+    }
+    // Удаление только текущей страницы
+    if (!window.confirm('Удалить текущую страницу?')) return
+    const p = pagesRef.current[idx]; try { p.canvas?.dispose?.() } catch {}
+    const nextPages = pagesRef.current.filter((_, i) => i !== idx)
+    setPages(nextPages)
+    setCur(i => Math.max(0, idx - 1))
+    await persistPageOps([{ op: 'page_remove', index: idx }])
+    toast('Страница удалена', 'success')
   }
 
   // ---------- Экспорт ----------
@@ -1487,6 +1673,10 @@ export default function Editor(){
       setCur(created.length ? 0 : 0)
       setFileName((draft?.name||'').trim() || genDefaultName())
       setDocId(draft?.client_id || randDocId())
+
+      // серверный черновик существует
+      draftExistsRef.current = true
+
       await new Promise(r=>requestAnimationFrame(r))
     }catch(e){
       console.error('restoreDocumentFromDraft error', e)
@@ -1651,367 +1841,333 @@ export default function Editor(){
   }
 
   return (
-    <div className="doc-editor page" style={{ paddingTop: 0 }}>
-      {banner && <div className="ed-banner">{banner}</div>}
+  <div className="doc-editor page" style={{ paddingTop: 0 }}>
+    {banner && <div className="ed-banner">{banner}</div>}
 
-      {!panelOpen ? (
-        <div className="ed-top">
-          <button className="ed-menu-btn mobile-only" aria-label="Меню действий" onClick={onTopMenuClick}>
-            <img src={icMore} alt="" style={{ width: 18, height: 18 }} />
-          </button>
-          <button className="ed-menu-btn mobile-only" aria-label="Библиотека" onClick={()=>setLibOpen(true)} title="Библиотека">
-            <img src={icLibrary} alt="" style={{ width: 18, height: 18 }} />
-          </button>
-          <div className="ed-docid" style={{flex:1, display:'flex', justifyContent:'center'}}>
-            <input className="ed-filename" placeholder="Название файла при скачивании"
-                   value={fileName} onChange={onRenameChange} onBlur={onRenameBlur}
-                   style={{ margin: '0 auto' }}/>
-          </div>
-          <div style={{width:36}} className="desktop-only" />
-        </div>
-      ) : (
-        <div className="ed-top">
-          <div className="ed-toolbar" style={{ margin:'0 auto' }}>
-            <select value={font} onChange={e=>setFont(e.target.value)}>{FONTS.map(f=><option key={f} value={f}>{f}</option>)}</select>
-            <div className="sep"/><button onClick={()=>setFontSize(s=>Math.max(6,s-2))}>−</button><span className="val">{fontSize}</span><button onClick={()=>setFontSize(s=>Math.min(300,s+2))}>+</button>
-            <div className="sep"/><input type="color" value={color} onChange={e=>setColor(e.target.value)} title="Цвет текста"/>
-            <button className={bold?'toggled':''} onClick={()=>setBold(b=>!b)}><b>B</b></button>
-            <button className={italic?'toggled':''} onClick={()=>setItalic(i=>!i)}><i>I</i></button>
-          </div>
-        </div>
-      )}
-
-      <div className="ed-body">
-        <aside className="ed-left">
-          <div className="ed-tools">
-            <button className={`ed-tool ${pagesRef.current?.length?'':'disabled'}`} onClick={addText}><img className="ico" src={icText} alt=""/><span>Добавить текст</span></button>
-            <button className="ed-tool" onClick={()=>signFileRef.current?.click()}><img className="ico" src={icSign} alt=""/><span>Загрузить подпись</span></button>
-          </div>
-          <div className="ed-sign-list">
-            <div className="thumb add" draggable onDragStart={(e)=>{ try{ e.dataTransfer.setData('application/x-sign-url','add') }catch{} }} onClick={()=>signFileRef.current?.click()}><img src={icPlus} alt="+" style={{width:22,height:22,opacity:.6}}/></div>
-            {libLoading && <div style={{gridColumn:'1 / -1',opacity:.7,padding:8}}>Загрузка…</div>}
-            {signLib.map(item=>(
-              <div key={item.id} className="thumb" draggable onDragStart={(e)=>{ try{ e.dataTransfer.setData('application/x-sign-url', item.url) }catch{} }}>
-                <img src={item.url} alt="" onClick={()=>placeFromLib(item.url)} style={{width:'100%',height:'100%',objectFit:'contain',cursor:'pointer'}}/>
-                <button className="thumb-x" onClick={async ()=>{
-                  if(!window.confirm('Удалить элемент из библиотеки?')) return
-                  try{
-                    await (item.is_default && item.gid ? AuthAPI.hideDefaultSign(item.gid) : AuthAPI.deleteSign(item.id))
-                    await loadLibrary()
-                    toast('Удалено','success')
-                  }catch(e){ toast(e.message||'Не удалось удалить','error') }
-                }}>×</button>
-              </div>
-            ))}
-          </div>
-        </aside>
-
-        <section className="ed-center">
-          <div className="ed-canvas-wrap" ref={canvasWrapRef} onDragOver={(e)=>e.preventDefault()} onDrop={onCanvasDrop}>
-            {pages.map((p,idx)=>(
-              <div key={p.id} className={`ed-canvas ${idx===cur?'active':''}`}>
-                <button className="ed-page-x desktop-only" title="Удалить эту страницу" onClick={async ()=>{
-                  if (!pagesRef.current?.length) return
-                  if (pagesRef.current.length<=1){
-                    if (!window.confirm('Удалить весь документ?')) return
-                    pagesRef.current.forEach(pp=>{ try{ pp.canvas?.dispose?.() }catch{} })
-                    setPages([]); setCur(0); setPanelOpen(false); setFileName(''); setUndoStack([])
-                    try { if (docIdRef.current) await AuthAPI.deleteUploadsByClient(docIdRef.current) } catch {}
-                    try { await AuthAPI.clearDraft() } catch {}
-                    setDocId(null)
-                    toast('Документ удалён','success')
-                    return
-                  }
-                  if (!window.confirm('Удалить текущую страницу?')) return
-                  try{ p.canvas?.dispose?.() }catch{}
-                  const nextPages = pagesRef.current.filter((_,i)=>i!==idx)
-                  setPages(nextPages)
-                  setCur(i=>Math.max(0, idx-1))
-                  const snapshot = await serializeDocument()
-                  if (snapshot) { await AuthAPI.saveDraft(snapshot); wsRef.current?.commit?.(snapshot) }
-                  toast('Страница удалена','success')
-                }}>×</button>
-                <canvas id={p.elId}/>
-              </div>
-            ))}
-            {!pagesRef.current?.length && (
-              <div className="ed-dropzone" onClick={pickDocument}>
-                <img src={icDocAdd} alt="" style={{width:140,height:'auto',opacity:.9}}/>
-                <div className="dz-title">Загрузите документы</div>
-                <div className="dz-sub">Можно перетащить их в это поле</div>
-                <div className="dz-types">JPG, JPEG, PNG, PDF, DOC, DOCX, XLS, XLSX</div>
-              </div>
-            )}
-            {loading && <div className="ed-canvas-loading"><div className="spinner" aria-hidden="true"></div>Загрузка…</div>}
-          </div>
-        </section>
-
-        <aside className="ed-right">
-          <div className="ed-actions">
-            <button className={`ed-action ${pagesRef.current?.length?'':'disabled'}`} onClick={async ()=>{
-              if (!pagesRef.current?.length) return
-              if (!window.confirm('Удалить весь документ?')) return
-              pagesRef.current.forEach(p=>{ try{ p.canvas?.dispose?.() }catch{} })
-              setPages([]); setCur(0); setPanelOpen(false); setFileName(''); setUndoStack([])
-              try { if (docIdRef.current) await AuthAPI.deleteUploadsByClient(docIdRef.current) } catch {}
-              try { await AuthAPI.clearDraft() } catch {}
-              setDocId(null)
-              toast('Документ удалён','success')
-            }}><img src={icDelete} alt="" style={{width:18,height:18,marginRight:8}}/>Удалить документ</button>
-            <button className={`ed-action ${canUndo?'':'disabled'}`} onClick={()=>{
-              const stk = [...undoStack]
-              const last = stk.pop()
-              if (!last) return
-              if (last.type === 'add_one') {
-                const p = pagesRef.current[last.page]
-                const cv = p?.canvas
-                if (cv) {
-                  const obj = cv.getObjects().find(o => o.__scannyId === last.id)
-                  if (obj) {
-                    cv.remove(obj)
-                    cv.discardActiveObject()
-                    cv.requestRenderAll()
-                    sendPatch([{ op: 'overlay_remove', page: last.page, id: last.id }])
-                  }
-                }
-              } else if (last.type === 'apply_all') {
-                last.clones.forEach(({ page, id }) => {
-                  const p = pagesRef.current[page]
-                  const cv = p?.canvas
-                  if (cv) {
-                    const obj = cv.getObjects().find(o => o.__scannyId === id)
-                    if (obj) cv.remove(obj)
-                    cv.requestRenderAll()
-                    sendPatch([{ op: 'overlay_remove', page, id }])
-                  }
-                })
-              }
-              setUndoStack(stk)
-            }}><img src={icUndo} alt="" style={{width:18,height:18,marginRight:8}}/>Отменить</button>
-            <button className={`ed-action ${pagesRef.current?.length?'':'disabled'}`} onClick={rotatePage}><img src={icRotate} alt="" style={{width:18,height:18,marginRight:8}}/>Повернуть страницу</button>
-            <button className={`ed-action ${pagesRef.current?.length && !!(pagesRef.current[cur]?.canvas?.getActiveObject()) ? '' : 'disabled'}`} onClick={applyToAllPages}><img src={icAddPage} alt="" style={{width:18,height:18,marginRight:8}}/>На все страницы</button>
-          </div>
-
-          <div className="ed-download">
-            <div className="ed-dl-title">Скачать бесплатно:</div>
-            <div className="ed-dl-row">
-              <button className={`btn btn-lite ${(!pagesRef.current?.length)?'disabled':''}`} onClick={exportJPG}><img src={icJpgFree} alt="" style={{width:18,height:18,marginRight:8}}/>JPG</button>
-              <button className={`btn btn-lite ${(!pagesRef.current?.length)?'disabled':''}`} onClick={exportPDF}><img src={icPdfFree} alt="" style={{width:18,height:18,marginRight:8}}/>PDF</button>
-            </div>
-            <div className="ed-dl-title" style={{marginTop:10}}>Купить:</div>
-            <div className="ed-dl-row ed-dl-row-paid">
-              <button className={`btn ${(!pagesRef.current?.length)?'disabled':''}`} onClick={()=>{ if(pagesRef.current?.length){ setPlan('single'); setPayOpen(true) } }}><img src={icJpgPaid} alt="" style={{width:18,height:18,marginRight:8}}/>JPG</button>
-              <button className={`btn ${(!pagesRef.current?.length)?'disabled':''}`} onClick={()=>{ if(pagesRef.current?.length){ setPlan('single'); setPayOpen(true) } }}><img src={icPdfPaid} alt="" style={{width:18,height:18,marginRight:8}}/>PDF</button>
-            </div>
-          </div>
-        </aside>
-      </div>
-
-      {/* ЕДИНАЯ нижняя панель */}
-      <div className="ed-bottom">
-        <button className="fab fab-add mobile-only" onClick={()=>{ if(pagesRef.current?.length){ setMenuAddOpen(o=>!o) } else { pickDocument() } }} title="Добавить">
-          <img src={icPlus} alt="+" />
+    {!panelOpen ? (
+      <div className="ed-top">
+        <button className="ed-menu-btn mobile-only" aria-label="Меню действий" onClick={onTopMenuClick}>
+          <img src={icMore} alt="" style={{ width: 18, height: 18 }} />
         </button>
-
-        <UnifiedPager
-          total={pages.length}
-          current={cur}
-          pgText={pgText}
-          setPgText={setPgText}
-          onGo={onPagerGo}
-          onPrev={()=>setCur(i=>Math.max(0, i-1))}
-          onNext={()=>{ if(canNext) setCur(i=>Math.min(pages.length-1, i+1)); else pickDocument() }}
-          canPrev={canPrev}
-          canNext={canNext}
-          hasDoc={!!pagesRef.current?.length}
-          onAdd={pickDocument}
-        />
-
-        <button className="fab fab-dl mobile-only" onClick={()=>{ if(!pagesRef.current?.length) return; setMenuDownloadOpen(o=>!o) }} title="Скачать">
-          <img src={icDownload} alt="↓" />
+        <button className="ed-menu-btn mobile-only" aria-label="Библиотека" onClick={()=>setLibOpen(true)} title="Библиотека">
+          <img src={icLibrary} alt="" style={{ width: 18, height: 18 }} />
         </button>
+        <div className="ed-docid" style={{flex:1, display:'flex', justifyContent:'center'}}>
+          <input className="ed-filename" placeholder="Название файла при скачивании"
+                 value={fileName} onChange={onRenameChange} onBlur={onRenameBlur}
+                 style={{ margin: '0 auto' }}/>
+        </div>
+        <div style={{width:36}} className="desktop-only" />
       </div>
+    ) : (
+      <div className="ed-top">
+        <div className="ed-toolbar" style={{ margin:'0 auto' }}>
+          <select value={font} onChange={e=>setFont(e.target.value)}>{FONTS.map(f=><option key={f} value={f}>{f}</option>)}</select>
+          <div className="sep"/><button onClick={()=>setFontSize(s=>Math.max(6,s-2))}>−</button><span className="val">{fontSize}</span><button onClick={()=>setFontSize(s=>Math.min(300,s+2))}>+</button>
+          <div className="sep"/><input type="color" value={color} onChange={e=>setColor(e.target.value)} title="Цвет текста"/>
+          <button className={bold?'toggled':''} onClick={()=>setBold(b=>!b)}><b>B</b></button>
+          <button className={italic?'toggled':''} onClick={()=>setItalic(i=>!i)}><i>I</i></button>
+        </div>
+      </div>
+    )}
 
-      {/* Меню действий — под кнопкой (мобила) */}
-      {menuActionsOpen && (
-        <div
-          className="ed-sheet"
-          ref={sheetActionsRef}
-          style={{ position: 'fixed', top: menuPos.top, left: menuPos.left, maxWidth:'96vw', minWidth:240 }}
-        >
-          <button className={pagesRef.current?.length?'':'disabled'} onClick={()=>{ setMenuActionsOpen(false); rotatePage() }}><img src={icRotate} alt="" style={{width:18,height:18,marginRight:10}}/>Повернуть страницу</button>
-          <button className={(pagesRef.current?.length && pagesRef.current.length>1)?'':'disabled'} onClick={async ()=>{ setMenuActionsOpen(false);
-            if (!pagesRef.current?.length) return
-            if (pagesRef.current.length<=1){
-              if (!window.confirm('Удалить весь документ?')) return
-              pagesRef.current.forEach(p=>{ try{ p.canvas?.dispose?.() }catch{} })
-              setPages([]); setCur(0); setPanelOpen(false); setFileName(''); setUndoStack([])
-              try { if (docIdRef.current) await AuthAPI.deleteUploadsByClient(docIdRef.current) } catch {}
-              try { await AuthAPI.clearDraft() } catch {}
-              setDocId(null)
-              toast('Документ удалён','success')
-              return
-            }
-            if (!window.confirm('Удалить текущую страницу?')) return
-            const p = pagesRef.current[cur]; try{ p.canvas?.dispose?.() }catch{}
-            const nextPages = pagesRef.current.filter((_,i)=>i!==cur)
-            setPages(nextPages)
-            setCur(i=>Math.max(0, cur-1))
-            const snapshot = await serializeDocument()
-            if (snapshot) { await AuthAPI.saveDraft(snapshot); wsRef.current?.commit?.(snapshot) }
-            toast('Страница удалена','success')
-          }}><img src={icDelete} alt="" style={{width:18,height:18,marginRight:10}}/>Удалить страницу</button>
-          <button className={(pagesRef.current?.length && !!(pagesRef.current[cur]?.canvas?.getActiveObject()))?'':'disabled'} onClick={()=>{ setMenuActionsOpen(false); applyToAllPages() }}><img src={icAddPage} alt="" style={{width:18,height:18,marginRight:10}}/>На все страницы</button>
-          <button className={pagesRef.current?.length?'':'disabled'} onClick={async ()=>{ setMenuActionsOpen(false);
+    <div className="ed-body">
+      <aside className="ed-left">
+        <div className="ed-tools">
+          <button className={`ed-tool ${pagesRef.current?.length?'':'disabled'}`} onClick={addText}><img className="ico" src={icText} alt=""/><span>Добавить текст</span></button>
+          <button className="ed-tool" onClick={()=>signFileRef.current?.click()}><img className="ico" src={icSign} alt=""/><span>Загрузить подпись</span></button>
+        </div>
+        <div className="ed-sign-list">
+          <div className="thumb add" draggable onDragStart={(e)=>{ try{ e.dataTransfer.setData('application/x-sign-url','add') }catch{} }} onClick={()=>signFileRef.current?.click()}><img src={icPlus} alt="+" style={{width:22,height:22,opacity:.6}}/></div>
+          {libLoading && <div style={{gridColumn:'1 / -1',opacity:.7,padding:8}}>Загрузка…</div>}
+          {signLib.map(item=>(
+            <div key={item.id} className="thumb" draggable onDragStart={(e)=>{ try{ e.dataTransfer.setData('application/x-sign-url', item.url) }catch{} }}>
+              <img src={item.url} alt="" onClick={()=>placeFromLib(item.url)} style={{width:'100%',height:'100%',objectFit:'contain',cursor:'pointer'}}/>
+              <button className="thumb-x" onClick={async ()=>{
+                if(!window.confirm('Удалить элемент из библиотеки?')) return
+                try{
+                  await (item.is_default && item.gid ? AuthAPI.hideDefaultSign(item.gid) : AuthAPI.deleteSign(item.id))
+                  await loadLibrary()
+                  toast('Удалено','success')
+                }catch(e){ toast(e.message||'Не удалось удалить','error') }
+              }}>×</button>
+            </div>
+          ))}
+        </div>
+      </aside>
+
+      <section className="ed-center">
+        <div className="ed-canvas-wrap" ref={canvasWrapRef} onDragOver={(e)=>e.preventDefault()} onDrop={onCanvasDrop}>
+          {pages.map((p,idx)=>(
+            <div key={p.id} className={`ed-canvas ${idx===cur?'active':''}`}>
+              <button
+                className="ed-page-x desktop-only"
+                title="Удалить эту страницу"
+                onClick={() => deletePageAt(idx)}
+              >×</button>
+              <canvas id={p.elId}/>
+            </div>
+          ))}
+          {!pagesRef.current?.length && (
+            <div className="ed-dropzone" onClick={pickDocument}>
+              <img src={icDocAdd} alt="" style={{width:140,height:'auto',opacity:.9}}/>
+              <div className="dz-title">Загрузите документы</div>
+              <div className="dz-sub">Можно перетащить их в это поле</div>
+              <div className="dz-types">JPG, JPEG, PNG, PDF, DOC, DOCX, XLS, XLSX</div>
+            </div>
+          )}
+          {loading && <div className="ed-canvas-loading"><div className="spinner" aria-hidden="true"></div>Загрузка…</div>}
+        </div>
+      </section>
+
+      <aside className="ed-right">
+        <div className="ed-actions">
+          <button className={`ed-action ${pagesRef.current?.length?'':'disabled'}`} onClick={async ()=>{
             if (!pagesRef.current?.length) return
             if (!window.confirm('Удалить весь документ?')) return
             pagesRef.current.forEach(p=>{ try{ p.canvas?.dispose?.() }catch{} })
             setPages([]); setCur(0); setPanelOpen(false); setFileName(''); setUndoStack([])
             try { if (docIdRef.current) await AuthAPI.deleteUploadsByClient(docIdRef.current) } catch {}
             try { await AuthAPI.clearDraft() } catch {}
+            draftExistsRef.current = false
             setDocId(null)
             toast('Документ удалён','success')
-          }}><img src={icDelete} alt="" style={{width:18,height:18,marginRight:10}}/>Удалить документ</button>
-        </div>
-      )}
-
-      {menuAddOpen && (
-        <div className="ed-sheet bottom-left" ref={sheetAddRef}>
-          <button className={pagesRef.current?.length?'':'disabled'} onClick={()=>{ setMenuAddOpen(false); addText() }}><img src={icText} alt="" style={{width:18,height:18,marginRight:10}}/>Добавить текст</button>
-          <button onClick={()=>{ setMenuAddOpen(false); signFileRef.current?.click() }}><img src={icSign} alt="" style={{width:18,height:18,marginRight:10}}/>Добавить подпись/печать</button>
-          <button onClick={()=>{ setMenuAddOpen(false); pickDocument() }}><img src={icPlus} alt="" style={{width:18,height:18,marginRight:10}}/>Добавить документ/страницу</button>
-        </div>
-      )}
-
-      {menuDownloadOpen && (
-        <div className="ed-sheet bottom-right" ref={sheetDownloadRef} style={{ padding: 6 }}>
-          <button className={`btn ${pagesRef.current?.length?'':'disabled'}`} style={{padding:'10px 14px'}} onClick={()=>{ if(pagesRef.current?.length){ setMenuDownloadOpen(false); setPlan('single'); setPayOpen(true) } }}>
-            <img src={icJpgPaid} alt="" style={{width:18,height:18,marginRight:10}}/>Купить JPG
-          </button>
-          <button className={`btn ${pagesRef.current?.length?'':'disabled'}`} style={{padding:'10px 14px'}} onClick={()=>{ if(pagesRef.current?.length){ setMenuDownloadOpen(false); setPlan('single'); setPayOpen(true) } }}>
-            <img src={icPdfPaid} alt="" style={{width:18,height:18,marginRight:10}}/>Купить PDF
-          </button>
-          <button className={`btn btn-lite ${pagesRef.current?.length?'':'disabled'}`} style={{padding:'10px 14px'}} onClick={()=>{ if(pagesRef.current?.length){ setMenuDownloadOpen(false); exportJPG() } }}>
-            <img src={icJpgFree} alt="" style={{width:18,height:18,marginRight:10}}/>Скачать бесплатно JPG
-          </button>
-          <button className={`btn btn-lite ${pagesRef.current?.length?'':'disabled'}`} style={{padding:'10px 14px'}} onClick={()=>{ if(pagesRef.current?.length){ setMenuDownloadOpen(false); exportPDF() } }}>
-            <img src={icPdfFree} alt="" style={{width:18,height:18,marginRight:10}}/>Скачать бесплатно PDF
-          </button>
-        </div>
-      )}
-
-      {payOpen && (
-        <div className="modal-overlay" onClick={()=>setPayOpen(false)}>
-          <div className="modal pay-modal" onClick={e=>e.stopPropagation()}>
-            <button className="modal-x" onClick={()=>setPayOpen(false)}>×</button>
-            <h3 className="modal-title">Чтобы выгрузить документ придётся немного заплатить</h3>
-            <div className="pay-grid">
-              <button className={`pay-card ${plan==='single'?'active':''}`} onClick={()=>setPlan('single')} type="button"><img className="pay-ill" src={plan1} alt="" /><div className="pay-price">{prices.single} ₽</div><div className="pay-sub">один (этот) документ</div></button>
-              <button className={`pay-card ${plan==='month'?'active':''}`} onClick={()=>setPlan('month')} type="button"><img className="pay-ill" src={plan2} alt="" /><div className="pay-price">{prices.month} ₽</div><div className="pay-sub">безлимит на месяц</div></button>
-              <button className={`pay-card ${plan==='year'?'active':''}`} onClick={()=>setPlan('year')} type="button"><img className="pay-ill" src={plan3} alt="" /><div className="pay-price">{prices.year} ₽</div><div className="pay-sub">безлимит на год</div></button>
-            </div>
-            <div className={`pay-controls ${promoError?'error':''}`}>
-              <div className="promo"><label className="field-label">Промокод</label><div className="promo-row"><input value={promo} onChange={e=>{ setPromo(e.target.value); setPromoError('') }} placeholder="Введите промокод"/>{promo && <button className="promo-clear" onClick={()=>{ setPromo(''); setPromoError(''); setPromoPercent(0) }}>×</button>}</div>{promoError && <div className="promo-err">{promoError}</div>}</div>
-              <div className="pay-buttons"><button className="btn btn-lite" onClick={applyPromo}><span className="label">Активировать</span></button><button className="btn" onClick={startPurchase}><span className="label">Оплатить {Math.max(0, (prices[plan]||0) * (100 - promoPercent) / 100)} ₽</span></button></div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Мобильная библиотека */}
-      {libOpen && (
-        <div className="modal-overlay" onClick={()=>setLibOpen(false)}>
-          <div className="modal" onClick={e=>e.stopPropagation()} style={{ width:'min(420px,92vw)', height:'min(70vh,560px)', display:'flex', flexDirection:'column' }}>
-            <button className="modal-x" onClick={()=>setLibOpen(false)}>×</button>
-            <h3 className="modal-title">Библиотека</h3>
-            <div style={{ flex:'1 1 auto', overflowY:'auto', padding:'8px' }}>
-              <div className="defaults-grid" style={{ gridTemplateColumns:'1fr' }}>
-                {libLoading && <div style={{gridColumn:'1 / -1',opacity:.7,padding:8}}>Загрузка…</div>}
-                {signLib.map(item=>(
-                  <div key={item.id} className="thumb">
-                    <img src={item.url} alt="" style={{width:'100%',height:'100%',objectFit:'contain',cursor:'pointer'}} onClick={()=>{ placeFromLib(item.url); setLibOpen(false) }}/>
-                    <button className="thumb-x" onClick={async ()=>{
-                      if(!window.confirm('Удалить элемент из библиотеки?')) return
-                      try{
-                        await (item.is_default && item.gid ? AuthAPI.hideDefaultSign(item.gid) : AuthAPI.deleteSign(item.id))
-                        await loadLibrary()
-                        toast('Удалено','success')
-                      }catch(e){ toast(e.message||'Не удалось удалить','error') }
-                    }}>×</button>
-                  </div>
-                ))}
-                {(!libLoading && signLib.length===0) && <div style={{gridColumn:'1 / -1',opacity:.7,padding:8}}>Пока пусто</div>}
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* инпуты выбора файлов */}
-      <input ref={docFileRef} type="file" accept={ACCEPT_DOC} hidden multiple onChange={onPickDocument}/>
-      <input ref={bgFileRef} type="file" accept={ACCEPT_DOC} hidden onChange={onPickBgFile}/>
-      <input ref={signFileRef} type="file" accept=".png,.jpg,.jpeg" hidden onChange={(e)=>{
-        const f=e.target.files?.[0]||null
-        e.target.value=''
-        if(!f) return
-        const reader=new FileReader()
-        reader.onload=()=>{ setCropSrc(String(reader.result||'')); setCropKind('signature'); setCropThresh(40); setCropOpen(true) }
-        reader.readAsDataURL(f)
-      }}/>
-
-      {/* Единая кроп-модалка */}
-      <CropModal
-        open={cropOpen}
-        src={cropSrc}
-        defaultKind={cropKind}
-        defaultThreshold={cropThresh}
-        onClose={()=>setCropOpen(false)}
-        onConfirm={async (kind, dataUrl) => {
-          try {
-            // 1) В библиотеку
-            try { await AuthAPI.addSign({ kind, data_url: dataUrl }); await loadLibrary() } catch {}
-            // 2) На страницу
-            if (pagesRef.current?.length > 0) {
-              // eslint-disable-next-line no-undef
-              const F = fabric
-              const page = pagesRef.current[cur]
-              const cv = await ensureCanvas(page, cur, sendPatch)
-              const image = new F.Image(await loadImageEl(dataUrl))
-              const W = cv.getWidth(), H = cv.getHeight()
-              const s = Math.min(1, (W * 0.35) / (image.width || 1))
-              image.set({ left: Math.round(W * 0.15), top: Math.round(H * 0.15), scaleX: s, scaleY: s, selectable: true })
-              ensureDeleteControlFor(image)
-              image.__scannyId = 'ov_'+Math.random().toString(36).slice(2)
-              cv.add(image); cv.setActiveObject(image); cv.requestRenderAll()
-              const rect = page._layoutRect || { l:0, t:0, w:cv.getWidth(), h:cv.getHeight() }
-              clampObjectToRect(image, rect)
-              ensureDeleteControlInside(image, rect)
-              sendPatch([{
-                op: 'overlay_upsert',
-                page: cur,
-                obj: {
-                  t: 'im',
-                  id: image.__scannyId,
-                  left: image.left || 0,
-                  top: image.top || 0,
-                  angle: image.angle || 0,
-                  flipX: !!image.flipX,
-                  flipY: !!image.flipY,
-                  scaleX: image.scaleX || 1,
-                  scaleY: image.scaleY || 1,
-                  src: dataUrl,
+          }}><img src={icDelete} alt="" style={{width:18,height:18,marginRight:8}}/>Удалить документ</button>
+          <button className={`ed-action ${canUndo?'':'disabled'}`} onClick={()=>{
+            const stk = [...undoStack]
+            const last = stk.pop()
+            if (!last) return
+            if (last.type === 'add_one') {
+              const p = pagesRef.current[last.page]
+              const cv = p?.canvas
+              if (cv) {
+                const obj = cv.getObjects().find(o => o.__scannyId === last.id)
+                if (obj) {
+                  cv.remove(obj)
+                  cv.discardActiveObject()
+                  cv.requestRenderAll()
+                  sendPatch([{ op: 'overlay_remove', page: last.page, id: last.id }])
                 }
-              }])
+              }
+            } else if (last.type === 'apply_all') {
+              last.clones.forEach(({ page, id }) => {
+                const p = pagesRef.current[page]
+                const cv = p?.canvas
+                if (cv) {
+                  const obj = cv.getObjects().find(o => o.__scannyId === id)
+                  if (obj) cv.remove(obj)
+                  cv.requestRenderAll()
+                  sendPatch([{ op: 'overlay_remove', page, id }])
+                }
+              })
             }
-          } catch (e) {
-            toast(e.message || 'Не удалось обработать изображение', 'error')
-          } finally {
-            setCropOpen(false)
-          }
-        }}
-      />
+            setUndoStack(stk)
+          }}><img src={icUndo} alt="" style={{width:18,height:18,marginRight:8}}/>Отменить</button>
+          <button className={`ed-action ${pagesRef.current?.length?'':'disabled'}`} onClick={rotatePage}><img src={icRotate} alt="" style={{width:18,height:18,marginRight:8}}/>Повернуть страницу</button>
+          <button className={`ed-action ${pagesRef.current?.length && !!(pagesRef.current[cur]?.canvas?.getActiveObject()) ? '' : 'disabled'}`} onClick={applyToAllPages}><img src={icAddPage} alt="" style={{width:18,height:18,marginRight:8}}/>На все страницы</button>
+        </div>
+
+        <div className="ed-download">
+          <div className="ed-dl-title">Скачать бесплатно:</div>
+          <div className="ed-dl-row">
+            <button className={`btn btn-lite ${(!pagesRef.current?.length)?'disabled':''}`} onClick={exportJPG}><img src={icJpgFree} alt="" style={{width:18,height:18,marginRight:8}}/>JPG</button>
+            <button className={`btn btn-lite ${(!pagesRef.current?.length)?'disabled':''}`} onClick={exportPDF}><img src={icPdfFree} alt="" style={{width:18,height:18,marginRight:8}}/>PDF</button>
+          </div>
+          <div className="ed-dl-title" style={{marginTop:10}}>Купить:</div>
+          <div className="ed-dl-row ed-dl-row-paid">
+            <button className={`btn ${(!pagesRef.current?.length)?'disabled':''}`} onClick={()=>{ if(pagesRef.current?.length){ setPlan('single'); setPayOpen(true) } }}><img src={icJpgPaid} alt="" style={{width:18,height:18,marginRight:8}}/>JPG</button>
+            <button className={`btn ${(!pagesRef.current?.length)?'disabled':''}`} onClick={()=>{ if(pagesRef.current?.length){ setPlan('single'); setPayOpen(true) } }}><img src={icPdfPaid} alt="" style={{width:18,height:18,marginRight:8}}/>PDF</button>
+          </div>
+        </div>
+      </aside>
     </div>
-  )
+
+    {/* ЕДИНАЯ нижняя панель */}
+    <div className="ed-bottom">
+      <button className="fab fab-add mobile-only" onClick={()=>{ if(pagesRef.current?.length){ setMenuAddOpen(o=>!o) } else { pickDocument() } }} title="Добавить">
+        <img src={icPlus} alt="+" />
+      </button>
+
+      <UnifiedPager
+        total={pages.length}
+        current={cur}
+        pgText={pgText}
+        setPgText={setPgText}
+        onGo={onPagerGo}
+        onPrev={()=>setCur(i=>Math.max(0, i-1))}
+        onNext={()=>{ if(canNext) setCur(i=>Math.min(pages.length-1, i+1)); else pickDocument() }}
+        canPrev={canPrev}
+        canNext={canNext}
+        hasDoc={!!pagesRef.current?.length}
+        onAdd={pickDocument}
+      />
+
+      <button className="fab fab-dl mobile-only" onClick={()=>{ if(!pagesRef.current?.length) return; setMenuDownloadOpen(o=>!o) }} title="Скачать">
+        <img src={icDownload} alt="↓" />
+      </button>
+    </div>
+
+    {/* Меню действий — под кнопкой (мобила) */}
+    {menuActionsOpen && (
+      <div
+        className="ed-sheet"
+        ref={sheetActionsRef}
+        style={{ position: 'fixed', top: menuPos.top, left: menuPos.left, maxWidth:'96vw', minWidth:240 }}
+      >
+        <button className={pagesRef.current?.length?'':'disabled'} onClick={()=>{ setMenuActionsOpen(false); rotatePage() }}><img src={icRotate} alt="" style={{width:18,height:18,marginRight:10}}/>Повернуть страницу</button>
+        <button className={(pagesRef.current?.length && pagesRef.current.length>1)?'':''} onClick={async ()=>{ setMenuActionsOpen(false); await deletePageAt(cur) }}><img src={icDelete} alt="" style={{width:18,height:18,marginRight:10}}/>Удалить страницу</button>
+        <button className={(pagesRef.current?.length && !!(pagesRef.current[cur]?.canvas?.getActiveObject()))?'':'disabled'} onClick={()=>{ setMenuActionsOpen(false); applyToAllPages() }}><img src={icAddPage} alt="" style={{width:18,height:18,marginRight:10}}/>На все страницы</button>
+        <button className={pagesRef.current?.length?'':'disabled'} onClick={async ()=>{ setMenuActionsOpen(false);
+          if (!pagesRef.current?.length) return
+          if (!window.confirm('Удалить весь документ?')) return
+          pagesRef.current.forEach(p=>{ try{ p.canvas?.dispose?.() }catch{} })
+          setPages([]); setCur(0); setPanelOpen(false); setFileName(''); setUndoStack([])
+          try { if (docIdRef.current) await AuthAPI.deleteUploadsByClient(docIdRef.current) } catch {}
+          try { await AuthAPI.clearDraft() } catch {}
+          draftExistsRef.current = false
+          setDocId(null)
+          toast('Документ удалён','success')
+        }}><img src={icDelete} alt="" style={{width:18,height:18,marginRight:10}}/>Удалить документ</button>
+      </div>
+    )}
+
+    {menuAddOpen && (
+      <div className="ed-sheet bottom-left" ref={sheetAddRef}>
+        <button className={pagesRef.current?.length?'':'disabled'} onClick={()=>{ setMenuAddOpen(false); addText() }}><img src={icText} alt="" style={{width:18,height:18,marginRight:10}}/>Добавить текст</button>
+        <button onClick={()=>{ setMenuAddOpen(false); signFileRef.current?.click() }}><img src={icSign} alt="" style={{width:18,height:18,marginRight:10}}/>Добавить подпись/печать</button>
+        <button onClick={()=>{ setMenuAddOpen(false); pickDocument() }}><img src={icPlus} alt="" style={{width:18,height:18,marginRight:10}}/>Добавить документ/страницу</button>
+      </div>
+    )}
+
+    {menuDownloadOpen && (
+      <div className="ed-sheet bottom-right" ref={sheetDownloadRef} style={{ padding: 6 }}>
+        <button className={`btn ${pagesRef.current?.length?'':'disabled'}`} style={{padding:'10px 14px'}} onClick={()=>{ if(pagesRef.current?.length){ setMenuDownloadOpen(false); setPlan('single'); setPayOpen(true) } }}>
+          <img src={icJpgPaid} alt="" style={{width:18,height:18,marginRight:10}}/>Купить JPG
+        </button>
+        <button className={`btn ${pagesRef.current?.length?'':'disabled'}`} style={{padding:'10px 14px'}} onClick={()=>{ if(pagesRef.current?.length){ setMenuDownloadOpen(false); setPlan('single'); setPayOpen(true) } }}>
+          <img src={icPdfPaid} alt="" style={{width:18,height:18,marginRight:10}}/>Купить PDF
+        </button>
+        <button className={`btn btn-lite ${pagesRef.current?.length?'':'disabled'}`} style={{padding:'10px 14px'}} onClick={()=>{ if(pagesRef.current?.length){ setMenuDownloadOpen(false); exportJPG() } }}>
+          <img src={icJpgFree} alt="" style={{width:18,height:18,marginRight:10}}/>Скачать бесплатно JPG
+        </button>
+        <button className={`btn btn-lite ${pagesRef.current?.length?'':'disabled'}`} style={{padding:'10px 14px'}} onClick={()=>{ if(pagesRef.current?.length){ setMenuDownloadOpen(false); exportPDF() } }}>
+          <img src={icPdfFree} alt="" style={{width:18,height:18,marginRight:10}}/>Скачать бесплатно PDF
+        </button>
+      </div>
+    )}
+
+    {payOpen && (
+      <div className="modal-overlay" onClick={()=>setPayOpen(false)}>
+        <div className="modal pay-modal" onClick={e=>e.stopPropagation()}>
+          <button className="modal-x" onClick={()=>setPayOpen(false)}>×</button>
+          <h3 className="modal-title">Чтобы выгрузить документ придётся немного заплатить</h3>
+          <div className="pay-grid">
+            <button className={`pay-card ${plan==='single'?'active':''}`} onClick={()=>setPlan('single')} type="button"><img className="pay-ill" src={plan1} alt="" /><div className="pay-price">{prices.single} ₽</div><div className="pay-sub">один (этот) документ</div></button>
+            <button className={`pay-card ${plan==='month'?'active':''}`} onClick={()=>setPlan('month')} type="button"><img className="pay-ill" src={plan2} alt="" /><div className="pay-price">{prices.month} ₽</div><div className="pay-sub">безлимит на месяц</div></button>
+            <button className={`pay-card ${plan==='year'?'active':''}`} onClick={()=>setPlan('year')} type="button"><img className="pay-ill" src={plan3} alt="" /><div className="pay-price">{prices.year} ₽</div><div className="pay-sub">безлимит на год</div></button>
+          </div>
+          <div className={`pay-controls ${promoError?'error':''}`}>
+            <div className="promo"><label className="field-label">Промокод</label><div className="promo-row"><input value={promo} onChange={e=>{ setPromo(e.target.value); setPromoError('') }} placeholder="Введите промокод"/>{promo && <button className="promo-clear" onClick={()=>{ setPromo(''); setPromoError(''); setPromoPercent(0) }}>×</button>}</div>{promoError && <div className="promo-err">{promoError}</div>}</div>
+            <div className="pay-buttons"><button className="btn btn-lite" onClick={applyPromo}><span className="label">Активировать</span></button><button className="btn" onClick={startPurchase}><span className="label">Оплатить {Math.max(0, (prices[plan]||0) * (100 - promoPercent) / 100)} ₽</span></button></div>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {/* Мобильная библиотека */}
+    {libOpen && (
+      <div className="modal-overlay" onClick={()=>setLibOpen(false)}>
+        <div className="modal" onClick={e=>e.stopPropagation()} style={{ width:'min(420px,92vw)', height:'min(70vh,560px)', display:'flex', flexDirection:'column' }}>
+          <button className="modal-x" onClick={()=>setLibOpen(false)}>×</button>
+          <h3 className="modal-title">Библиотека</h3>
+          <div style={{ flex:'1 1 auto', overflowY:'auto', padding:'8px' }}>
+            <div className="defaults-grid" style={{ gridTemplateColumns:'1fr' }}>
+              {libLoading && <div style={{gridColumn:'1 / -1',opacity:.7,padding:8}}>Загрузка…</div>}
+              {signLib.map(item=>(
+                <div key={item.id} className="thumb">
+                  <img src={item.url} alt="" style={{width:'100%',height:'100%',objectFit:'contain',cursor:'pointer'}} onClick={()=>{ placeFromLib(item.url); setLibOpen(false) }}/>
+                  <button className="thumb-x" onClick={async ()=>{
+                    if(!window.confirm('Удалить элемент из библиотеки?')) return
+                    try{
+                      await (item.is_default && item.gid ? AuthAPI.hideDefaultSign(item.gid) : AuthAPI.deleteSign(item.id))
+                      await loadLibrary()
+                      toast('Удалено','success')
+                    }catch(e){ toast(e.message||'Не удалось удалить','error') }
+                  }}>×</button>
+                </div>
+              ))}
+              {(!libLoading && signLib.length===0) && <div style={{gridColumn:'1 / -1',opacity:.7,padding:8}}>Пока пусто</div>}
+            </div>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {/* инпуты выбора файлов */}
+    <input ref={docFileRef} type="file" accept={ACCEPT_DOC} hidden multiple onChange={onPickDocument}/>
+    <input ref={bgFileRef} type="file" accept={ACCEPT_DOC} hidden onChange={onPickBgFile}/>
+    <input ref={signFileRef} type="file" accept=".png,.jpg,.jpeg" hidden onChange={(e)=>{
+      const f=e.target.files?.[0]||null
+      e.target.value=''
+      if(!f) return
+      const reader=new FileReader()
+      reader.onload=()=>{ setCropSrc(String(reader.result||'')); setCropKind('signature'); setCropThresh(40); setCropOpen(true) }
+      reader.readAsDataURL(f)
+    }}/>
+
+    {/* Единая кроп-модалка */}
+    <CropModal
+      open={cropOpen}
+      src={cropSrc}
+      defaultKind={cropKind}
+      defaultThreshold={cropThresh}
+      onClose={()=>setCropOpen(false)}
+      onConfirm={async (kind, dataUrl) => {
+        try {
+          // 1) В библиотеку
+          try { await AuthAPI.addSign({ kind, data_url: dataUrl }); await loadLibrary() } catch {}
+          // 2) На страницу
+          if (pagesRef.current?.length > 0) {
+            // eslint-disable-next-line no-undef
+            const F = fabric
+            const page = pagesRef.current[cur]
+            const cv = await ensureCanvas(page, cur, sendPatch)
+            const image = new F.Image(await loadImageEl(dataUrl))
+            const W = cv.getWidth(), H = cv.getHeight()
+            const s = Math.min(1, (W * 0.35) / (image.width || 1))
+            image.set({ left: Math.round(W * 0.15), top: Math.round(H * 0.15), scaleX: s, scaleY: s, selectable: true })
+            ensureDeleteControlFor(image)
+            image.__scannyId = 'ov_'+Math.random().toString(36).slice(2)
+            cv.add(image); cv.setActiveObject(image); cv.requestRenderAll()
+            const rect = page._layoutRect || { l:0, t:0, w:cv.getWidth(), h:cv.getHeight() }
+            clampObjectToRect(image, rect)
+            ensureDeleteControlInside(image, rect)
+            sendPatch([{
+              op: 'overlay_upsert',
+              page: cur,
+              obj: {
+                t: 'im',
+                id: image.__scannyId,
+                left: image.left || 0,
+                top: image.top || 0,
+                angle: image.angle || 0,
+                flipX: !!image.flipX,
+                flipY: !!image.flipY,
+                scaleX: image.scaleX || 1,
+                scaleY: image.scaleY || 1,
+                src: dataUrl,
+              }
+            }])
+          }
+        } catch (e) {
+          toast(e.message || 'Не удалось обработать изображение', 'error')
+        } finally {
+          setCropOpen(false)
+        }
+      }}
+    />
+  </div>
+)
 
 }
 
