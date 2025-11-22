@@ -1,4 +1,3 @@
-// frontend/src/pages/Editor.jsx
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import { toast } from '../components/Toast.jsx'
 import { AuthAPI } from '../api'
@@ -7,10 +6,8 @@ import {
   ensureSheetJS, ensureJsPDF, ensureJSZip, ensureScripts
 } from '../utils/scriptLoader'
 import { EditorWS } from '../utils/wsClient'
-
 import CropModal from '../components/CropModal.jsx'
 import ProgressOverlay from '../components/ProgressOverlay.jsx'
-
 import icMore from '../assets/icons/kebab.png'
 import icText from '../assets/icons/text.png'
 import icSign from '../assets/icons/sign-upload.png'
@@ -27,18 +24,14 @@ import icPlus from '../assets/icons/plus.png'
 import icPrev from '../assets/icons/prev.png'
 import icDocAdd from '../assets/icons/doc-add.svg'
 import icLibrary from '../assets/icons/library.png'
-
 import plan1 from '../assets/images/один документ.png'
 import plan2 from '../assets/images/безлимит.png'
 import plan3 from '../assets/images/безлимит про.png'
 
-const PAGE_W = 1240 
-const PAGE_H = 1754
 const ACCEPT_DOC = '.jpg,.jpeg,.png,.pdf,.doc,.docx,.xls,.xlsx'
 const FONTS = ['Arial', 'Times New Roman', 'Ermilov', 'Segoe UI', 'Roboto', 'Georgia']
-
-const PDF_RENDER_SCALE = 3.0 
-const RASTER_RENDER_SCALE = 3.0 
+const PDF_RENDER_SCALE = 3.0
+const RASTER_RENDER_SCALE = 3.0
 
 async function ensurePDFLib () {
   if (window.PDFLib) return window.PDFLib
@@ -56,7 +49,6 @@ function toUint8Copy (input) {
   }
   return new Uint8Array()
 }
-
 function u8ToB64 (u8) {
   let bin = ''; const chunk = 0x8000
   for (let i = 0; i < u8.length; i += chunk) { bin += String.fromCharCode.apply(null, u8.subarray(i, i + chunk)) }
@@ -67,7 +59,6 @@ function b64ToU8 (b64) {
   for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i)
   return u8
 }
-
 function readAsDataURL (file) {
   return new Promise((res, rej) => {
     const r = new FileReader()
@@ -85,7 +76,6 @@ function loadImageEl (src) {
     img.src = src
   })
 }
-
 async function renderDOCXToCanvas (file) {
   await ensureMammothCDN(); await ensureHtml2Canvas()
   const ab = await file.arrayBuffer()
@@ -106,7 +96,6 @@ async function renderDOCXToCanvas (file) {
   document.body.removeChild(holder)
   return canvas
 }
-
 async function renderXLSXToCanvas (file) {
   await ensureSheetJS(); await ensureHtml2Canvas()
   const ab = await file.arrayBuffer()
@@ -128,12 +117,10 @@ async function renderXLSXToCanvas (file) {
   document.body.removeChild(holder)
   return canvas
 }
-
 function sliceCanvasToPages (canvas) {
   const out = []
   const totalH = canvas.height
-  const pagePx = Math.floor(canvas.width * 1.414) 
-  
+  const pagePx = Math.floor(canvas.width * 1.414)
   for (let y = 0; y < totalH; y += pagePx) {
     const sliceH = Math.min(pagePx, totalH - y)
     const tmp = document.createElement('canvas')
@@ -147,7 +134,6 @@ function sliceCanvasToPages (canvas) {
   }
   return out
 }
-
 async function renderPDFPageToCanvas (pdf, pageNum, scale) {
   const p = await pdf.getPage(pageNum)
   const vp = p.getViewport({ scale: Math.max(2, scale) })
@@ -162,48 +148,31 @@ async function renderPDFPageToCanvas (pdf, pageNum, scale) {
   await p.render({ canvasContext: ctx, viewport: vp }).promise
   return canvas
 }
-
-// FIX: Адаптив.
-// 1. Родительский элемент .ed-canvas задается в "экранных" пикселях (маленький).
-// 2. Внутренний канвас .canvas-container имеет реальный огромный размер, но сжат через transform: scale.
 function fitCanvasForPage (page) {
   if (!page || !page.canvas) return
   const cv = page.canvas
   const wrap = cv.wrapperEl ? cv.wrapperEl.parentNode : null
   const container = document.querySelector('.ed-canvas-wrap')
   if (!wrap || !container) return
-
   const contW = container.clientWidth
   const contH = container.clientHeight
-  if (contW < 10 || contH < 10) return 
-
-  // Физические размеры (HiDPI)
+  if (contW < 10 || contH < 10) return
   const docW = cv.width
   const docH = cv.height
-  
-  // Отступы
-  const margin = 20 
+  const margin = 40
   const availW = Math.max(100, contW - margin)
   const availH = Math.max(100, contH - margin)
-
-  // Считаем масштаб
   const scale = Math.min(availW / docW, availH / docH)
-
-  // Задаем визуальный размер обертки (пиксели экрана)
   wrap.style.width = `${docW * scale}px`
   wrap.style.height = `${docH * scale}px`
-
-  // Скейлим внутренний контейнер Fabric
   if (cv.wrapperEl) {
       cv.wrapperEl.style.transform = `scale(${scale})`
       cv.wrapperEl.style.transformOrigin = 'top left'
       cv.wrapperEl.style.width = `${docW}px`
       cv.wrapperEl.style.height = `${docH}px`
   }
-  
   cv.calcOffset()
 }
-
 function randDocId () { return String(Math.floor(1e15 + Math.random() * 9e15)) }
 function genDefaultName () { const a = Math.floor(Math.random() * 1e6), b = Math.floor(Math.random() * 1e6); return `${a}-${b}` }
 function sanitizeName (s) {
@@ -215,70 +184,54 @@ function sanitizeName (s) {
 export default function Editor () {
   const [docId, setDocId] = useState(null)
   const [fileName, setFileName] = useState('')
-
   const [pages, setPages] = useState([])
   const [cur, setCur] = useState(0)
-
   const hasDoc = pages.length > 0
   const canPrev = hasDoc && cur > 0
   const canNext = hasDoc && cur < pages.length - 1
-
   const [signLib, setSignLib] = useState([])
   const [libLoading, setLibLoading] = useState(false)
-
   const [panelOpen, setPanelOpen] = useState(false)
   const [font, setFont] = useState('Arial')
   const [fontSize, setFontSize] = useState(42)
   const [bold, setBold] = useState(false)
   const [italic, setItalic] = useState(false)
   const [color, setColor] = useState('#000000')
-
   const [menuActionsOpen, setMenuActionsOpen] = useState(false)
   const [menuAddOpen, setMenuAddOpen] = useState(false)
   const [menuDownloadOpen, setMenuDownloadOpen] = useState(false)
   const [menuPos, setMenuPos] = useState({ top: 0, left: 0 })
-
   const [payOpen, setPayOpen] = useState(false)
-
   const [cropOpen, setCropOpen] = useState(false)
   const [cropSrc, setCropSrc] = useState('')
   const [cropKind, setCropKind] = useState('signature')
   const [cropThresh, setCropThresh] = useState(40)
-
   const [plan, setPlan] = useState('month')
   const [promo, setPromo] = useState('')
   const [promoError, setPromoError] = useState('')
   const [prices, setPrices] = useState({ single: 0, month: 0, year: 0 })
   const [promoPercent, setPromoPercent] = useState(0)
-  
   const [billing, setBilling] = useState(null)
   const isAuthed = !!localStorage.getItem('access')
-
   const [undoStack, setUndoStack] = useState([])
   const canUndo = undoStack.length > 0
-
   const [banner, setBanner] = useState('')
   const showBanner = (text, timeout = 1800) => {
     setBanner(text)
     window.clearTimeout(showBanner._t)
     showBanner._t = window.setTimeout(() => setBanner(''), timeout)
   }
-
   const [libOpen, setLibOpen] = useState(false)
-
   const pagesRef = useRef(pages)
   const docIdRef = useRef(docId)
   const fileNameRef = useRef(fileName)
   useEffect(() => { pagesRef.current = pages }, [pages])
   useEffect(() => { docIdRef.current = docId }, [docId])
   useEffect(() => { fileNameRef.current = fileName }, [fileName])
-
   const wsRef = useRef(null)
   const draftExistsRef = useRef(false)
   const isDeletingRef = useRef(false)
-
   const initialRenderPendingRef = useRef(false)
-
   const restPatchBufferRef = useRef([])
   const restPatchTimerRef = useRef(0)
   function flushRestPatchesSoon () {
@@ -296,7 +249,6 @@ export default function Editor () {
     restPatchBufferRef.current.push(...ops)
     flushRestPatchesSoon()
   }
-
   const [poOpen, setPoOpen] = useState(false)
   const [poLabel, setPoLabel] = useState('Загрузка')
   const [poPct, setPoPct] = useState(0)
@@ -306,7 +258,6 @@ export default function Editor () {
   }
   const updateProgress = (p) => { setPoPct(Math.max(0, Math.min(100, Math.round(p)))) }
   const hideProgress = () => { setPoOpen(false); setPoPct(0) }
-
   useEffect(() => {
     document.body.classList.add('no-footer')
     document.documentElement.classList.add('no-footer')
@@ -315,7 +266,6 @@ export default function Editor () {
       document.documentElement.classList.remove('no-footer')
     }
   }, [])
-
   const canvasWrapRef = useRef(null)
   const docFileRef = useRef(null)
   const bgFileRef = useRef(null)
@@ -323,7 +273,6 @@ export default function Editor () {
   const sheetActionsRef = useRef(null)
   const sheetAddRef = useRef(null)
   const sheetDownloadRef = useRef(null)
-
   const [isMobile, setIsMobile] = useState(() => window.matchMedia('(max-width: 960px)').matches)
   useEffect(() => {
     const mq = window.matchMedia('(max-width: 960px)')
@@ -331,19 +280,15 @@ export default function Editor () {
     mq.addEventListener('change', on)
     return () => mq.removeEventListener('change', on)
   }, [])
-
   useEffect(() => { ensurePDFJS().catch(() => {}) }, [])
-
   const onTopMenuClick = (e) => {
     const r = e.currentTarget.getBoundingClientRect()
     setMenuPos({ top: r.bottom + 8 + window.scrollY, left: r.left + window.scrollX })
     setMenuActionsOpen(o => !o)
   }
-  
   useEffect(() => {
     if (isAuthed) {
-      AuthAPI.getBillingStatus()
-        .then((st) => {
+      AuthAPI.getBillingStatus().then((st) => {
           setBilling(st)
           if (st && ('price_single' in st)) {
             setPrices({
@@ -352,11 +297,9 @@ export default function Editor () {
               year: Number(st.price_year || 0)
             })
           }
-        })
-        .catch(() => {})
+        }).catch(() => {})
     }
   }, [isAuthed])
-
   useEffect(() => {
     const onUser = async () => {
       if (localStorage.getItem('access')) {
@@ -402,7 +345,6 @@ export default function Editor () {
       window.removeEventListener('storage', onStorage)
     }
   }, [])
-
   function throttle (fn, wait = 160) {
     let last = 0; let tid = null
     return (...args) => {
@@ -416,7 +358,6 @@ export default function Editor () {
       }
     }
   }
-
   useEffect(() => {
     if (!canvasWrapRef.current) return
     const handleResize = throttle(() => {
@@ -432,7 +373,6 @@ export default function Editor () {
       window.removeEventListener('orientationchange', handleResize)
     }
   }, [])
-
   async function loadLibrary () {
     if (!isAuthed) { setSignLib([]); return }
     setLibLoading(true)
@@ -446,7 +386,6 @@ export default function Editor () {
     }
   }
   useEffect(() => { if (isAuthed) loadLibrary() }, [isAuthed])
-
   function ensureWS () {
     if (!isAuthed || !docIdRef.current) return
     const token = localStorage.getItem('access') || ''
@@ -463,14 +402,12 @@ export default function Editor () {
   useEffect(() => {
     if (isAuthed && docId) ensureWS()
   }, [isAuthed, docId])
-
   useEffect(() => {
     return () => {
       try { wsRef.current?.destroy?.() } catch {}
       wsRef.current = null
     }
   }, [])
-
   useEffect(() => {
     (async () => {
       if (pagesRef.current.length || isDeletingRef.current) return
@@ -486,16 +423,13 @@ export default function Editor () {
       }
     })()
   }, [])
-
   const ctxRef = useRef(null)
   const ensurePageRenderedRef = useRef(null)
-  
   useEffect(() => {
     const ctx = { pagesRef, setPages, sendPatch }
     ctxRef.current = ctx
     ensurePageRenderedRef.current = ensurePageRenderedFactory(ctx)
   }, [pagesRef, setPages, sendPatch])
-
   function ensurePageRendered (index) {
     let fn = ensurePageRenderedRef.current
     if (typeof fn !== 'function') {
@@ -504,7 +438,6 @@ export default function Editor () {
     }
     return fn(index)
   }
-
   useEffect(() => {
     if (initialRenderPendingRef.current && pages.length > 0) {
       const fn = (typeof ensurePageRenderedRef.current === 'function')
@@ -518,15 +451,12 @@ export default function Editor () {
       })()
     }
   }, [pages])
-
   function installDeleteControl () {
-    // eslint-disable-next-line no-undef
     const fobj = fabric.Object
     if (!fobj || fobj.__delPatched) return
-    // eslint-disable-next-line no-undef
     const F = fabric
     const del = new F.Control({
-      x: 0.5, y: -0.5, offsetX: 14, offsetY: -14, cursorStyle: 'pointer',
+      x: 0.5, y: -0.5, offsetX: 24, offsetY: -24, cursorStyle: 'pointer',
       mouseUpHandler: (_, tr) => {
         const t = tr.target; const cv = t?.canvas
         if (!cv) return true
@@ -539,39 +469,35 @@ export default function Editor () {
         return true
       },
       render: (ctx, left, top) => {
-        const r = 14
+        const r = 24
         ctx.save()
         ctx.fillStyle = '#E26D5C'
         ctx.beginPath(); ctx.arc(left, top, r, 0, Math.PI * 2); ctx.fill()
-        ctx.strokeStyle = '#fff'; ctx.lineWidth = 2.5
+        ctx.strokeStyle = '#fff'; ctx.lineWidth = 3
         ctx.beginPath()
-        ctx.moveTo(left - 6, top - 6); ctx.lineTo(left + 6, top + 6)
-        ctx.moveTo(left + 6, top - 6); ctx.lineTo(left - 6, top + 6)
+        ctx.moveTo(left - 8, top - 8); ctx.lineTo(left + 8, top + 8)
+        ctx.moveTo(left + 8, top - 8); ctx.lineTo(left - 8, top + 8)
         ctx.stroke()
         ctx.restore()
       }
     })
     fobj.prototype.controls.tr = del
-    // eslint-disable-next-line no-undef
     window.__scannyDelControl = del
     fobj.__delPatched = true
   }
   function ensureDeleteControlFor (obj) {
     try {
-      // eslint-disable-next-line no-undef
       if (obj && obj.controls && window.__scannyDelControl) obj.controls.tr = window.__scannyDelControl
       obj.set({
         hasControls: true, hasBorders: true, lockUniScaling: false,
         transparentCorners: false, cornerStyle: 'circle', cornerColor: '#E26D5C',
-        objectCaching: true, noScaleCache: false
+        objectCaching: true, noScaleCache: false, cornerSize: 28, touchCornerSize: 64
       })
     } catch {}
   }
-
   async function ensureCanvas (page, pageIndex, onPatch) {
     await ensureFabric()
     if (page.canvas) return page.canvas
-
     await new Promise((res, rej) => {
       const t0 = Date.now()
       ;(function loop () {
@@ -581,26 +507,20 @@ export default function Editor () {
         requestAnimationFrame(loop)
       })()
     })
-
-    // eslint-disable-next-line no-undef
     const c = new fabric.Canvas(page.elId, {
       backgroundColor: '#fff',
       preserveObjectStacking: true,
       selection: true,
-      enableRetinaScaling: true 
+      enableRetinaScaling: true
     })
-    
-    c.targetFindTolerance = 10
+    c.targetFindTolerance = 20
     c.perPixelTargetFind = false
     c.defaultCursor = 'default'
     c.hoverCursor = 'move'
-
     c.__pageRef = page
     c.__pageIndex = pageIndex
     c.__onPatch = onPatch
-
     page.canvas = c
-
     const onSelectionChanged = (e) => {
       const obj = e?.selected?.[0]
       if (obj && obj.type === 'textbox') {
@@ -615,8 +535,6 @@ export default function Editor () {
     c.on('selection:created', onSelectionChanged)
     c.on('selection:updated', onSelectionChanged)
     c.on('selection:cleared', () => setPanelOpen(false))
-
-    // Clamp
     function clamp(obj) {
        obj.setCoords()
        const coords = obj.getCoords ? obj.getCoords() : []
@@ -632,11 +550,9 @@ export default function Editor () {
        else if(maxY>h) dy = h - maxY
        if(dx||dy) { obj.left += dx; obj.top += dy; obj.setCoords() }
     }
-
     c.on('object:moving', (e) => { if(e.target) clamp(e.target) })
     c.on('object:scaling', (e) => { if(e.target) clamp(e.target) })
     c.on('object:rotating', (e) => { if(e.target) clamp(e.target) })
-
     function overlayFromObject (obj) {
       const base = {
         id: obj.__scannyId || ('ov_' + Math.random().toString(36).slice(2)),
@@ -666,58 +582,44 @@ export default function Editor () {
       }
       return { t: 'unknown', ...base }
     }
-
     function sendUpsertForObject (obj) {
       if (!c.__onPatch) return
       const ov = overlayFromObject(obj)
       if (!obj.__scannyId) obj.__scannyId = ov.id
       c.__onPatch([{ op: 'overlay_upsert', page: c.__pageIndex, obj: ov }])
     }
-
     c.on('object:modified', (e) => { if(e.target) sendUpsertForObject(e.target) })
     try { c.on('text:changed', (e) => { if(e.target) { c.requestRenderAll(); sendUpsertForObject(e.target) } }) } catch {}
-
     installDeleteControl()
     return c
   }
-
-  // ---------- отрисовка страниц ----------
   function ensurePageRenderedFactory (ctx) {
     const { pagesRef, sendPatch } = ctx
     return async function ensurePageRenderedInner (index) {
       const page = pagesRef.current?.[index]
       if (!page) return
       const cv = await ensureCanvas(page, index, sendPatch)
-      
-      // Важно
-      fitCanvasForPage(page)
-      
-      if (page._bgRendered) return
-
+      if (page._bgRendered) {
+          fitCanvasForPage(page)
+          return
+      }
       try {
         const pg = page.meta || {}
-        
         if (pg.type === 'pdf' && pg.bytes) {
           await ensurePDFJS()
-          // eslint-disable-next-line no-undef
           const pdf = await pdfjsLib.getDocument({ data: pg.bytes.slice() }).promise
           const off = await renderPDFPageToCanvas(pdf, (pg.index || 0) + 1, PDF_RENDER_SCALE)
           const url = off.toDataURL('image/png')
-          // eslint-disable-next-line no-undef
           const img = new fabric.Image(await loadImageEl(url), {
             selectable: false, evented: false, objectCaching: false, noScaleCache: true
           })
-          
           if (!pg.doc_w || !pg.doc_h) {
             pg.doc_w = off.width
             pg.doc_h = off.height
           }
-          
           placeBgObject(cv, page, img)
-          
         } else if ((pg.type === 'image' || pg.type === 'raster') && pg.src) {
           const im = await loadImageEl(pg.src)
-          // eslint-disable-next-line no-undef
           const img = new fabric.Image(im, {
             selectable: false, evented: false, objectCaching: false, noScaleCache: true
           })
@@ -727,12 +629,9 @@ export default function Editor () {
           }
           placeBgObject(cv, page, img)
         }
-
         page._bgRendered = true
-
         const overlays = Array.isArray(page._pendingOverlays) ? page._pendingOverlays : []
         if (overlays.length) {
-          // eslint-disable-next-line no-undef
           const F = fabric
           for (const o of overlays) {
              const type = o.t || (o.text !== undefined ? 'tb' : (o.src ? 'im' : 'unknown'))
@@ -765,7 +664,6 @@ export default function Editor () {
           }
           page._pendingOverlays = []
         }
-        
         fitCanvasForPage(page)
         cv.requestRenderAll()
       } catch (e) {
@@ -773,80 +671,57 @@ export default function Editor () {
       }
     }
   }
-
   function placeBgObject(cv, page, img) {
       page.bgObj = img
       cv.add(img)
       img.sendToBack()
-      // Принудительно растягиваем фон
-      const sX = cv.width / (img.width || 1)
-      const sY = cv.height / (img.height || 1)
-      img.set({scaleX: sX, scaleY: sY, left:0, top:0, angle: 0})
+      const iW = img.width || 1
+      const iH = img.height || 1
+      cv.setDimensions({ width: iW, height: iH })
+      img.set({ left: 0, top: 0, scaleX: 1, scaleY: 1, angle: 0 })
       img.setCoords()
+      page.meta.doc_w = iW
+      page.meta.doc_h = iH
   }
-
-  // ---------- Rotate Page ----------
   async function rotatePage () {
     if (!pagesRef.current || pagesRef.current.length === 0) return
     const page = pagesRef.current[cur]
     const cv = await ensureCanvas(page, cur, sendPatch)
-
     const oldW = cv.width
     const oldH = cv.height
-    const cx = oldW / 2
-    const cy = oldH / 2
-
-    // Объекты для поворота
-    const objs = cv.getObjects().filter(o => o !== page.bgObj)
-
-    for (const obj of objs) {
-        const dx = obj.left + (obj.width * obj.scaleX)/2 - cx
-        const dy = obj.top + (obj.height * obj.scaleY)/2 - cy
-        
-        const newCx = oldH / 2
-        const newCy = oldW / 2
-        
-        const newDx = -dy
-        const newDy = dx
-        
-        const finalX = newCx + newDx
-        const finalY = newCy + newDy
-        
-        obj.set({
-            angle: (obj.angle + 90) % 360,
-            left: finalX - (obj.width * obj.scaleX)/2,
-            top: finalY - (obj.height * obj.scaleY)/2
-        })
-        obj.setCoords()
-    }
-
-    // Меняем местами размеры
-    const tmp = page.meta.doc_w
-    page.meta.doc_w = page.meta.doc_h
-    page.meta.doc_h = tmp
-    
-    page.landscape = !page.landscape
-    
-    // Применяем новые размеры к канвасу
-    cv.setDimensions({ width: page.meta.doc_w, height: page.meta.doc_h })
-    
-    // Фон
+    cv.setDimensions({ width: oldH, height: oldW })
     if (page.bgObj) {
         const img = page.bgObj
-        const sX = page.meta.doc_w / (img.width || 1)
-        const sY = page.meta.doc_h / (img.height || 1)
-        img.set({scaleX: sX, scaleY: sY, left: 0, top: 0, angle: 0})
+        const oldAngle = img.angle || 0
+        const newAngle = (oldAngle + 90) % 360
+        img.set({ angle: newAngle })
+        if (newAngle === 90) {
+            img.set({ left: oldH, top: 0 })
+        } else if (newAngle === 180) {
+            img.set({ left: oldH, top: oldW })
+        } else if (newAngle === 270) {
+            img.set({ left: 0, top: oldW })
+        } else {
+            img.set({ left: 0, top: 0 })
+        }
         img.setCoords()
-        img.sendToBack()
     }
-
-    // Пересчитываем scale для экрана
+    const objs = cv.getObjects().filter(o => o !== page.bgObj)
+    for (const obj of objs) {
+        let left = obj.left
+        let top = obj.top
+        left = Math.max(0, Math.min(left, oldH - (obj.width * obj.scaleX)))
+        top = Math.max(0, Math.min(top, oldW - (obj.height * obj.scaleY)))
+        obj.set({ left, top })
+        obj.setCoords()
+    }
+    page.meta.doc_w = oldH
+    page.meta.doc_h = oldW
+    page.landscape = !page.landscape
     fitCanvasForPage(page)
     cv.requestRenderAll()
-
     sendPatch([{ op: 'rotate_page', page: cur, landscape: !!page.landscape }])
   }
-
   async function deletePageAt (idx) {
       if (!pagesRef.current?.length) return
       if (pagesRef.current.length <= 1) {
@@ -868,13 +743,6 @@ export default function Editor () {
       await persistPageOps([{ op: 'page_remove', index: idx }])
       toast('Страница удалена', 'success')
   }
-
-  // ... (rest: persistPageOps, createPageFromImage, addRasterPagesFromCanvas, addPagesFromPDFBytes, baseName, pickDocument, onPickDocument, onPickBgFile, estimateUnits, handleFiles, assignFirstFileToCurrent, serializeDocument, restoreDocumentFromDraft, addText, applyPanel, applyToAllPages, onCanvasDrop, placeFromLib, applyPromo, startPurchase, exportJPG, exportPDF, effects, UI)
-  // Чтобы не повторяться, остальная часть идентична предыдущим версиям (функции сохранения, загрузки файлов и экспорта).
-  // Важное изменение было именно в fitCanvasForPage, rotatePage и placeBgObject.
-  
-  // Я выведу оставшиеся функции, чтобы файл был полным.
-
   async function persistPageOps (ops = []) {
     const list = Array.isArray(ops) ? ops.filter(Boolean) : []
     if (list.length === 0) return
@@ -886,7 +754,6 @@ export default function Editor () {
     try { wsRef.current?.sendPatch?.(list) } catch {}
     try { await AuthAPI.patchDraft(list) } catch { try { const snapshot = await serializeDocument(); if (snapshot) { await AuthAPI.saveDraft(snapshot); wsRef.current?.commit?.(snapshot); draftExistsRef.current = true } } catch {} }
   }
-
   async function createPageFromImage (dataUrl, w, h, mime = 'image/png', landscape = false, opsOut = null, index = null) {
     const id = 'p_' + Math.random().toString(36).slice(2)
     const elId = 'cv_' + id
@@ -899,7 +766,6 @@ export default function Editor () {
     await new Promise(r => requestAnimationFrame(r))
     return page
   }
-
   async function addRasterPagesFromCanvas (canvas, opsOut = null, indexStart = null) {
     const slices = sliceCanvasToPages(canvas)
     let count = 0
@@ -912,17 +778,15 @@ export default function Editor () {
     }
     return count
   }
-
   async function addPagesFromPDFBytes (bytes, opsOut = null, indexStart = null) {
     await ensurePDFJS()
-    // eslint-disable-next-line no-undef
     const pdf = await pdfjsLib.getDocument({ data: bytes.slice() }).promise
     const total = pdf.numPages
     const bytes_b64 = u8ToB64(bytes)
     let added = 0
     for (let i = 1; i <= total; i++) {
       const p = await pdf.getPage(i)
-      const vp1 = p.getViewport({ scale: PDF_RENDER_SCALE }) 
+      const vp1 = p.getViewport({ scale: PDF_RENDER_SCALE })
       const pdf_w = Math.round(vp1.width); const pdf_h = Math.round(vp1.height)
       const id = 'p_' + Math.random().toString(36).slice(2); const elId = 'cv_' + id
       const meta = { type: 'pdf', bytes: toUint8Copy(bytes), index: i - 1, pdf_w, pdf_h, doc_w: pdf_w, doc_h: pdf_h }
@@ -936,14 +800,12 @@ export default function Editor () {
     }
     return added
   }
-
   function baseName () { const nm = (fileNameRef.current || '').trim(); if (!nm) { toast('Введите название файла вверху', 'error'); return null } return sanitizeName(nm) }
   const filePickBusyRef = useRef(false)
   function pickDocument () { if (filePickBusyRef.current) return; filePickBusyRef.current = true; try { docFileRef.current?.click() } finally { setTimeout(() => { filePickBusyRef.current = false }, 1500) } }
   async function onPickDocument (e) { const files = Array.from(e.target.files || []); e.target.value = ''; if (!files.length) return; await handleFiles(files); filePickBusyRef.current = false }
   async function onPickBgFile (e) { const files = Array.from(e.target.files || []); e.target.value = ''; if (!files.length) return; await assignFirstFileToCurrent(files[0]) }
   async function estimateUnits (files) { let total = 0; for (const f of files) { const ext = (f.name.split('.').pop() || '').toLowerCase(); if (['jpg', 'jpeg', 'png'].includes(ext)) total += 1; else if (ext === 'pdf') { try { await ensurePDFJS(); const pdf = await pdfjsLib.getDocument({ data: await f.arrayBuffer() }).promise; total += pdf.numPages || 1 } catch { total += 1 } } else if (['docx', 'doc', 'xls', 'xlsx'].includes(ext)) { total += 2 } else { total += 1 } } return Math.max(1, total) }
-
   async function handleFiles (files) {
     showProgress('Загрузка', false)
     try {
@@ -977,7 +839,6 @@ export default function Editor () {
       toast('Страницы добавлены', 'success')
     } catch (err) { console.error(err); toast(err.message || 'Ошибка загрузки файлов', 'error') } finally { hideProgress() }
   }
-
   async function assignFirstFileToCurrent (file) {
     const ext = (file.name.split('.').pop() || '').toLowerCase(); const page = pages[cur]; if (!page) return
     showProgress('Загрузка', true)
@@ -1000,7 +861,6 @@ export default function Editor () {
       const snapshot = await serializeDocument(); if (snapshot) { await AuthAPI.saveDraft(snapshot); wsRef.current?.commit?.(snapshot); draftExistsRef.current = true }
     } catch (e) { toast(e.message || 'Ошибка', 'error') } finally { hideProgress() }
   }
-
   async function serializeDocument () {
     if (!pagesRef.current || pagesRef.current.length === 0) return null
     const pagesLocal = pagesRef.current; const outPages = []
@@ -1013,29 +873,26 @@ export default function Editor () {
       }
       if (meta.type === 'pdf' && meta.bytes) { outPages.push({ type: 'pdf', index: meta.index || 0, bytes_b64: u8ToB64(meta.bytes), pdf_w: meta.pdf_w, pdf_h: meta.pdf_h, doc_w: meta.doc_w, doc_h: meta.doc_h, landscape: !!p.landscape, overlays }) }
       else if (meta.type === 'image' || meta.type === 'raster') { outPages.push({ type: meta.type, src: meta.src, w: meta.w, h: meta.h, mime: meta.mime, doc_w: meta.doc_w, doc_h: meta.doc_h, landscape: !!p.landscape, overlays }) }
-      else { outPages.push({ type: 'raster', src: '', w: PAGE_W, h: PAGE_H, landscape: !!p.landscape, overlays }) }
+      else { outPages.push({ type: 'raster', src: '', w: 2480, h: 3508, landscape: !!p.landscape, overlays }) }
     }
     return { client_id: docIdRef.current || null, name: fileNameRef.current || genDefaultName(), pages: outPages }
   }
-
   async function restoreDocumentFromDraft (draft) {
     try {
       await ensurePDFJS(); await ensureFabric(); const pagesData = Array.isArray(draft?.pages) ? draft.pages : []; const created = []
       for (let i = 0; i < pagesData.length; i++) {
         const pg = pagesData[i] || {}; const id = 'p_' + Math.random().toString(36).slice(2); const elId = 'cv_' + id; let meta
-        if (pg.type === 'pdf' && pg.bytes_b64) { meta = { type: 'pdf', bytes: b64ToU8(pg.bytes_b64), index: Number(pg.index || 0), pdf_w: pg.pdf_w || PAGE_W, pdf_h: pg.pdf_h || PAGE_H, doc_w: pg.doc_w || pg.pdf_w || PAGE_W, doc_h: pg.doc_h || pg.pdf_h || PAGE_H } }
-        else if (pg.type === 'image' || pg.type === 'raster') { meta = { type: pg.type, src: pg.src, w: pg.w || PAGE_W, h: pg.h || PAGE_H, mime: pg.mime || 'image/png', doc_w: pg.doc_w || pg.w || PAGE_W, doc_h: pg.doc_h || pg.h || PAGE_H } }
-        else { meta = { type: 'raster', src: '', w: PAGE_W, h: PAGE_H, mime: 'image/png', doc_w: PAGE_W, doc_h: PAGE_H } }
+        if (pg.type === 'pdf' && pg.bytes_b64) { meta = { type: 'pdf', bytes: b64ToU8(pg.bytes_b64), index: Number(pg.index || 0), pdf_w: pg.pdf_w || 2480, pdf_h: pg.pdf_h || 3508, doc_w: pg.doc_w || pg.pdf_w || 2480, doc_h: pg.doc_h || pg.pdf_h || 3508 } }
+        else if (pg.type === 'image' || pg.type === 'raster') { meta = { type: pg.type, src: pg.src, w: pg.w || 2480, h: pg.h || 3508, mime: pg.mime || 'image/png', doc_w: pg.doc_w || pg.w || 2480, doc_h: pg.doc_h || pg.h || 3508 } }
+        else { meta = { type: 'raster', src: '', w: 2480, h: 3508, mime: 'image/png', doc_w: 2480, doc_h: 3508 } }
         created.push({ id, elId, canvas: null, bgObj: null, landscape: !!pg.landscape, meta, _bgRendered: false, _pendingOverlays: Array.isArray(pg.overlays) ? pg.overlays : [] })
       }
       setPages(created); initialRenderPendingRef.current = true; setCur(created.length ? 0 : 0); setFileName((draft?.name || '').trim() || genDefaultName()); setDocId(draft?.client_id || randDocId()); draftExistsRef.current = true
       await new Promise(r => requestAnimationFrame(r))
     } catch (e) { console.error('restoreDocumentFromDraft error', e) }
   }
-
   async function addText () {
     if (!pagesRef.current || pagesRef.current.length === 0) { toast('Сначала добавьте страницу', 'error'); return }
-    // eslint-disable-next-line no-undef
     const F = fabric
     const page = pagesRef.current[cur]
     const cv = await ensureCanvas(page, cur, sendPatch)
@@ -1047,7 +904,6 @@ export default function Editor () {
     setUndoStack(stk => [...stk, { type: 'add_one', page: cur, id: tb.__scannyId }])
     setPanelOpen(true)
   }
-
   const applyPanel = useCallback(() => {
     const page = pagesRef.current?.[cur]; const cv = page?.canvas; if (!cv) return
     const obj = cv.getActiveObject(); if (!obj || obj.type !== 'textbox') return
@@ -1056,10 +912,8 @@ export default function Editor () {
     sendPatch([{ op: 'overlay_upsert', page: cur, obj: { t: 'tb', id: obj.__scannyId, left: obj.left, top: obj.top, angle: obj.angle, scaleX: obj.scaleX, scaleY: obj.scaleY, text: obj.text, fontFamily: font, fontSize, fontStyle: italic ? 'italic' : 'normal', fontWeight: bold ? 'bold' : 'normal', fill: color, width: obj.width, textAlign: obj.textAlign } }])
   }, [cur, font, fontSize, bold, italic, color])
   useEffect(() => { if (panelOpen) applyPanel() }, [panelOpen, applyPanel])
-
   async function applyToAllPages () {
     if (!pagesRef.current || pagesRef.current.length === 0) return
-    // eslint-disable-next-line no-undef
     const F = fabric
     const srcPage = pagesRef.current[cur]; const cvSrc = await ensureCanvas(srcPage, cur, sendPatch); const obj = cvSrc.getActiveObject()
     if (!obj) { toast('Выберите объект на странице', 'error'); return }
@@ -1080,13 +934,11 @@ export default function Editor () {
     }
     if (clones.length) { setUndoStack(stk => [...stk, { type: 'apply_all', clones }]); toast('Объект добавлен на все страницы', 'success') }
   }
-
   function onCanvasDrop (e) {
     e.preventDefault(); const dt = e.dataTransfer; if (!dt) return
     const types = Array.from(dt.types || []); if (types.includes('application/x-sign-url')) { const url = dt.getData('application/x-sign-url'); if (url && url !== 'add') placeFromLib(url); return }
     const fs = Array.from(dt.files || []); if (fs.length) handleFiles(fs)
   }
-
   function placeFromLib (url) {
     if (!pagesRef.current || pagesRef.current.length === 0) { toast('Сначала добавьте страницу', 'error'); return }
     const F = fabric; const page = pagesRef.current[cur]
@@ -1099,21 +951,19 @@ export default function Editor () {
       setUndoStack(stk => [...stk, { type: 'add_one', page: cur, id: img.__scannyId }])
     })
   }
-
   async function applyPromo () {
     try { if (!promo) { setPromoPercent(0); setPromoError(''); return } const res = await AuthAPI.validatePromo(promo); const percent = Number(res?.percent || 0); if (percent > 0) { setPromoPercent(percent); setPromoError('') } else { setPromoPercent(0); setPromoError('Промокод не найден') } } catch (e) { setPromoPercent(0); setPromoError(e.message || 'Ошибка промокода') }
   }
   async function startPurchase () {
     try { const r = await AuthAPI.startPurchase(plan, promo || ''); if (r?.url) { window.open(r.url, '_blank'); setPayOpen(false) } else toast('Не удалось сформировать оплату', 'error') } catch (e) { toast(e.message || 'Ошибка оплаты', 'error') }
   }
-
   async function exportJPG () {
     try {
       if (!pagesRef.current || pagesRef.current.length === 0) return; const bn = baseName(); if (!bn) return; const count = pagesRef.current.length; if ((billing?.free_left ?? 0) < count) { setPlan('single'); setPayOpen(true); return }
       showProgress('Скачивание', false); setPoPct(0); await ensureJSZip(); const zip = new JSZip()
       for (let i = 0; i < pagesRef.current.length; i++) {
         await ensurePageRendered(i); const p = pagesRef.current[i]; const cv = p.canvas
-        const dataUrl = cv.toDataURL({ format: 'jpeg', quality: 0.95, multiplier: 1 })
+        const dataUrl = cv.toDataURL({ format: 'jpeg', quality: 1.0, multiplier: 2 })
         const blob = await (await fetch(dataUrl)).blob(); zip.file(`${bn}-p${i + 1}.jpg`, blob)
         updateProgress(Math.min(95, Math.round(((i + 1) / pagesRef.current.length) * 90)))
       }
@@ -1122,16 +972,16 @@ export default function Editor () {
       toast(`Скачано страниц: ${pagesRef.current.length}`, 'success')
     } catch (e) { console.error(e); toast(e.message || 'Не удалось выгрузить JPG', 'error') } finally { hideProgress() }
   }
-
   async function exportPDF () {
     try {
       if (!pagesRef.current || pagesRef.current.length === 0) return; const bn = baseName(); if (!bn) return; const count = pagesRef.current.length; if ((billing?.free_left ?? 0) < count) { setPlan('single'); setPayOpen(true); return }
       showProgress('Скачивание', false); setPoPct(0); const PDFLib = await ensurePDFLib(); const out = await PDFLib.PDFDocument.create()
       for (let i = 0; i < pagesRef.current.length; i++) {
         await ensurePageRendered(i); const p = pagesRef.current[i]; const cv = p.canvas
-        const pageW = cv.width; const pageH = cv.height; const pageRef = out.addPage([pageW, pageH])
-        const dataUrl = cv.toDataURL({ format: 'jpeg', quality: 0.95, multiplier: 1 }); const bytes = await (await fetch(dataUrl)).arrayBuffer(); const img = await out.embedJpg(bytes)
-        pageRef.drawImage(img, { x: 0, y: 0, width: pageW, height: pageH })
+        const dataUrl = cv.toDataURL({ format: 'jpeg', quality: 1.0, multiplier: 2 })
+        const bytes = await (await fetch(dataUrl)).arrayBuffer(); const img = await out.embedJpg(bytes)
+        const pageRef = out.addPage([img.width, img.height])
+        pageRef.drawImage(img, { x: 0, y: 0, width: img.width, height: img.height })
         updateProgress(Math.min(95, Math.round(((i + 1) / pagesRef.current.length) * 95)))
       }
       const pdfBytes = await out.save(); const blob = new Blob([pdfBytes], { type: 'application/pdf' }); const a = document.createElement('a'); const href = URL.createObjectURL(blob); a.href = href; a.download = `${bn}.pdf`; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(href), 1500)
@@ -1139,7 +989,6 @@ export default function Editor () {
       toast(`Скачан PDF (${pagesRef.current.length} стр.)`, 'success')
     } catch (e) { console.error(e); toast(e.message || 'Не удалось выгрузить PDF', 'error') } finally { hideProgress() }
   }
-
   useEffect(() => {
     const onKey = (e) => {
       const tag = String(e.target?.tagName || '').toLowerCase(); const isTyping = tag === 'input' || tag === 'textarea' || e.target?.isContentEditable; if (isTyping) return
@@ -1150,25 +999,19 @@ export default function Editor () {
     }
     document.addEventListener('keydown', onKey); return () => document.removeEventListener('keydown', onKey)
   }, [cur])
-
   const onRenameChange = (e) => { setFileName(sanitizeName(e.target.value)) }
   const onRenameBlur = () => { if (pagesRef.current?.length) sendPatch([{ op: 'set_name', name: fileNameRef.current || '' }]) }
-
   const [pgText, setPgText] = useState('1')
   useEffect(() => { setPgText(String(pagesRef.current?.length ? (cur + 1) : 0)) }, [cur, pages.length])
-
   const onPagerGo = (v) => {
     if (!pagesRef.current?.length) return
     const n = Math.max(1, Math.min(pagesRef.current.length, Number(v) || 1))
     setCur(n - 1)
   }
-
   return (
     <div className="doc-editor page" style={{ paddingTop: 0 }}>
       <ProgressOverlay open={poOpen} label={poLabel} percent={poPct} indeterminate={poInd} />
-
       {banner && <div className="ed-banner">{banner}</div>}
-
       {!panelOpen ? (
         <div className="ed-top">
           <button className="ed-menu-btn mobile-only" aria-label="Меню действий" onClick={onTopMenuClick}>
@@ -1206,7 +1049,6 @@ export default function Editor () {
           </div>
         </div>
       )}
-
       <div className="ed-body">
         <aside className="ed-left">
           <div className="ed-tools">
@@ -1255,7 +1097,6 @@ export default function Editor () {
             ))}
           </div>
         </aside>
-
         <section className="ed-center">
           <div className="ed-canvas-wrap" ref={canvasWrapRef} onDragOver={(e) => e.preventDefault()} onDrop={onCanvasDrop}>
             {pages.map((p, idx) => (
@@ -1278,7 +1119,6 @@ export default function Editor () {
             )}
           </div>
         </section>
-
         <aside className="ed-right">
           <div className="ed-actions">
             <button
@@ -1345,7 +1185,6 @@ export default function Editor () {
               <img src={icAddPage} alt="" style={{ width: 18, height: 18, marginRight: 8 }} />На все страницы
             </button>
           </div>
-
           <div className="ed-download">
             <div className="ed-dl-title">Скачать бесплатно:</div>
             <div className="ed-dl-row">
@@ -1368,12 +1207,10 @@ export default function Editor () {
           </div>
         </aside>
       </div>
-
       <div className="ed-bottom">
         <button className="fab fab-add mobile-only" onClick={() => { if (pagesRef.current?.length) { setMenuAddOpen(o => !o) } else { pickDocument() } }} title="Добавить">
           <img src={icPlus} alt="+" />
         </button>
-
         <UnifiedPager
           total={pages.length}
           current={cur}
@@ -1387,12 +1224,10 @@ export default function Editor () {
           hasDoc={!!pagesRef.current?.length}
           onAdd={pickDocument}
         />
-
         <button className="fab fab-dl mobile-only" onClick={() => { if (!pagesRef.current?.length) return; setMenuDownloadOpen(o => !o) }} title="Скачать">
           <img src={icDownload} alt="↓" />
         </button>
       </div>
-
       {menuActionsOpen && (
         <div
           className="ed-sheet"
@@ -1427,7 +1262,6 @@ export default function Editor () {
           </button>
         </div>
       )}
-
       {menuAddOpen && (
         <div className="ed-sheet bottom-left" ref={sheetAddRef}>
           <button className={pagesRef.current?.length ? '' : 'disabled'} onClick={() => { setMenuAddOpen(false); addText() }}>
@@ -1441,7 +1275,6 @@ export default function Editor () {
           </button>
         </div>
       )}
-
       {menuDownloadOpen && (
         <div className="ed-sheet bottom-right" ref={sheetDownloadRef} style={{ padding: 6 }}>
           <button className={`btn ${pagesRef.current?.length ? '' : 'disabled'}`} style={{ padding: '10px 14px' }} onClick={() => { if (pagesRef.current?.length) { setMenuDownloadOpen(false); setPlan('single'); setPayOpen(true) } }}>
@@ -1458,7 +1291,6 @@ export default function Editor () {
           </button>
         </div>
       )}
-
       {payOpen && (
         <div className="modal-overlay" onClick={() => setPayOpen(false)}>
           <div className="modal pay-modal" onClick={e => e.stopPropagation()}>
@@ -1500,7 +1332,6 @@ export default function Editor () {
           </div>
         </div>
       )}
-
       {libOpen && (
         <div className="modal-overlay" onClick={() => setLibOpen(false)}>
           <div className="modal" onClick={e => e.stopPropagation()} style={{ width: 'min(420px,92vw)', height: 'min(70vh,560px)', display: 'flex', flexDirection: 'column' }}>
@@ -1536,7 +1367,6 @@ export default function Editor () {
           </div>
         </div>
       )}
-
       <input ref={docFileRef} type="file" accept={ACCEPT_DOC} hidden multiple onChange={onPickDocument} />
       <input ref={bgFileRef} type="file" accept={ACCEPT_DOC} hidden onChange={onPickBgFile} />
       <input
@@ -1553,7 +1383,6 @@ export default function Editor () {
           reader.readAsDataURL(f)
         }}
       />
-
       <CropModal
         open={cropOpen}
         src={cropSrc}
@@ -1564,7 +1393,6 @@ export default function Editor () {
           try {
             try { await AuthAPI.addSign({ kind, data_url: dataUrl }); await loadLibrary() } catch {}
             if (pagesRef.current?.length > 0) {
-              // eslint-disable-next-line no-undef
               const F = fabric
               const page = pagesRef.current[cur]
               const cv = await ensureCanvas(page, cur, sendPatch)
@@ -1576,8 +1404,23 @@ export default function Editor () {
               ensureDeleteControlFor(image)
               image.__scannyId = 'ov_' + Math.random().toString(36).slice(2)
               cv.add(image); cv.setActiveObject(image); cv.requestRenderAll()
-              clampObjectToCanvas(image, cv)
-              ensureDeleteControlInsideCanvas(image, cv)
+              function clamp(obj) {
+                 obj.setCoords()
+                 const coords = obj.getCoords ? obj.getCoords() : []
+                 if(!coords.length) return
+                 const xs = coords.map(p=>p.x), ys = coords.map(p=>p.y)
+                 const w = cv.width, h = cv.height
+                 let minX=Math.min(...xs), maxX=Math.max(...xs)
+                 let minY=Math.min(...ys), maxY=Math.max(...ys)
+                 let dx=0, dy=0
+                 if(minX<0) dx = -minX
+                 else if(maxX>w) dx = w - maxX
+                 if(minY<0) dy = -minY
+                 else if(maxY>h) dy = h - maxY
+                 if(dx||dy) { obj.left += dx; obj.top += dy; obj.setCoords() }
+              }
+              clamp(image)
+              ensureDeleteControlFor(image)
               sendPatch([{
                 op: 'overlay_upsert',
                 page: cur,
@@ -1605,8 +1448,6 @@ export default function Editor () {
     </div>
   )
 }
-
-// Унифицированный пагинатор
 function UnifiedPager ({ total, current, pgText, setPgText, onGo, onPrev, onNext, canPrev, canNext, hasDoc, onAdd }) {
   const onChange = (e) => {
     const v = e.target.value.replace(/[^\d]/g, '')
@@ -1622,13 +1463,11 @@ function UnifiedPager ({ total, current, pgText, setPgText, onGo, onPrev, onNext
       onGo(pgText)
     }
   }
-
   return (
         <div className="ed-pager" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
       <button className="pager-btn" onClick={onPrev} disabled={!canPrev} title="Предыдущая">
         <img src={icPrev} alt="Prev" />
       </button>
-
       <div className="pg" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
         {hasDoc ? (
           <>
@@ -1649,7 +1488,6 @@ function UnifiedPager ({ total, current, pgText, setPgText, onGo, onPrev, onNext
           <span className="pg-total">0/0</span>
         )}
       </div>
-
       <button className="pager-btn" onClick={onNext} title={canNext ? 'Следующая' : 'Добавить документ'}>
         {canNext ? (
           <img src={icPrev} alt="Next" style={{ transform: 'rotate(180deg)' }} />
@@ -1660,4 +1498,3 @@ function UnifiedPager ({ total, current, pgText, setPgText, onGo, onPrev, onNext
     </div>
   )
 }
-
