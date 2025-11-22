@@ -95,8 +95,8 @@ main{flex:1}
   left:50%;
   top:50%;
   transform:translate(-50%, -50%);
-  background:#f0fbf3;        /* мягче */
-  color:#28613c;             /* менее яркий зелёный */
+  background:#f0fbf3;
+  color:#28613c;
   border:1px solid #cfeedd;
   border-left:4px solid #2a7;
   border-radius:10px;
@@ -120,7 +120,6 @@ main{flex:1}
 .step-row{--step-h:420px;display:grid;grid-template-columns:1.1fr .9fr;gap:24px;align-items:stretch;min-height:var(--step-h)}
 .step-row.reverse{grid-template-columns:1.1fr .9fr}
 .step-illu,.step-text{display:flex;align-items:center;justify-content:center;height:var(--step-h)}
-/* убрать вертикальные внутренние поля у картинок — «на всю карточку» */
 .step-illu{padding:0}
 .step-illu img{width:100%;height:100%;object-fit:contain;border-radius:16px;box-shadow:0 14px 38px rgba(0,0,0,.2);padding:0;margin:0}
 .step-text{flex-direction:column;align-items:flex-start;padding:8px 6px}
@@ -369,10 +368,9 @@ main{flex:1}
 }
 .ed-sheet>button:not(.btn):not(.btn-lite){border:none;background:transparent;cursor:pointer;text-align:left;padding:10px 12px;border-radius:8px;display:flex;align-items:center}
 .ed-sheet>button:not(.btn):not(.btn-lite):hover{background:#f6f6f6}
-/* Кнопки как на десктопе (платные/бесплатные) */
 .ed-sheet .btn,.ed-sheet .btn-lite{width:100%;justify-content:flex-start;border-radius:28px;padding:12px 16px;min-width:auto;margin:6px 0}
 
-/* Toolbar (панель текста) */
+/* Toolbar */
 .doc-editor .ed-toolbar{display:flex;align-items:center;gap:8px;background:#fff;border:1px solid #eee;border-radius:12px;padding:6px 8px;margin:8px auto;max-width:900px;flex-wrap:wrap;overflow-x:auto}
 .doc-editor .ed-toolbar select,.doc-editor .ed-toolbar input[type=color],.doc-editor .ed-toolbar button{height:34px;border:1px solid #e5e5e5;border-radius:8px;background:#fff;padding:0 10px;cursor:pointer}
 .doc-editor .ed-toolbar .val{min-width:30px;text-align:center}
@@ -393,7 +391,6 @@ main{flex:1}
 .doc-editor .ed-sign-list{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-top:12px}
 .doc-editor .thumb{position:relative;width:100%;aspect-ratio:1/1;border:1px solid #eee;border-radius:12px;background:#f6f6f6;display:flex;align-items:center;justify-content:center;overflow:hidden;cursor:pointer}
 .doc-editor .thumb.add{font-size:28px;color:#888}
-/* Центровка крестика удаления в библиотеке */
 .doc-editor .thumb .thumb-x{
   position:absolute;right:4px;top:4px;width:18px;height:18px;border-radius:50%;
   border:1px solid #e5e5e5;background:#fff;color:#000;
@@ -404,7 +401,7 @@ main{flex:1}
 .doc-editor .ed-namebar{display:flex;align-items:center;justify-content:center;margin:8px auto 8px;max-width:980px}
 .doc-editor .ed-filename{width:min(640px,92%);height:44px;border:1px solid #e5e5e5;border-radius:10px;padding:8px 12px;font-size:16px;background:#fff}
 
-/* Вписывание области предпросмотра + защита от горизонтального переполнения */
+/* Область предпросмотра */
 .doc-editor .ed-canvas-wrap{
   width:100%;
   background:#f6f9f8;border:1px solid #f0f0f0;border-radius:12px;
@@ -414,16 +411,29 @@ main{flex:1}
 }
 .doc-editor .ed-canvas{position:relative;display:none;margin:0 auto}
 .doc-editor .ed-canvas.active{display:block}
-/* Глобально: не шире контейнера */
 .doc-editor .ed-canvas,
 .doc-editor .ed-canvas .canvas-container,
 .doc-editor .ed-canvas canvas {
   max-width:100% !important;
 }
-.doc-editor .ed-canvas canvas.lower-canvas{display:block;background:#fff;border-radius:10px;border:1px solid #eaeaea;box-shadow:0 12px 26px rgba(0,0,0,.12);image-rendering:-webkit-optimize-contrast;image-rendering:crisp-edges}
-.doc-editor .ed-canvas canvas.upper-canvas{display:block;background:transparent!important;border-radius:10px;border:none;box-shadow:none}
+.doc-editor .ed-canvas canvas.lower-canvas{
+  display:block;
+  background:#fff;
+  border-radius:0;
+  border:1px solid #eaeaea;
+  box-shadow:0 12px 26px rgba(0,0,0,.12);
+  image-rendering:-webkit-optimize-contrast;
+  image-rendering:crisp-edges;
+}
+.doc-editor .ed-canvas canvas.upper-canvas{
+  display:block;
+  background:transparent!important;
+  border-radius:0;
+  border:none;
+  box-shadow:none;
+}
 
-/* Кнопка удаления страницы — компактнее, крестик строго по центру */
+/* Кнопка удаления страницы */
 .doc-editor .ed-page-x{
   position:absolute;right:-8px;top:-8px;
   width:24px;height:24px;border-radius:50%;
@@ -450,7 +460,7 @@ main{flex:1}
 .doc-editor .ed-dl-row{display:flex;gap:8px;flex-wrap:wrap}
 .doc-editor .ed-dl-row-paid{margin-bottom:12px}
 
-/* === НИЖНЯЯ ПАНЕЛЬ (единая) + Пагинатор === */
+/* Нижняя панель + пагинатор */
 .doc-editor .ed-bottom{
   display:flex;
   align-items:center;
@@ -476,7 +486,6 @@ main{flex:1}
 }
 .doc-editor .ed-bottom .fab img{display:block;margin:auto}
 
-/* Центруем иконки только в круглых кнопках и пагинаторе */
 .doc-editor .ed-bottom .ed-pager img,
 .pager-btn img{display:block;margin:auto}
 
@@ -526,7 +535,7 @@ main{flex:1}
   opacity:.9;
 }
 
-/* === Состояния disabled (совместимость) === */
+/* disabled */
 .disabled,.btn.disabled,.ed-action.disabled,.ed-tool.disabled,.fab.disabled,.ed-menu>button.disabled{
   opacity:.45;filter:saturate(0);cursor:default;pointer-events:none
 }
@@ -534,7 +543,7 @@ main{flex:1}
 .ed-action.disabled{background:#fafafa;border-color:#eee;color:#bbb}
 .fab.disabled{background:#f3f3f3;color:#aaa;border-color:#eee}
 
-/* === КРОП-МОДАЛКА, ОПЛАТА и прочее === */
+/* КРОП-МОДАЛКА, ОПЛАТА и прочее */
 .crop-modal{max-width:920px}
 .crop-modal .crop-row{display:flex;align-items:center;gap:8px;margin:6px 0 8px;justify-content:center}
 .crop-modal .crop-row select{height:40px;border:1px solid #e5e5e5;border-radius:8px;padding:0 10px;background:#fff}
@@ -560,17 +569,17 @@ main{flex:1}
 .pay-modal .promo-err{color:#c33;font-size:12px}
 .pay-modal .pay-buttons{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 
-/* === Индикатор загрузки канвы === */
+/* Индикатор загрузки канвы */
 .ed-canvas-loading{position:fixed;inset:0;background:rgba(255,255,255,.6);display:flex;align-items:center;justify-content:center;z-index:120;font-weight:800;color:#333;gap:10px}
 .ed-canvas-loading .spinner{width:28px;height:28px;border:3px solid rgba(0,0,0,.2);border-top-color:#000;border-radius:50%;animation:spin .8s linear infinite}
 
-/* === ProgressOverlay (индикатор загрузки/восстановления/скачивания) === */
+/* ProgressOverlay */
 .progress-overlay{
   position: fixed;
   inset: 0;
   background: rgba(255,255,255,.65);
   backdrop-filter: saturate(120%) blur(2px);
-  z-index: 2000; /* поверх всего, включая .ed-canvas-loading */
+  z-index: 2000;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -614,16 +623,14 @@ main{flex:1}
   font-weight: 700;
   color: #444;
 }
-
 @keyframes po-ind{
   0%   { left: -40% }
   100% { left: 100% }
 }
 
-/* === Глобальная библиотека дефолтных подписей/печати === */
+/* Глобальная библиотека дефолтных подписей/печати */
 .defaults-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
 .defaults-grid .thumb{position:relative;width:100%;aspect-ratio:1/1;border:1px solid #eee;border-radius:12px;background:#f6f6f6;display:flex;align-items:center;justify-content:center;overflow:hidden}
-/* Центровка крестика удаления в админке стандартных объектов */
 .defaults-grid .thumb .thumb-x{
   position:absolute;right:4px;top:4px;width:18px;height:18px;border-radius:50%;
   border:1px solid #e5e5e5;background:#fff;color:#000;
@@ -632,7 +639,7 @@ main{flex:1}
 @media (max-width:1100px){.defaults-grid{grid-template-columns:repeat(2,1fr)}}
 @media (max-width:600px){.defaults-grid{grid-template-columns:1fr}}
 
-/* === Мобильные правки (панели, листы меню, адаптация тулбара) === */
+/* Мобильные правки */
 @media (max-width:960px){
   .header-inner{gap:10px}
   .nav{position:fixed;top:0;right:0;bottom:0;left:auto;width:min(320px,86vw);background:#fff;border-left:1px solid #eee;flex-direction:column;align-items:flex-start;gap:0;padding:16px;transform:translate3d(100%,0,0);transition:transform .25s ease;z-index:60;pointer-events:none;will-change:transform}
@@ -664,12 +671,9 @@ main{flex:1}
   .desktop-only{display:none!important}
   .mobile-only{display:block!important}
 
-  /* скрываем боковины редактора, растягиваем центр */
   .doc-editor .ed-body{grid-template-columns:1fr}
   .doc-editor .ed-left,.doc-editor .ed-right{display:none}
 
-  /* Без вертикального скролла и без ухода под нижнюю панель.
-     Строго центрируем; учитываем safe-area iOS. */
   .doc-editor .ed-canvas-wrap{
     width:100%;
     padding-bottom:calc(12px + env(safe-area-inset-bottom, 0px));
@@ -684,7 +688,6 @@ main{flex:1}
     max-width: 100% !important;
   }
 
-  /* Единая нижняя панель — фиксируем по низу */
   .doc-editor .ed-bottom{
     position:fixed;left:0;right:0;bottom:0;z-index:100;
     height:var(--ed-bottom-h-mobile);
@@ -692,7 +695,6 @@ main{flex:1}
     border-top:1px solid #eee;background:#fff;
   }
 
-  /* Листы меню на мобиле: у нижней панели */
   .ed-sheet{max-height:calc(100vh - var(--hdr-h) - var(--ed-bottom-h-mobile) - 24px);overflow:auto}
   .ed-sheet.bottom-left,
   .ed-sheet.bottom-right{
@@ -700,7 +702,6 @@ main{flex:1}
     bottom:calc(var(--ed-bottom-h-mobile) + 12px);
   }
 
-  /* Тулбар текста — компактнее */
   .doc-editor .ed-toolbar{flex-wrap:nowrap; gap:4px; padding:4px; max-width:100%}
   .doc-editor .ed-toolbar select,
   .doc-editor .ed-toolbar input[type=color],
@@ -708,12 +709,10 @@ main{flex:1}
   .doc-editor .ed-toolbar .val{font-size:14px;min-width:24px}
   .doc-editor .ed-toolbar .sep{margin:0 2px}
 
-  /* История — двухколоночная сетка в один столбец (кнопка не уезжает) */
   .two-col{
     grid-template-columns:1fr !important;
   }
 
-  /* Профиль: личные данные в одну колонку на мобилке */
   #profile .form-grid{
     grid-template-columns: 1fr !important;
   }
