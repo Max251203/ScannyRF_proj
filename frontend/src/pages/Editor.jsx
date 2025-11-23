@@ -159,7 +159,7 @@ function fitCanvasForPage (page) {
   if (contW < 10 || contH < 10) return
   const docW = cv.width
   const docH = cv.height
-  const margin = 40
+  const margin = 24
   const availW = Math.max(100, contW - margin)
   const availH = Math.max(100, contH - margin)
   const scale = Math.min(availW / docW, availH / docH)
@@ -456,7 +456,7 @@ export default function Editor () {
     if (!fobj || fobj.__delPatched) return
     const F = fabric
     const del = new F.Control({
-      x: 0.5, y: -0.5, offsetX: 24, offsetY: -24, cursorStyle: 'pointer',
+      x: 0.5, y: -0.5, offsetX: 32, offsetY: -32, cursorStyle: 'pointer',
       mouseUpHandler: (_, tr) => {
         const t = tr.target; const cv = t?.canvas
         if (!cv) return true
@@ -469,14 +469,20 @@ export default function Editor () {
         return true
       },
       render: (ctx, left, top) => {
-        const r = 24
+        const size = 32
         ctx.save()
+        ctx.shadowColor = 'rgba(0,0,0,0.35)'
+        ctx.shadowBlur = 8
         ctx.fillStyle = '#E26D5C'
-        ctx.beginPath(); ctx.arc(left, top, r, 0, Math.PI * 2); ctx.fill()
-        ctx.strokeStyle = '#fff'; ctx.lineWidth = 3
+        ctx.strokeStyle = '#fff'
+        ctx.lineWidth = 2
+        ctx.beginPath(); ctx.arc(left, top, size / 2, 0, Math.PI * 2); ctx.fill(); ctx.stroke()
+        ctx.shadowColor = 'transparent'
+        ctx.strokeStyle = '#fff'; ctx.lineWidth = 4; ctx.lineCap = 'round'
+        const s = size * 0.35
         ctx.beginPath()
-        ctx.moveTo(left - 8, top - 8); ctx.lineTo(left + 8, top + 8)
-        ctx.moveTo(left + 8, top - 8); ctx.lineTo(left - 8, top + 8)
+        ctx.moveTo(left - s, top - s); ctx.lineTo(left + s, top + s)
+        ctx.moveTo(left + s, top - s); ctx.lineTo(left - s, top + s)
         ctx.stroke()
         ctx.restore()
       }
@@ -491,9 +497,46 @@ export default function Editor () {
       obj.set({
         hasControls: true, hasBorders: true, lockUniScaling: false,
         transparentCorners: false, cornerStyle: 'circle', cornerColor: '#E26D5C',
-        objectCaching: true, noScaleCache: false, cornerSize: 28, touchCornerSize: 64
+        cornerStrokeColor: '#fff', borderColor: '#E26D5C', borderDashArray: [5, 5],
+        padding: 10, objectCaching: true, noScaleCache: false, cornerSize: 24, touchCornerSize: 48
       })
     } catch {}
+  }
+  function clamp(obj) {
+    obj.setCoords()
+    const w = obj.canvas.width
+    const h = obj.canvas.height
+    const r = obj.getBoundingRect()
+    
+    // Ограничение размера, если объект больше холста
+    if (r.width > w) {
+        const currentScale = obj.scaleX || 1
+        const newScale = currentScale * (w / r.width)
+        obj.scaleX = newScale
+        obj.scaleY = newScale
+        obj.setCoords()
+    }
+    if (r.height > h) {
+        const currentScale = obj.scaleY || 1
+        const newScale = currentScale * (h / r.height)
+        obj.scaleX = newScale
+        obj.scaleY = newScale
+        obj.setCoords()
+    }
+
+    // Ограничение позиции
+    const br = obj.getBoundingRect() // recalculate after scale
+    let dx = 0
+    let dy = 0
+    if (br.left < 0) dx = -br.left
+    else if (br.left + br.width > w) dx = w - (br.left + br.width)
+    if (br.top < 0) dy = -br.top
+    else if (br.top + br.height > h) dy = h - (br.top + br.height)
+    if (dx || dy) {
+      obj.left += dx
+      obj.top += dy
+      obj.setCoords()
+    }
   }
   async function ensureCanvas (page, pageIndex, onPatch) {
     await ensureFabric()
@@ -535,21 +578,6 @@ export default function Editor () {
     c.on('selection:created', onSelectionChanged)
     c.on('selection:updated', onSelectionChanged)
     c.on('selection:cleared', () => setPanelOpen(false))
-    function clamp(obj) {
-       obj.setCoords()
-       const coords = obj.getCoords ? obj.getCoords() : []
-       if(!coords.length) return
-       const xs = coords.map(p=>p.x), ys = coords.map(p=>p.y)
-       const w = c.width, h = c.height
-       let minX=Math.min(...xs), maxX=Math.max(...xs)
-       let minY=Math.min(...ys), maxY=Math.max(...ys)
-       let dx=0, dy=0
-       if(minX<0) dx = -minX
-       else if(maxX>w) dx = w - maxX
-       if(minY<0) dy = -minY
-       else if(maxY>h) dy = h - maxY
-       if(dx||dy) { obj.left += dx; obj.top += dy; obj.setCoords() }
-    }
     c.on('object:moving', (e) => { if(e.target) clamp(e.target) })
     c.on('object:scaling', (e) => { if(e.target) clamp(e.target) })
     c.on('object:rotating', (e) => { if(e.target) clamp(e.target) })
@@ -593,6 +621,7 @@ export default function Editor () {
     installDeleteControl()
     return c
   }
+
   function ensurePageRenderedFactory (ctx) {
     const { pagesRef, sendPatch } = ctx
     return async function ensurePageRenderedInner (index) {
@@ -692,28 +721,12 @@ export default function Editor () {
     cv.setDimensions({ width: oldH, height: oldW })
     if (page.bgObj) {
         const img = page.bgObj
-        const oldAngle = img.angle || 0
-        const newAngle = (oldAngle + 90) % 360
-        img.set({ angle: newAngle })
-        if (newAngle === 90) {
-            img.set({ left: oldH, top: 0 })
-        } else if (newAngle === 180) {
-            img.set({ left: oldH, top: oldW })
-        } else if (newAngle === 270) {
-            img.set({ left: 0, top: oldW })
-        } else {
-            img.set({ left: 0, top: 0 })
-        }
+        img.center()
         img.setCoords()
     }
     const objs = cv.getObjects().filter(o => o !== page.bgObj)
     for (const obj of objs) {
-        let left = obj.left
-        let top = obj.top
-        left = Math.max(0, Math.min(left, oldH - (obj.width * obj.scaleX)))
-        top = Math.max(0, Math.min(top, oldW - (obj.height * obj.scaleY)))
-        obj.set({ left, top })
-        obj.setCoords()
+        clamp(obj)
     }
     page.meta.doc_w = oldH
     page.meta.doc_h = oldW
@@ -947,6 +960,7 @@ export default function Editor () {
       const s = Math.min(1, (cv.width * 0.25) / (img.width || 1))
       img.set({ left: Math.round(cv.width / 2 - (img.width * s) / 2), top: Math.round(cv.height / 2 - (img.height * s) / 2), scaleX: s, scaleY: s, selectable: true })
       img.__srcOriginal = url; ensureDeleteControlFor(img); img.__scannyId = 'ov_' + Math.random().toString(36).slice(2); cv.add(img); cv.setActiveObject(img); cv.requestRenderAll()
+      clamp(img)
       sendPatch([{ op: 'overlay_upsert', page: cur, obj: { t: 'im', id: img.__scannyId, left: img.left, top: img.top, angle: img.angle, flipX: !!img.flipX, flipY: !!img.flipY, scaleX: img.scaleX, scaleY: img.scaleY, src: url } }])
       setUndoStack(stk => [...stk, { type: 'add_one', page: cur, id: img.__scannyId }])
     })
