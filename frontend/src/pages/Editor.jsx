@@ -456,7 +456,7 @@ export default function Editor () {
     if (!fobj || fobj.__delPatched) return
     const F = fabric
     const del = new F.Control({
-      x: 0.5, y: -0.5, offsetX: 32, offsetY: -32, cursorStyle: 'pointer',
+      x: 0.5, y: -0.5, offsetX: 24, offsetY: -24, cursorStyle: 'pointer',
       mouseUpHandler: (_, tr) => {
         const t = tr.target; const cv = t?.canvas
         if (!cv) return true
@@ -469,17 +469,17 @@ export default function Editor () {
         return true
       },
       render: (ctx, left, top) => {
-        const size = 32
+        const size = 24
         ctx.save()
         ctx.shadowColor = 'rgba(0,0,0,0.35)'
-        ctx.shadowBlur = 8
+        ctx.shadowBlur = 6
         ctx.fillStyle = '#E26D5C'
         ctx.strokeStyle = '#fff'
         ctx.lineWidth = 2
         ctx.beginPath(); ctx.arc(left, top, size / 2, 0, Math.PI * 2); ctx.fill(); ctx.stroke()
         ctx.shadowColor = 'transparent'
-        ctx.strokeStyle = '#fff'; ctx.lineWidth = 4; ctx.lineCap = 'round'
-        const s = size * 0.35
+        ctx.strokeStyle = '#fff'; ctx.lineWidth = 3; ctx.lineCap = 'round'
+        const s = size * 0.3
         ctx.beginPath()
         ctx.moveTo(left - s, top - s); ctx.lineTo(left + s, top + s)
         ctx.moveTo(left + s, top - s); ctx.lineTo(left - s, top + s)
@@ -498,7 +498,7 @@ export default function Editor () {
         hasControls: true, hasBorders: true, lockUniScaling: false,
         transparentCorners: false, cornerStyle: 'circle', cornerColor: '#E26D5C',
         cornerStrokeColor: '#fff', borderColor: '#E26D5C', borderDashArray: [5, 5],
-        padding: 10, objectCaching: true, noScaleCache: false, cornerSize: 24, touchCornerSize: 48
+        padding: 8, objectCaching: true, noScaleCache: false, cornerSize: 20, touchCornerSize: 48
       })
     } catch {}
   }
@@ -508,7 +508,6 @@ export default function Editor () {
     const h = obj.canvas.height
     const r = obj.getBoundingRect()
     
-    // Ограничение размера, если объект больше холста
     if (r.width > w) {
         const currentScale = obj.scaleX || 1
         const newScale = currentScale * (w / r.width)
@@ -524,8 +523,7 @@ export default function Editor () {
         obj.setCoords()
     }
 
-    // Ограничение позиции
-    const br = obj.getBoundingRect() // recalculate after scale
+    const br = obj.getBoundingRect()
     let dx = 0
     let dy = 0
     if (br.left < 0) dx = -br.left
@@ -621,7 +619,6 @@ export default function Editor () {
     installDeleteControl()
     return c
   }
-
   function ensurePageRenderedFactory (ctx) {
     const { pagesRef, sendPatch } = ctx
     return async function ensurePageRenderedInner (index) {
@@ -718,23 +715,40 @@ export default function Editor () {
     const cv = await ensureCanvas(page, cur, sendPatch)
     const oldW = cv.width
     const oldH = cv.height
-    cv.setDimensions({ width: oldH, height: oldW })
-    if (page.bgObj) {
-        const img = page.bgObj
-        img.center()
-        img.setCoords()
-    }
+    const newW = oldH
+    const newH = oldW
+    
+    // Изменяем размеры холста
+    cv.setDimensions({ width: newW, height: newH })
+    
+    // Вычисляем смещение центра
+    const deltaX = (newW - oldW) / 2
+    const deltaY = (newH - oldH) / 2
+
+    // Сдвигаем объекты на разницу центров, чтобы сохранить позицию относительно документа
     const objs = cv.getObjects().filter(o => o !== page.bgObj)
     for (const obj of objs) {
+        obj.left += deltaX
+        obj.top += deltaY
+        obj.setCoords()
+        // Применяем кламп только если объект вышел за новые границы
         clamp(obj)
     }
-    page.meta.doc_w = oldH
-    page.meta.doc_h = oldW
+
+    // Центрируем фон (документ)
+    if (page.bgObj) {
+        page.bgObj.center()
+        page.bgObj.setCoords()
+    }
+
+    page.meta.doc_w = newW
+    page.meta.doc_h = newH
     page.landscape = !page.landscape
     fitCanvasForPage(page)
     cv.requestRenderAll()
     sendPatch([{ op: 'rotate_page', page: cur, landscape: !!page.landscape }])
   }
+
   async function deletePageAt (idx) {
       if (!pagesRef.current?.length) return
       if (pagesRef.current.length <= 1) {
