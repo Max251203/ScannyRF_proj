@@ -456,7 +456,7 @@ export default function Editor () {
     if (!fobj || fobj.__delPatched) return
     const F = fabric
     const del = new F.Control({
-      x: 0.5, y: -0.5, offsetX: 24, offsetY: -24, cursorStyle: 'pointer',
+      x: 0.5, y: -0.5, offsetX: 0, offsetY: 0, cursorStyle: 'pointer',
       mouseUpHandler: (_, tr) => {
         const t = tr.target; const cv = t?.canvas
         if (!cv) return true
@@ -468,21 +468,27 @@ export default function Editor () {
         }
         return true
       },
-      render: (ctx, left, top) => {
-        const size = 24
+      render: (ctx, left, top, styleOverride, fabricObject) => {
+        const cvW = fabricObject?.canvas?.width || 1000
+        const size = Math.max(36, Math.round(cvW / 30))
+        
         ctx.save()
+        ctx.translate(left, top)
+        // Смещаем центр отрисовки, чтобы кнопка не наезжала на объект
+        ctx.translate(size * 0.6, -size * 0.6)
+        
         ctx.shadowColor = 'rgba(0,0,0,0.35)'
         ctx.shadowBlur = 6
         ctx.fillStyle = '#E26D5C'
         ctx.strokeStyle = '#fff'
         ctx.lineWidth = 2
-        ctx.beginPath(); ctx.arc(left, top, size / 2, 0, Math.PI * 2); ctx.fill(); ctx.stroke()
+        ctx.beginPath(); ctx.arc(0, 0, size / 2, 0, Math.PI * 2); ctx.fill(); ctx.stroke()
         ctx.shadowColor = 'transparent'
-        ctx.strokeStyle = '#fff'; ctx.lineWidth = 3; ctx.lineCap = 'round'
+        ctx.strokeStyle = '#fff'; ctx.lineWidth = Math.max(2, size * 0.08); ctx.lineCap = 'round'
         const s = size * 0.3
         ctx.beginPath()
-        ctx.moveTo(left - s, top - s); ctx.lineTo(left + s, top + s)
-        ctx.moveTo(left + s, top - s); ctx.lineTo(left - s, top + s)
+        ctx.moveTo(-s, -s); ctx.lineTo(s, s)
+        ctx.moveTo(s, -s); ctx.lineTo(-s, s)
         ctx.stroke()
         ctx.restore()
       }
@@ -494,11 +500,17 @@ export default function Editor () {
   function ensureDeleteControlFor (obj) {
     try {
       if (obj && obj.controls && window.__scannyDelControl) obj.controls.tr = window.__scannyDelControl
+      
+      const cvW = obj.canvas?.width || 1000
+      const cornerSize = Math.max(30, Math.round(cvW / 35))
+      const touchSize = Math.max(60, cornerSize * 2.5)
+
       obj.set({
         hasControls: true, hasBorders: true, lockUniScaling: false,
         transparentCorners: false, cornerStyle: 'circle', cornerColor: '#E26D5C',
         cornerStrokeColor: '#fff', borderColor: '#E26D5C', borderDashArray: [5, 5],
-        padding: 8, objectCaching: true, noScaleCache: false, cornerSize: 20, touchCornerSize: 48
+        padding: Math.max(8, cvW / 100), objectCaching: true, noScaleCache: false, 
+        cornerSize: cornerSize, touchCornerSize: touchSize
       })
     } catch {}
   }
@@ -699,44 +711,65 @@ export default function Editor () {
   }
   function placeBgObject(cv, page, img) {
       page.bgObj = img
+      
+      const targetW = page.meta.doc_w || img.width || 1
+      const targetH = page.meta.doc_h || img.height || 1
+      
+      cv.setDimensions({ width: targetW, height: targetH })
       cv.add(img)
       img.sendToBack()
-      const iW = img.width || 1
-      const iH = img.height || 1
-      cv.setDimensions({ width: iW, height: iH })
-      img.set({ left: 0, top: 0, scaleX: 1, scaleY: 1, angle: 0 })
+      
+      img.scaleX = 1
+      img.scaleY = 1
+      
+      if (targetW !== img.width || targetH !== img.height || isMobile) {
+          if (isMobile) {
+             const s = Math.min(targetW / (img.width||1), targetH / (img.height||1))
+             img.scaleX = s
+             img.scaleY = s
+          }
+          img.center()
+      } else {
+          img.set({ left: 0, top: 0, angle: 0 })
+      }
+      
       img.setCoords()
-      page.meta.doc_w = iW
-      page.meta.doc_h = iH
   }
   async function rotatePage () {
     if (!pagesRef.current || pagesRef.current.length === 0) return
     const page = pagesRef.current[cur]
     const cv = await ensureCanvas(page, cur, sendPatch)
+    
     const oldW = cv.width
     const oldH = cv.height
     const newW = oldH
     const newH = oldW
     
-    // Изменяем размеры холста
     cv.setDimensions({ width: newW, height: newH })
     
-    // Вычисляем смещение центра
     const deltaX = (newW - oldW) / 2
     const deltaY = (newH - oldH) / 2
 
-    // Сдвигаем объекты на разницу центров, чтобы сохранить позицию относительно документа
     const objs = cv.getObjects().filter(o => o !== page.bgObj)
     for (const obj of objs) {
         obj.left += deltaX
         obj.top += deltaY
         obj.setCoords()
-        // Применяем кламп только если объект вышел за новые границы
-        clamp(obj)
+        if (isMobile) clamp(obj)
     }
 
-    // Центрируем фон (документ)
     if (page.bgObj) {
+        page.bgObj.scaleX = 1
+        page.bgObj.scaleY = 1
+        
+        if (isMobile) {
+           const w = page.bgObj.width || 1
+           const h = page.bgObj.height || 1
+           const s = Math.min(newW / w, newH / h)
+           page.bgObj.scaleX = s
+           page.bgObj.scaleY = s
+        }
+
         page.bgObj.center()
         page.bgObj.setCoords()
     }
@@ -744,9 +777,15 @@ export default function Editor () {
     page.meta.doc_w = newW
     page.meta.doc_h = newH
     page.landscape = !page.landscape
+    
     fitCanvasForPage(page)
     cv.requestRenderAll()
-    sendPatch([{ op: 'rotate_page', page: cur, landscape: !!page.landscape }])
+    
+    // Принудительный full save для сохранения ориентации
+    try {
+       const snapshot = await serializeDocument()
+       if (snapshot) await AuthAPI.saveDraft(snapshot)
+    } catch {}
   }
 
   async function deletePageAt (idx) {
