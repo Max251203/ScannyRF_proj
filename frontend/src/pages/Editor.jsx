@@ -148,31 +148,48 @@ async function renderPDFPageToCanvas (pdf, pageNum, scale) {
   await p.render({ canvasContext: ctx, viewport: vp }).promise
   return canvas
 }
+
+// Функция подгонки (с округлением и translateZ для четкости)
 function fitCanvasForPage (page) {
   if (!page || !page.canvas) return
   const cv = page.canvas
   const wrap = cv.wrapperEl ? cv.wrapperEl.parentNode : null
   const container = document.querySelector('.ed-canvas-wrap')
   if (!wrap || !container) return
+  
   const contW = container.clientWidth
   const contH = container.clientHeight
   if (contW < 10 || contH < 10) return
+
   const docW = cv.width
   const docH = cv.height
-  const margin = 24
+  
+  // На мобильном убираем margin для максимального размера
+  const isMobile = window.matchMedia('(max-width: 960px)').matches
+  const margin = isMobile ? 0 : 24 
+  
   const availW = Math.max(100, contW - margin)
   const availH = Math.max(100, contH - margin)
+  
   const scale = Math.min(availW / docW, availH / docH)
-  wrap.style.width = `${docW * scale}px`
-  wrap.style.height = `${docH * scale}px`
+  
+  // Округляем размеры контейнера, чтобы избежать субпиксельного мыла
+  const finalW = Math.floor(docW * scale)
+  const finalH = Math.floor(docH * scale)
+
+  wrap.style.width = `${finalW}px`
+  wrap.style.height = `${finalH}px`
+  
   if (cv.wrapperEl) {
-      cv.wrapperEl.style.transform = `scale(${scale})`
+      // translateZ(0) форсирует GPU, улучшает четкость на мобилках
+      cv.wrapperEl.style.transform = `scale(${scale}) translateZ(0)`
       cv.wrapperEl.style.transformOrigin = 'top left'
       cv.wrapperEl.style.width = `${docW}px`
       cv.wrapperEl.style.height = `${docH}px`
   }
   cv.calcOffset()
 }
+
 function randDocId () { return String(Math.floor(1e15 + Math.random() * 9e15)) }
 function genDefaultName () { const a = Math.floor(Math.random() * 1e6), b = Math.floor(Math.random() * 1e6); return `${a}-${b}` }
 function sanitizeName (s) {
@@ -451,12 +468,14 @@ export default function Editor () {
       })()
     }
   }, [pages])
+
+  // ВОССТАНОВЛЕНА СТАРАЯ ФУНКЦИЯ (исправляет область нажатия кнопки)
   function installDeleteControl () {
     const fobj = fabric.Object
     if (!fobj || fobj.__delPatched) return
     const F = fabric
     const del = new F.Control({
-      x: 0.5, y: -0.5, offsetX: 0, offsetY: 0, cursorStyle: 'pointer',
+      x: 0.5, y: -0.5, offsetX: 24, offsetY: -24, cursorStyle: 'pointer',
       mouseUpHandler: (_, tr) => {
         const t = tr.target; const cv = t?.canvas
         if (!cv) return true
@@ -468,27 +487,21 @@ export default function Editor () {
         }
         return true
       },
-      render: (ctx, left, top, styleOverride, fabricObject) => {
-        const cvW = fabricObject?.canvas?.width || 1000
-        const size = Math.max(36, Math.round(cvW / 30))
-        
+      render: (ctx, left, top) => {
+        const size = 24
         ctx.save()
-        ctx.translate(left, top)
-        // Смещаем центр отрисовки, чтобы кнопка не наезжала на объект
-        ctx.translate(size * 0.6, -size * 0.6)
-        
         ctx.shadowColor = 'rgba(0,0,0,0.35)'
         ctx.shadowBlur = 6
         ctx.fillStyle = '#E26D5C'
         ctx.strokeStyle = '#fff'
         ctx.lineWidth = 2
-        ctx.beginPath(); ctx.arc(0, 0, size / 2, 0, Math.PI * 2); ctx.fill(); ctx.stroke()
+        ctx.beginPath(); ctx.arc(left, top, size / 2, 0, Math.PI * 2); ctx.fill(); ctx.stroke()
         ctx.shadowColor = 'transparent'
-        ctx.strokeStyle = '#fff'; ctx.lineWidth = Math.max(2, size * 0.08); ctx.lineCap = 'round'
+        ctx.strokeStyle = '#fff'; ctx.lineWidth = 3; ctx.lineCap = 'round'
         const s = size * 0.3
         ctx.beginPath()
-        ctx.moveTo(-s, -s); ctx.lineTo(s, s)
-        ctx.moveTo(s, -s); ctx.lineTo(-s, s)
+        ctx.moveTo(left - s, top - s); ctx.lineTo(left + s, top + s)
+        ctx.moveTo(left + s, top - s); ctx.lineTo(left - s, top + s)
         ctx.stroke()
         ctx.restore()
       }
@@ -497,23 +510,21 @@ export default function Editor () {
     window.__scannyDelControl = del
     fobj.__delPatched = true
   }
+
+  // ВОССТАНОВЛЕНА СТАРАЯ ФУНКЦИЯ (исправляет отступы контролов)
   function ensureDeleteControlFor (obj) {
     try {
       if (obj && obj.controls && window.__scannyDelControl) obj.controls.tr = window.__scannyDelControl
-      
-      const cvW = obj.canvas?.width || 1000
-      const cornerSize = Math.max(30, Math.round(cvW / 35))
-      const touchSize = Math.max(60, cornerSize * 2.5)
-
       obj.set({
         hasControls: true, hasBorders: true, lockUniScaling: false,
         transparentCorners: false, cornerStyle: 'circle', cornerColor: '#E26D5C',
         cornerStrokeColor: '#fff', borderColor: '#E26D5C', borderDashArray: [5, 5],
-        padding: Math.max(8, cvW / 100), objectCaching: true, noScaleCache: false, 
-        cornerSize: cornerSize, touchCornerSize: touchSize
+        padding: 8, objectCaching: true, noScaleCache: false, cornerSize: 20, touchCornerSize: 48
       })
     } catch {}
   }
+
+  // ВОССТАНОВЛЕНА СТАРАЯ ЛОГИКА CLAMP (ограничение перемещения)
   function clamp(obj) {
     obj.setCoords()
     const w = obj.canvas.width
@@ -548,6 +559,7 @@ export default function Editor () {
       obj.setCoords()
     }
   }
+
   async function ensureCanvas (page, pageIndex, onPatch) {
     await ensureFabric()
     if (page.canvas) return page.canvas
@@ -711,30 +723,18 @@ export default function Editor () {
   }
   function placeBgObject(cv, page, img) {
       page.bgObj = img
-      
-      const targetW = page.meta.doc_w || img.width || 1
-      const targetH = page.meta.doc_h || img.height || 1
-      
-      cv.setDimensions({ width: targetW, height: targetH })
       cv.add(img)
       img.sendToBack()
-      
-      img.scaleX = 1
-      img.scaleY = 1
-      
-      if (targetW !== img.width || targetH !== img.height || isMobile) {
-          if (isMobile) {
-             const s = Math.min(targetW / (img.width||1), targetH / (img.height||1))
-             img.scaleX = s
-             img.scaleY = s
-          }
-          img.center()
-      } else {
-          img.set({ left: 0, top: 0, angle: 0 })
-      }
-      
+      const iW = img.width || 1
+      const iH = img.height || 1
+      cv.setDimensions({ width: iW, height: iH })
+      img.set({ left: 0, top: 0, scaleX: 1, scaleY: 1, angle: 0 })
       img.setCoords()
+      page.meta.doc_w = iW
+      page.meta.doc_h = iH
   }
+
+  // ВОССТАНОВЛЕНА СТАРАЯ ЛОГИКА СМЕЩЕНИЙ + ИСПРАВЛЕНО МАСШТАБИРОВАНИЕ ФОНА ДЛЯ ДЕСКТОПА
   async function rotatePage () {
     if (!pagesRef.current || pagesRef.current.length === 0) return
     const page = pagesRef.current[cur]
@@ -745,8 +745,10 @@ export default function Editor () {
     const newW = oldH
     const newH = oldW
     
+    // Меняем размеры
     cv.setDimensions({ width: newW, height: newH })
     
+    // Считаем смещение центра, чтобы объекты остались "на месте" относительно документа
     const deltaX = (newW - oldW) / 2
     const deltaY = (newH - oldH) / 2
 
@@ -755,20 +757,20 @@ export default function Editor () {
         obj.left += deltaX
         obj.top += deltaY
         obj.setCoords()
-        if (isMobile) clamp(obj)
+        // Используем clamp из старого файла
+        clamp(obj)
     }
 
     if (page.bgObj) {
         page.bgObj.scaleX = 1
         page.bgObj.scaleY = 1
         
-        if (isMobile) {
-           const w = page.bgObj.width || 1
-           const h = page.bgObj.height || 1
-           const s = Math.min(newW / w, newH / h)
-           page.bgObj.scaleX = s
-           page.bgObj.scaleY = s
-        }
+        // ВАЖНО: Убрали "if (isMobile)", теперь фон вписывается всегда (фикс растягивания на ПК)
+        const w = page.bgObj.width || 1
+        const h = page.bgObj.height || 1
+        const s = Math.min(newW / w, newH / h)
+        page.bgObj.scaleX = s
+        page.bgObj.scaleY = s
 
         page.bgObj.center()
         page.bgObj.setCoords()
@@ -781,7 +783,6 @@ export default function Editor () {
     fitCanvasForPage(page)
     cv.requestRenderAll()
     
-    // Принудительный full save для сохранения ориентации
     try {
        const snapshot = await serializeDocument()
        if (snapshot) await AuthAPI.saveDraft(snapshot)
