@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import { toast } from '../components/Toast.jsx'
 import { AuthAPI } from '../api'
 import {
@@ -128,7 +128,7 @@ function sliceCanvasToPages (canvas) {
     tmp.width = canvas.width; tmp.height = sliceH
     try { tctx.textBaseline = 'alphabetic' } catch {}
     tctx.fillStyle = '#fff'
-    tctx.fillRect(0, 0, tmp.width, tmp.height)
+    tctx.fillRect(0,0, tmp.width, tmp.height)
     tctx.drawImage(canvas, 0, y, canvas.width, sliceH, 0, 0, tmp.width, tmp.height)
     out.push(tmp.toDataURL('image/png'))
   }
@@ -148,50 +148,48 @@ async function renderPDFPageToCanvas (pdf, pageNum, scale) {
   await p.render({ canvasContext: ctx, viewport: vp }).promise
   return canvas
 }
+
+// Функция подгонки (с округлением и translateZ для четкости)
 function fitCanvasForPage (page) {
   if (!page || !page.canvas) return
-
   const cv = page.canvas
   const wrap = cv.wrapperEl ? cv.wrapperEl.parentNode : null
   const container = document.querySelector('.ed-canvas-wrap')
   if (!wrap || !container) return
-
+  
   const contW = container.clientWidth
   const contH = container.clientHeight
   if (contW < 10 || contH < 10) return
 
   const docW = cv.width
   const docH = cv.height
-
+  
+  // На мобильном убираем margin для максимального размера
   const isMobile = window.matchMedia('(max-width: 960px)').matches
-  const margin = isMobile ? 0 : 24
+  const margin = isMobile ? 0 : 24 
+  
   const availW = Math.max(100, contW - margin)
   const availH = Math.max(100, contH - margin)
-
-  // Запоминаем исходный размер документа (до поворотов)
-  if (page._baseDocW == null || page._baseDocH == null) {
-    page._baseDocW = docW
-    page._baseDocH = docH
-  }
-
-  const baseMax = Math.max(page._baseDocW, page._baseDocH)
-  const scale = Math.min(availW, availH) / baseMax
-
-  const finalW = docW * scale
-  const finalH = docH * scale
+  
+  const scale = Math.min(availW / docW, availH / docH)
+  
+  // Округляем размеры контейнера, чтобы избежать субпиксельного мыла
+  const finalW = Math.floor(docW * scale)
+  const finalH = Math.floor(docH * scale)
 
   wrap.style.width = `${finalW}px`
   wrap.style.height = `${finalH}px`
-
+  
   if (cv.wrapperEl) {
-    cv.wrapperEl.style.transform = `scale(${scale}) translateZ(0)`
-    cv.wrapperEl.style.transformOrigin = 'top left'
-    cv.wrapperEl.style.width = `${docW}px`
-    cv.wrapperEl.style.height = `${docH}px`
+      // translateZ(0) форсирует GPU, улучшает четкость на мобилках
+      cv.wrapperEl.style.transform = `scale(${scale}) translateZ(0)`
+      cv.wrapperEl.style.transformOrigin = 'top left'
+      cv.wrapperEl.style.width = `${docW}px`
+      cv.wrapperEl.style.height = `${docH}px`
   }
-
   cv.calcOffset()
 }
+
 function randDocId () { return String(Math.floor(1e15 + Math.random() * 9e15)) }
 function genDefaultName () { const a = Math.floor(Math.random() * 1e6), b = Math.floor(Math.random() * 1e6); return `${a}-${b}` }
 function sanitizeName (s) {
@@ -308,15 +306,15 @@ export default function Editor () {
   useEffect(() => {
     if (isAuthed) {
       AuthAPI.getBillingStatus().then((st) => {
-        setBilling(st)
-        if (st && ('price_single' in st)) {
-          setPrices({
-            single: Number(st.price_single || 0),
-            month: Number(st.price_month || 0),
-            year: Number(st.price_year || 0)
-          })
-        }
-      }).catch(() => {})
+          setBilling(st)
+          if (st && ('price_single' in st)) {
+            setPrices({
+              single: Number(st.price_single || 0),
+              month: Number(st.price_month || 0),
+              year: Number(st.price_year || 0)
+            })
+          }
+        }).catch(() => {})
     }
   }, [isAuthed])
   useEffect(() => {
@@ -380,7 +378,7 @@ export default function Editor () {
   useEffect(() => {
     if (!canvasWrapRef.current) return
     const handleResize = throttle(() => {
-      pagesRef.current.forEach((p) => { if (p?.canvas) fitCanvasForPage(p) })
+       pagesRef.current.forEach((p) => { if (p?.canvas) fitCanvasForPage(p) })
     }, 50)
     const ro = new ResizeObserver(handleResize)
     ro.observe(canvasWrapRef.current)
@@ -428,7 +426,7 @@ export default function Editor () {
     }
   }, [])
   useEffect(() => {
-    ;(async () => {
+    (async () => {
       if (pagesRef.current.length || isDeletingRef.current) return
       if (!localStorage.getItem('access')) return
       const srv = await AuthAPI.getDraft().catch(() => null)
@@ -470,16 +468,14 @@ export default function Editor () {
       })()
     }
   }, [pages])
+
+  // ВОССТАНОВЛЕНА СТАРАЯ ФУНКЦИЯ (исправляет область нажатия кнопки)
   function installDeleteControl () {
     const fobj = fabric.Object
     if (!fobj || fobj.__delPatched) return
     const F = fabric
     const del = new F.Control({
-      x: 0.5,
-      y: -0.5,
-      offsetX: 0,
-      offsetY: 0,
-      cursorStyle: 'pointer',
+      x: 0.5, y: -0.5, offsetX: 24, offsetY: -24, cursorStyle: 'pointer',
       mouseUpHandler: (_, tr) => {
         const t = tr.target; const cv = t?.canvas
         if (!cv) return true
@@ -491,24 +487,21 @@ export default function Editor () {
         }
         return true
       },
-      render: (ctx, left, top, styleOverride, fabricObject) => {
-        const cvW = fabricObject?.canvas?.width || 1000
-        const size = Math.max(36, Math.round(cvW / 30))
+      render: (ctx, left, top) => {
+        const size = 24
         ctx.save()
-        ctx.translate(left, top)
-        ctx.translate(size * 0.6, -size * 0.6)
         ctx.shadowColor = 'rgba(0,0,0,0.35)'
         ctx.shadowBlur = 6
         ctx.fillStyle = '#E26D5C'
         ctx.strokeStyle = '#fff'
         ctx.lineWidth = 2
-        ctx.beginPath(); ctx.arc(0, 0, size / 2, 0, Math.PI * 2); ctx.fill(); ctx.stroke()
+        ctx.beginPath(); ctx.arc(left, top, size / 2, 0, Math.PI * 2); ctx.fill(); ctx.stroke()
         ctx.shadowColor = 'transparent'
-        ctx.strokeStyle = '#fff'; ctx.lineWidth = Math.max(2, size * 0.08); ctx.lineCap = 'round'
+        ctx.strokeStyle = '#fff'; ctx.lineWidth = 3; ctx.lineCap = 'round'
         const s = size * 0.3
         ctx.beginPath()
-        ctx.moveTo(-s, -s); ctx.lineTo(s, s)
-        ctx.moveTo(s, -s); ctx.lineTo(-s, s)
+        ctx.moveTo(left - s, top - s); ctx.lineTo(left + s, top + s)
+        ctx.moveTo(left + s, top - s); ctx.lineTo(left - s, top + s)
         ctx.stroke()
         ctx.restore()
       }
@@ -517,62 +510,73 @@ export default function Editor () {
     window.__scannyDelControl = del
     fobj.__delPatched = true
   }
+
+  // ВОССТАНОВЛЕНА СТАРАЯ ФУНКЦИЯ (исправляет отступы контролов)
   function ensureDeleteControlFor (obj) {
     try {
       if (obj && obj.controls && window.__scannyDelControl) obj.controls.tr = window.__scannyDelControl
-      const cvW = obj.canvas?.width || 1000
-      const cornerSize = Math.max(30, Math.round(cvW / 35))
-      const touchSize = Math.max(60, cornerSize * 2.5)
       obj.set({
-        hasControls: true,
-        hasBorders: true,
-        lockUniScaling: false,
-        transparentCorners: false,
-        cornerStyle: 'circle',
-        cornerColor: '#E26D5C',
-        cornerStrokeColor: '#fff',
-        borderColor: '#E26D5C',
-        borderDashArray: [5, 5],
-        padding: Math.max(8, cvW / 100),
-        objectCaching: true,
-        noScaleCache: false,
-        cornerSize: cornerSize,
-        touchCornerSize: touchSize
+        hasControls: true, hasBorders: true, lockUniScaling: false,
+        transparentCorners: false, cornerStyle: 'circle', cornerColor: '#E26D5C',
+        cornerStrokeColor: '#fff', borderColor: '#E26D5C', borderDashArray: [5, 5],
+        padding: 8, objectCaching: true, noScaleCache: false, cornerSize: 20, touchCornerSize: 48
       })
     } catch {}
   }
-  function clamp (obj) {
+
+  // ВОССТАНОВЛЕНА СТАРАЯ ЛОГИКА CLAMP (ограничение перемещения)
+  // ВОССТАНОВЛЕНА СТАРАЯ ЛОГИКА CLAMP (ограничение перемещения) + допуск по пикселям
+function clamp (obj) {
+  obj.setCoords()
+  const w = obj.canvas.width
+  const h = obj.canvas.height
+  const r = obj.getBoundingRect()
+
+  // Небольшой допуск, чтобы не было "подъедания" масштаба и микро‑сдвигов
+  const EPS = 1 // 1 пиксель
+
+  // Масштабируем только если объект ЗНАЧИМО больше холста,
+  // а не из‑за плавающих 0.5–1 px при смене ориентации.
+  if (r.width - w > EPS) {
+    const currentScale = obj.scaleX || 1
+    const newScale = currentScale * (w / r.width)
+    obj.scaleX = newScale
+    obj.scaleY = newScale
     obj.setCoords()
-    const w = obj.canvas.width
-    const h = obj.canvas.height
-    const r = obj.getBoundingRect()
-    if (r.width > w) {
-      const currentScale = obj.scaleX || 1
-      const newScale = currentScale * (w / r.width)
-      obj.scaleX = newScale
-      obj.scaleY = newScale
-      obj.setCoords()
-    }
-    if (r.height > h) {
-      const currentScale = obj.scaleY || 1
-      const newScale = currentScale * (h / r.height)
-      obj.scaleX = newScale
-      obj.scaleY = newScale
-      obj.setCoords()
-    }
-    const br = obj.getBoundingRect()
-    let dx = 0
-    let dy = 0
-    if (br.left < 0) dx = -br.left
-    else if (br.left + br.width > w) dx = w - (br.left + br.width)
-    if (br.top < 0) dy = -br.top
-    else if (br.top + br.height > h) dy = h - (br.top + br.height)
-    if (dx || dy) {
-      obj.left += dx
-      obj.top += dy
-      obj.setCoords()
-    }
   }
+  if (r.height - h > EPS) {
+    const currentScale = obj.scaleY || 1
+    const newScale = currentScale * (h / r.height)
+    obj.scaleX = newScale
+    obj.scaleY = newScale
+    obj.setCoords()
+  }
+
+  const br = obj.getBoundingRect()
+  let dx = 0
+  let dy = 0
+
+  // Сдвигаем внутрь только если реально вылезли больше, чем на EPS,
+  // чтобы при поворотах туда‑обратно не накапливались микро‑сдвиги.
+  if (br.left < -EPS) {
+    dx = -br.left
+  } else if (br.left + br.width - w > EPS) {
+    dx = w - (br.left + br.width)
+  }
+
+  if (br.top < -EPS) {
+    dy = -br.top
+  } else if (br.top + br.height - h > EPS) {
+    dy = h - (br.top + br.height)
+  }
+
+  if (dx || dy) {
+    obj.left += dx
+    obj.top += dy
+    obj.setCoords()
+  }
+}
+
   async function ensureCanvas (page, pageIndex, onPatch) {
     await ensureFabric()
     if (page.canvas) return page.canvas
@@ -613,9 +617,9 @@ export default function Editor () {
     c.on('selection:created', onSelectionChanged)
     c.on('selection:updated', onSelectionChanged)
     c.on('selection:cleared', () => setPanelOpen(false))
-    c.on('object:moving', (e) => { if (e.target) clamp(e.target) })
-    c.on('object:scaling', (e) => { if (e.target) clamp(e.target) })
-    c.on('object:rotating', (e) => { if (e.target) clamp(e.target) })
+    c.on('object:moving', (e) => { if(e.target) clamp(e.target) })
+    c.on('object:scaling', (e) => { if(e.target) clamp(e.target) })
+    c.on('object:rotating', (e) => { if(e.target) clamp(e.target) })
     function overlayFromObject (obj) {
       const base = {
         id: obj.__scannyId || ('ov_' + Math.random().toString(36).slice(2)),
@@ -651,8 +655,8 @@ export default function Editor () {
       if (!obj.__scannyId) obj.__scannyId = ov.id
       c.__onPatch([{ op: 'overlay_upsert', page: c.__pageIndex, obj: ov }])
     }
-    c.on('object:modified', (e) => { if (e.target) sendUpsertForObject(e.target) })
-    try { c.on('text:changed', (e) => { if (e.target) { c.requestRenderAll(); sendUpsertForObject(e.target) } }) } catch {}
+    c.on('object:modified', (e) => { if(e.target) sendUpsertForObject(e.target) })
+    try { c.on('text:changed', (e) => { if(e.target) { c.requestRenderAll(); sendUpsertForObject(e.target) } }) } catch {}
     installDeleteControl()
     return c
   }
@@ -663,8 +667,8 @@ export default function Editor () {
       if (!page) return
       const cv = await ensureCanvas(page, index, sendPatch)
       if (page._bgRendered) {
-        fitCanvasForPage(page)
-        return
+          fitCanvasForPage(page)
+          return
       }
       try {
         const pg = page.meta || {}
@@ -697,33 +701,33 @@ export default function Editor () {
         if (overlays.length) {
           const F = fabric
           for (const o of overlays) {
-            const type = o.t || (o.text !== undefined ? 'tb' : (o.src ? 'im' : 'unknown'))
-            if (type === 'tb') {
-              const tb = new F.Textbox(o.text || '', {
-                left: o.left || 0, top: o.top || 0, angle: o.angle || 0,
-                fontFamily: o.fontFamily || 'Arial',
-                fontSize: o.fontSize || 42,
-                fontStyle: o.fontStyle || 'normal',
-                fontWeight: o.fontWeight || 'normal',
-                fill: o.fill || '#000',
-                width: Math.max(20, Number(o.width || 200)),
-                textAlign: o.textAlign || 'left',
-                scaleX: Number(o.scaleX || 1), scaleY: Number(o.scaleY || 1),
-                selectable: true, objectCaching: true, noScaleCache: false
-              })
-              tb.__scannyId = o.id || ('ov_' + Math.random().toString(36).slice(2))
-              ensureDeleteControlFor(tb); cv.add(tb)
-            } else if (type === 'im' && o.src) {
-              const im = new F.Image(await loadImageEl(o.src), {
-                left: o.left || 0, top: o.top || 0, angle: o.angle || 0,
-                flipX: !!o.flipX, flipY: !!o.flipY,
-                scaleX: Number(o.scaleX || 1), scaleY: Number(o.scaleY || 1),
-                selectable: true, objectCaching: true, noScaleCache: false
-              })
-              im.__scannyId = o.id || ('ov_' + Math.random().toString(36).slice(2))
-              im.__srcOriginal = o.src
-              ensureDeleteControlFor(im); cv.add(im)
-            }
+             const type = o.t || (o.text !== undefined ? 'tb' : (o.src ? 'im' : 'unknown'))
+             if (type === 'tb') {
+                const tb = new F.Textbox(o.text || '', {
+                  left: o.left || 0, top: o.top || 0, angle: o.angle || 0,
+                  fontFamily: o.fontFamily || 'Arial',
+                  fontSize: o.fontSize || 42,
+                  fontStyle: o.fontStyle || 'normal',
+                  fontWeight: o.fontWeight || 'normal',
+                  fill: o.fill || '#000',
+                  width: Math.max(20, Number(o.width || 200)),
+                  textAlign: o.textAlign || 'left',
+                  scaleX: Number(o.scaleX || 1), scaleY: Number(o.scaleY || 1),
+                  selectable: true, objectCaching: true, noScaleCache: false
+                })
+                tb.__scannyId = o.id || ('ov_' + Math.random().toString(36).slice(2))
+                ensureDeleteControlFor(tb); cv.add(tb)
+             } else if (type === 'im' && o.src) {
+                const im = new F.Image(await loadImageEl(o.src), {
+                   left: o.left || 0, top: o.top || 0, angle: o.angle || 0,
+                   flipX: !!o.flipX, flipY: !!o.flipY,
+                   scaleX: Number(o.scaleX || 1), scaleY: Number(o.scaleY || 1),
+                   selectable: true, objectCaching: true, noScaleCache: false
+                })
+                im.__scannyId = o.id || ('ov_' + Math.random().toString(36).slice(2))
+                im.__srcOriginal = o.src
+                ensureDeleteControlFor(im); cv.add(im)
+             }
           }
           page._pendingOverlays = []
         }
@@ -734,107 +738,117 @@ export default function Editor () {
       }
     }
   }
+  
   function placeBgObject (cv, page, img) {
     page.bgObj = img
+
+    // meta содержит логический размер документа (doc_w/doc_h)
+    // и исходный размер содержимого (pdf_w/pdf_h или w/h)
     const meta = page.meta || {}
+
     const contentW = meta.type === 'pdf'
       ? (meta.pdf_w || img.width || 1)
       : (meta.w || img.width || 1)
     const contentH = meta.type === 'pdf'
       ? (meta.pdf_h || img.height || 1)
       : (meta.h || img.height || 1)
+
+    // doc_w/doc_h — то, что мы сохраняем в черновике и меняем при повороте.
+    // Если их нет (старый черновик) — берём исходные размеры содержимого.
     const targetW = meta.doc_w || contentW
     const targetH = meta.doc_h || contentH
+
+    // Размер холста = логический размер документа (учитывает поворот)
     cv.setDimensions({ width: targetW, height: targetH })
+
     cv.add(img)
     img.sendToBack()
+
+    // Масштабируем фон так же, как при повороте страницы:
+    // вписываем исходное содержимое в doc_w/doc_h без искажения пропорций.
     const s = Math.min(targetW / contentW, targetH / contentH) || 1
     img.scaleX = s
     img.scaleY = s
+
     img.center()
     img.setCoords()
   }
+
+  // ВОССТАНОВЛЕНА СТАРАЯ ЛОГИКА СМЕЩЕНИЙ + ИСПРАВЛЕНО МАСШТАБИРОВАНИЕ ФОНА ДЛЯ ДЕСКТОПА
   async function rotatePage () {
     if (!pagesRef.current || pagesRef.current.length === 0) return
     const page = pagesRef.current[cur]
     const cv = await ensureCanvas(page, cur, sendPatch)
+    
     const oldW = cv.width
     const oldH = cv.height
     const newW = oldH
     const newH = oldW
+    
+    // Меняем размеры
     cv.setDimensions({ width: newW, height: newH })
+    
+    // Считаем смещение центра, чтобы объекты остались "на месте" относительно документа
     const deltaX = (newW - oldW) / 2
     const deltaY = (newH - oldH) / 2
-    const shrinkX = newW < oldW
-    const shrinkY = newH < oldH
-    const EPS = 0.5
+
     const objs = cv.getObjects().filter(o => o !== page.bgObj)
     for (const obj of objs) {
-      obj.left += deltaX
-      obj.top += deltaY
-      obj.setCoords()
-      let r = obj.getBoundingRect()
-      if (shrinkX) {
-        let dx = 0
-        if (r.left < -EPS) dx = -r.left
-        else if (r.left + r.width > newW + EPS) dx = newW - (r.left + r.width)
-        if (dx) {
-          obj.left += dx
-          obj.setCoords()
-          r = obj.getBoundingRect()
-        }
-      }
-      if (shrinkY) {
-        let dy = 0
-        if (r.top < -EPS) dy = -r.top
-        else if (r.top + r.height > newH + EPS) dy = newH - (r.top + r.height)
-        if (dy) {
-          obj.top += dy
-          obj.setCoords()
-        }
-      }
+        obj.left += deltaX
+        obj.top += deltaY
+        obj.setCoords()
+        // Используем clamp из старого файла
+        clamp(obj)
     }
+
     if (page.bgObj) {
-      if (isMobile) {
+        page.bgObj.scaleX = 1
+        page.bgObj.scaleY = 1
+        
+        // ВАЖНО: Убрали "if (isMobile)", теперь фон вписывается всегда (фикс растягивания на ПК)
         const w = page.bgObj.width || 1
         const h = page.bgObj.height || 1
         const s = Math.min(newW / w, newH / h)
         page.bgObj.scaleX = s
         page.bgObj.scaleY = s
-      }
-      page.bgObj.center()
-      page.bgObj.setCoords()
+
+        page.bgObj.center()
+        page.bgObj.setCoords()
     }
+
     page.meta.doc_w = newW
     page.meta.doc_h = newH
     page.landscape = !page.landscape
+    
     fitCanvasForPage(page)
     cv.requestRenderAll()
+    
     try {
-      const snapshot = await serializeDocument()
-      if (snapshot) await AuthAPI.saveDraft(snapshot)
+       const snapshot = await serializeDocument()
+       if (snapshot) await AuthAPI.saveDraft(snapshot)
     } catch {}
   }
+
   async function deletePageAt (idx) {
-    if (!pagesRef.current?.length) return
-    if (pagesRef.current.length <= 1) {
-      if (!window.confirm('Удалить весь документ?')) return
-      pagesRef.current.forEach(pp => { try { pp.canvas?.dispose?.() } catch {} })
-      setPages([]); setCur(0); setPanelOpen(false); setFileName(''); setUndoStack([])
-      try { if (docIdRef.current) await AuthAPI.deleteUploadsByClient(docIdRef.current) } catch {}
-      try { await AuthAPI.clearDraft() } catch {}
-      draftExistsRef.current = false
-      setDocId(null)
-      toast('Документ удалён', 'success')
-      return
-    }
-    if (!window.confirm('Удалить текущую страницу?')) return
-    const p = pagesRef.current[idx]; try { p.canvas?.dispose?.() } catch {}
-    const nextPages = pagesRef.current.filter((_, i) => i !== idx)
-    setPages(nextPages)
-    setCur(i => Math.max(0, idx - 1))
-    await persistPageOps([{ op: 'page_remove', index: idx }])
-    toast('Страница удалена', 'success')
+      if (!pagesRef.current?.length) return
+      if (pagesRef.current.length <= 1) {
+        if (!window.confirm('Удалить весь документ?')) return
+        pagesRef.current.forEach(pp => { try { pp.canvas?.dispose?.() } catch {} })
+        setPages([]); setCur(0); setPanelOpen(false); setFileName(''); setUndoStack([])
+        try { if (docIdRef.current) await AuthAPI.deleteUploadsByClient(docIdRef.current) } catch {}
+        try { await AuthAPI.clearDraft() } catch {}
+        draftExistsRef.current = false
+        setDocId(null)
+        toast('Документ удалён', 'success')
+        return
+      }
+      if (!window.confirm('Удалить текущую страницу?')) return
+      const p = pagesRef.current[idx]; try { p.canvas?.dispose?.() } catch {}
+      const nextPages = pagesRef.current.filter((_, i) => i !== idx)
+      setPages(nextPages)
+      setCur(i => Math.max(0, idx - 1))
+      await persistPageOps([{ op: 'page_remove', index: idx }])
+      toast('Страница удалена', 'success')
   }
   async function persistPageOps (ops = []) {
     const list = Array.isArray(ops) ? ops.filter(Boolean) : []
@@ -845,16 +859,7 @@ export default function Editor () {
       return
     }
     try { wsRef.current?.sendPatch?.(list) } catch {}
-    try { await AuthAPI.patchDraft(list) } catch {
-      try {
-        const snapshot = await serializeDocument()
-        if (snapshot) {
-          await AuthAPI.saveDraft(snapshot)
-          wsRef.current?.commit?.(snapshot)
-          draftExistsRef.current = true
-        }
-      } catch {}
-    }
+    try { await AuthAPI.patchDraft(list) } catch { try { const snapshot = await serializeDocument(); if (snapshot) { await AuthAPI.saveDraft(snapshot); wsRef.current?.commit?.(snapshot); draftExistsRef.current = true } } catch {} }
   }
   async function createPageFromImage (dataUrl, w, h, mime = 'image/png', landscape = false, opsOut = null, index = null) {
     const id = 'p_' + Math.random().toString(36).slice(2)
@@ -902,30 +907,12 @@ export default function Editor () {
     }
     return added
   }
-  function baseName () {
-    const nm = (fileNameRef.current || '').trim()
-    if (!nm) { toast('Введите название файла вверху', 'error'); return null }
-    return sanitizeName(nm)
-  }
+  function baseName () { const nm = (fileNameRef.current || '').trim(); if (!nm) { toast('Введите название файла вверху', 'error'); return null } return sanitizeName(nm) }
   const filePickBusyRef = useRef(false)
   function pickDocument () { if (filePickBusyRef.current) return; filePickBusyRef.current = true; try { docFileRef.current?.click() } finally { setTimeout(() => { filePickBusyRef.current = false }, 1500) } }
   async function onPickDocument (e) { const files = Array.from(e.target.files || []); e.target.value = ''; if (!files.length) return; await handleFiles(files); filePickBusyRef.current = false }
   async function onPickBgFile (e) { const files = Array.from(e.target.files || []); e.target.value = ''; if (!files.length) return; await assignFirstFileToCurrent(files[0]) }
-  async function estimateUnits (files) {
-    let total = 0
-    for (const f of files) {
-      const ext = (f.name.split('.').pop() || '').toLowerCase()
-      if (['jpg', 'jpeg', 'png'].includes(ext)) total += 1
-      else if (ext === 'pdf') {
-        try { await ensurePDFJS(); const pdf = await pdfjsLib.getDocument({ data: await f.arrayBuffer() }).promise; total += pdf.numPages || 1 } catch { total += 1 }
-      } else if (['docx', 'doc', 'xls', 'xlsx'].includes(ext)) {
-        total += 2
-      } else {
-        total += 1
-      }
-    }
-    return Math.max(1, total)
-  }
+  async function estimateUnits (files) { let total = 0; for (const f of files) { const ext = (f.name.split('.').pop() || '').toLowerCase(); if (['jpg', 'jpeg', 'png'].includes(ext)) total += 1; else if (ext === 'pdf') { try { await ensurePDFJS(); const pdf = await pdfjsLib.getDocument({ data: await f.arrayBuffer() }).promise; total += pdf.numPages || 1 } catch { total += 1 } } else if (['docx', 'doc', 'xls', 'xlsx'].includes(ext)) { total += 2 } else { total += 1 } } return Math.max(1, total) }
   async function handleFiles (files) {
     showProgress('Загрузка', false)
     try {
@@ -950,21 +937,14 @@ export default function Editor () {
         } else if (['xls', 'xlsx'].includes(ext)) {
           const canv = await renderXLSXToCanvas(f); const n = await addRasterPagesFromCanvas(canv, opsAdd, baseIndex + addedPages)
           addedPages += n; tick(Math.max(1, n))
-        } else {
-          toast(`Формат не поддерживается: ${ext}`, 'error'); tick(1)
-        }
+        } else { toast(`Формат не поддерживается: ${ext}`, 'error'); tick(1) }
       }
       await new Promise(r => requestAnimationFrame(r))
       for (let i = 0; i < pagesRef.current.length; i++) { await ensurePageRendered(i) }
       if (addedPages > 0) { await persistPageOps(opsAdd) }
       try { if (isAuthed && addedPages > 0) { const nm = sanitizeName(initialName || fileNameRef.current || genDefaultName()); await AuthAPI.recordUpload(curDocId, nm, addedPages) } } catch {}
       toast('Страницы добавлены', 'success')
-    } catch (err) {
-      console.error(err)
-      toast(err.message || 'Ошибка загрузки файлов', 'error')
-    } finally {
-      hideProgress()
-    }
+    } catch (err) { console.error(err); toast(err.message || 'Ошибка загрузки файлов', 'error') } finally { hideProgress() }
   }
   async function assignFirstFileToCurrent (file) {
     const ext = (file.name.split('.').pop() || '').toLowerCase(); const page = pages[cur]; if (!page) return
@@ -976,7 +956,7 @@ export default function Editor () {
         page._bgRendered = false; await ensurePageRendered(cur)
       } else if (ext === 'pdf') {
         const ab = await file.arrayBuffer(); const bytes = toUint8Copy(ab)
-        const pdf = await pdfjsLib.getDocument({ data: bytes.slice() }).promise; const p1 = await pdf.getPage(1); const vp1 = p1.getViewport({ scale: PDF_RENDER_SCALE })
+        const pdf = await pdfjsLib.getDocument({ data: bytes.slice() }).promise; const p1 = await pdf.getPage(1); const vp1 = p1.getViewport({scale: PDF_RENDER_SCALE})
         page.meta = { type: 'pdf', bytes, index: 0, pdf_w: vp1.width, pdf_h: vp1.height, doc_w: vp1.width, doc_h: vp1.height }
         page._bgRendered = false; await ensurePageRendered(cur)
       } else {
@@ -986,11 +966,7 @@ export default function Editor () {
         page._bgRendered = false; await ensurePageRendered(cur)
       }
       const snapshot = await serializeDocument(); if (snapshot) { await AuthAPI.saveDraft(snapshot); wsRef.current?.commit?.(snapshot); draftExistsRef.current = true }
-    } catch (e) {
-      toast(e.message || 'Ошибка', 'error')
-    } finally {
-      hideProgress()
-    }
+    } catch (e) { toast(e.message || 'Ошибка', 'error') } finally { hideProgress() }
   }
   async function serializeDocument () {
     if (!pagesRef.current || pagesRef.current.length === 0) return null
@@ -999,76 +975,12 @@ export default function Editor () {
       const p = pagesLocal[i]; const cv = await ensureCanvas(p, i, sendPatch); const meta = p.meta || {}
       const rawObjs = (cv.getObjects() || []).filter(o => o !== p.bgObj); const overlays = []
       for (const o of rawObjs) {
-        if (o.type === 'textbox') {
-          overlays.push({
-            t: 'tb',
-            id: o.__scannyId,
-            text: o.text,
-            left: o.left,
-            top: o.top,
-            angle: o.angle,
-            fontFamily: o.fontFamily,
-            fontSize: o.fontSize,
-            fontStyle: o.fontStyle,
-            fontWeight: o.fontWeight,
-            fill: o.fill,
-            width: o.width,
-            textAlign: o.textAlign,
-            scaleX: o.scaleX,
-            scaleY: o.scaleY
-          })
-        } else if (o.type === 'image') {
-          const src = o.__srcOriginal || o._element?.src
-          overlays.push({
-            t: 'im',
-            id: o.__scannyId,
-            src,
-            left: o.left,
-            top: o.top,
-            angle: o.angle,
-            scaleX: o.scaleX,
-            scaleY: o.scaleY,
-            flipX: o.flipX,
-            flipY: o.flipY
-          })
-        }
+         if (o.type === 'textbox') { overlays.push({ t: 'tb', id: o.__scannyId, text: o.text, left: o.left, top: o.top, angle: o.angle, fontFamily: o.fontFamily, fontSize: o.fontSize, fontStyle: o.fontStyle, fontWeight: o.fontWeight, fill: o.fill, width: o.width, textAlign: o.textAlign, scaleX: o.scaleX, scaleY: o.scaleY }) }
+         else if (o.type === 'image') { const src = o.__srcOriginal || o._element?.src; overlays.push({ t: 'im', id: o.__scannyId, src, left: o.left, top: o.top, angle: o.angle, scaleX: o.scaleX, scaleY: o.scaleY, flipX: o.flipX, flipY: o.flipY }) }
       }
-      if (meta.type === 'pdf' && meta.bytes) {
-        outPages.push({
-          type: 'pdf',
-          index: meta.index || 0,
-          bytes_b64: u8ToB64(meta.bytes),
-          pdf_w: meta.pdf_w,
-          pdf_h: meta.pdf_h,
-          doc_w: meta.doc_w,
-          doc_h: meta.doc_h,
-          landscape: !!p.landscape,
-          overlays
-        })
-      } else if (meta.type === 'image' || meta.type === 'raster') {
-        outPages.push({
-          type: meta.type,
-          src: meta.src,
-          w: meta.w,
-          h: meta.h,
-          mime: meta.mime,
-          doc_w: meta.doc_w,
-          doc_h: meta.doc_h,
-          landscape: !!p.landscape,
-          overlays
-        })
-      } else {
-        outPages.push({
-          type: 'raster',
-          src: '',
-          w: 2480,
-          h: 3508,
-          doc_w: 2480,
-          doc_h: 3508,
-          landscape: !!p.landscape,
-          overlays
-        })
-      }
+      if (meta.type === 'pdf' && meta.bytes) { outPages.push({ type: 'pdf', index: meta.index || 0, bytes_b64: u8ToB64(meta.bytes), pdf_w: meta.pdf_w, pdf_h: meta.pdf_h, doc_w: meta.doc_w, doc_h: meta.doc_h, landscape: !!p.landscape, overlays }) }
+      else if (meta.type === 'image' || meta.type === 'raster') { outPages.push({ type: meta.type, src: meta.src, w: meta.w, h: meta.h, mime: meta.mime, doc_w: meta.doc_w, doc_h: meta.doc_h, landscape: !!p.landscape, overlays }) }
+      else { outPages.push({ type: 'raster', src: '', w: 2480, h: 3508, landscape: !!p.landscape, overlays }) }
     }
     return { client_id: docIdRef.current || null, name: fileNameRef.current || genDefaultName(), pages: outPages }
   }
@@ -1077,53 +989,14 @@ export default function Editor () {
       await ensurePDFJS(); await ensureFabric(); const pagesData = Array.isArray(draft?.pages) ? draft.pages : []; const created = []
       for (let i = 0; i < pagesData.length; i++) {
         const pg = pagesData[i] || {}; const id = 'p_' + Math.random().toString(36).slice(2); const elId = 'cv_' + id; let meta
-        if (pg.type === 'pdf' && pg.bytes_b64) {
-          meta = {
-            type: 'pdf',
-            bytes: b64ToU8(pg.bytes_b64),
-            index: Number(pg.index || 0),
-            pdf_w: pg.pdf_w || 2480,
-            pdf_h: pg.pdf_h || 3508,
-            doc_w: pg.doc_w || pg.pdf_w || 2480,
-            doc_h: pg.doc_h || pg.pdf_h || 3508
-          }
-        } else if (pg.type === 'image' || pg.type === 'raster') {
-          meta = {
-            type: pg.type,
-            src: pg.src,
-            w: pg.w || 2480,
-            h: pg.h || 3508,
-            mime: pg.mime || 'image/png',
-            doc_w: pg.doc_w || pg.w || 2480,
-            doc_h: pg.doc_h || pg.h || 3508
-          }
-        } else {
-          meta = {
-            type: 'raster',
-            src: '',
-            w: 2480,
-            h: 3508,
-            mime: 'image/png',
-            doc_w: 2480,
-            doc_h: 3508
-          }
-        }
-        created.push({
-          id,
-          elId,
-          canvas: null,
-          bgObj: null,
-          landscape: !!pg.landscape,
-          meta,
-          _bgRendered: false,
-          _pendingOverlays: Array.isArray(pg.overlays) ? pg.overlays : []
-        })
+        if (pg.type === 'pdf' && pg.bytes_b64) { meta = { type: 'pdf', bytes: b64ToU8(pg.bytes_b64), index: Number(pg.index || 0), pdf_w: pg.pdf_w || 2480, pdf_h: pg.pdf_h || 3508, doc_w: pg.doc_w || pg.pdf_w || 2480, doc_h: pg.doc_h || pg.pdf_h || 3508 } }
+        else if (pg.type === 'image' || pg.type === 'raster') { meta = { type: pg.type, src: pg.src, w: pg.w || 2480, h: pg.h || 3508, mime: pg.mime || 'image/png', doc_w: pg.doc_w || pg.w || 2480, doc_h: pg.doc_h || pg.h || 3508 } }
+        else { meta = { type: 'raster', src: '', w: 2480, h: 3508, mime: 'image/png', doc_w: 2480, doc_h: 3508 } }
+        created.push({ id, elId, canvas: null, bgObj: null, landscape: !!pg.landscape, meta, _bgRendered: false, _pendingOverlays: Array.isArray(pg.overlays) ? pg.overlays : [] })
       }
       setPages(created); initialRenderPendingRef.current = true; setCur(created.length ? 0 : 0); setFileName((draft?.name || '').trim() || genDefaultName()); setDocId(draft?.client_id || randDocId()); draftExistsRef.current = true
       await new Promise(r => requestAnimationFrame(r))
-    } catch (e) {
-      console.error('restoreDocumentFromDraft error', e)
-    }
+    } catch (e) { console.error('restoreDocumentFromDraft error', e) }
   }
   async function addText () {
     if (!pagesRef.current || pagesRef.current.length === 0) { toast('Сначала добавьте страницу', 'error'); return }
@@ -1131,41 +1004,10 @@ export default function Editor () {
     const page = pagesRef.current[cur]
     const cv = await ensureCanvas(page, cur, sendPatch)
     await ensurePageRendered(cur)
-    const tb = new F.Textbox('Вставьте текст', {
-      left: Math.round(cv.width / 2 - 100),
-      top: Math.round(cv.height / 2 - 20),
-      fontSize: 48,
-      fill: '#000000',
-      fontFamily: 'Arial',
-      fontWeight: 'bold',
-      width: 200,
-      textAlign: 'center',
-      selectable: true,
-      objectCaching: true,
-      noScaleCache: false
-    })
+    const tb = new F.Textbox('Вставьте текст', { left: Math.round(cv.width / 2 - 100), top: Math.round(cv.height / 2 - 20), fontSize: 48, fill: '#000000', fontFamily: 'Arial', fontWeight: 'bold', width: 200, textAlign: 'center', selectable: true, objectCaching: true, noScaleCache: false })
     tb.__scannyId = 'ov_' + Math.random().toString(36).slice(2)
     ensureDeleteControlFor(tb); cv.add(tb); cv.setActiveObject(tb); cv.requestRenderAll()
-    sendPatch([{
-      op: 'overlay_upsert',
-      page: cur,
-      obj: {
-        t: 'tb',
-        id: tb.__scannyId,
-        left: tb.left,
-        top: tb.top,
-        angle: tb.angle,
-        scaleX: tb.scaleX,
-        scaleY: tb.scaleY,
-        text: tb.text,
-        fontFamily: 'Arial',
-        fontSize: 48,
-        fontWeight: 'bold',
-        fill: '#000000',
-        width: 200,
-        textAlign: 'center'
-      }
-    }])
+    sendPatch([{ op: 'overlay_upsert', page: cur, obj: { t: 'tb', id: tb.__scannyId, left: tb.left, top: tb.top, angle: tb.angle, scaleX: tb.scaleX, scaleY: tb.scaleY, text: tb.text, fontFamily: 'Arial', fontSize: 48, fontWeight: 'bold', fill: '#000000', width: 200, textAlign: 'center' } }])
     setUndoStack(stk => [...stk, { type: 'add_one', page: cur, id: tb.__scannyId }])
     setPanelOpen(true)
   }
@@ -1174,27 +1016,7 @@ export default function Editor () {
     const obj = cv.getActiveObject(); if (!obj || obj.type !== 'textbox') return
     obj.set({ fontFamily: font, fontSize: fontSize, fontWeight: bold ? 'bold' : 'normal', fontStyle: italic ? 'italic' : 'normal', fill: color })
     cv.requestRenderAll()
-    sendPatch([{
-      op: 'overlay_upsert',
-      page: cur,
-      obj: {
-        t: 'tb',
-        id: obj.__scannyId,
-        left: obj.left,
-        top: obj.top,
-        angle: obj.angle,
-        scaleX: obj.scaleX,
-        scaleY: obj.scaleY,
-        text: obj.text,
-        fontFamily: font,
-        fontSize,
-        fontStyle: italic ? 'italic' : 'normal',
-        fontWeight: bold ? 'bold' : 'normal',
-        fill: color,
-        width: obj.width,
-        textAlign: obj.textAlign
-      }
-    }])
+    sendPatch([{ op: 'overlay_upsert', page: cur, obj: { t: 'tb', id: obj.__scannyId, left: obj.left, top: obj.top, angle: obj.angle, scaleX: obj.scaleX, scaleY: obj.scaleY, text: obj.text, fontFamily: font, fontSize, fontStyle: italic ? 'italic' : 'normal', fontWeight: bold ? 'bold' : 'normal', fill: color, width: obj.width, textAlign: obj.textAlign } }])
   }, [cur, font, fontSize, bold, italic, color])
   useEffect(() => { if (panelOpen) applyPanel() }, [panelOpen, applyPanel])
   async function applyToAllPages () {
@@ -1207,88 +1029,21 @@ export default function Editor () {
       if (i === cur) continue
       const dstPage = pagesRef.current[i]; const cvDst = await ensureCanvas(dstPage, i, sendPatch); await ensurePageRendered(i)
       if (obj.type === 'textbox') {
-        const tb = new F.Textbox(obj.text || '', {
-          left: obj.left,
-          top: obj.top,
-          fontFamily: obj.fontFamily,
-          fontStyle: obj.fontStyle,
-          fontWeight: obj.fontWeight,
-          fill: obj.fill,
-          fontSize: obj.fontSize,
-          angle: obj.angle,
-          width: obj.width,
-          textAlign: obj.textAlign,
-          scaleX: obj.scaleX,
-          scaleY: obj.scaleY,
-          selectable: true,
-          objectCaching: true,
-          noScaleCache: false
-        })
+        const tb = new F.Textbox(obj.text || '', { left: obj.left, top: obj.top, fontFamily: obj.fontFamily, fontStyle: obj.fontStyle, fontWeight: obj.fontWeight, fill: obj.fill, fontSize: obj.fontSize, angle: obj.angle, width: obj.width, textAlign: obj.textAlign, scaleX: obj.scaleX, scaleY: obj.scaleY, selectable: true, objectCaching: true, noScaleCache: false })
         tb.__scannyId = 'ov_' + Math.random().toString(36).slice(2); ensureDeleteControlFor(tb); cvDst.add(tb); cvDst.requestRenderAll(); clones.push({ page: i, id: tb.__scannyId })
-        sendPatch([{
-          op: 'overlay_upsert',
-          page: i,
-          obj: {
-            t: 'tb',
-            id: tb.__scannyId,
-            left: tb.left,
-            top: tb.top,
-            angle: tb.angle,
-            scaleX: tb.scaleX,
-            scaleY: tb.scaleY,
-            text: tb.text,
-            fontFamily: tb.fontFamily,
-            fontSize: tb.fontSize,
-            fontStyle: tb.fontStyle,
-            fontWeight: tb.fontWeight,
-            fill: tb.fill,
-            width: tb.width,
-            textAlign: tb.textAlign
-          }
-        }])
+        sendPatch([{ op: 'overlay_upsert', page: i, obj: { t: 'tb', id: tb.__scannyId, left: tb.left, top: tb.top, angle: tb.angle, scaleX: tb.scaleX, scaleY: tb.scaleY, text: tb.text, fontFamily: tb.fontFamily, fontSize: tb.fontSize, fontStyle: tb.fontStyle, fontWeight: tb.fontWeight, fill: tb.fill, width: tb.width, textAlign: tb.textAlign } }])
       } else if (obj.type === 'image') {
         const orig = obj.__srcOriginal || (obj._element?.src); const imgEl = await loadImageEl(orig)
-        const im = new F.Image(imgEl, {
-          angle: obj.angle,
-          selectable: true,
-          flipX: !!obj.flipX,
-          flipY: !!obj.flipY,
-          objectCaching: true,
-          noScaleCache: false,
-          left: obj.left,
-          top: obj.top,
-          scaleX: obj.scaleX,
-          scaleY: obj.scaleY
-        })
+        const im = new F.Image(imgEl, { angle: obj.angle, selectable: true, flipX: !!obj.flipX, flipY: !!obj.flipY, objectCaching: true, noScaleCache: false, left: obj.left, top: obj.top, scaleX: obj.scaleX, scaleY: obj.scaleY })
         im.__scannyId = 'ov_' + Math.random().toString(36).slice(2); im.__srcOriginal = orig; ensureDeleteControlFor(im); cvDst.add(im); cvDst.requestRenderAll(); clones.push({ page: i, id: im.__scannyId })
-        sendPatch([{
-          op: 'overlay_upsert',
-          page: i,
-          obj: {
-            t: 'im',
-            id: im.__scannyId,
-            left: im.left,
-            top: im.top,
-            angle: im.angle,
-            flipX: !!im.flipX,
-            flipY: !!im.flipY,
-            scaleX: im.scaleX,
-            scaleY: im.scaleY,
-            src: orig
-          }
-        }])
+        sendPatch([{ op: 'overlay_upsert', page: i, obj: { t: 'im', id: im.__scannyId, left: im.left, top: im.top, angle: im.angle, flipX: !!im.flipX, flipY: !!im.flipY, scaleX: im.scaleX, scaleY: im.scaleY, src: orig } }])
       }
     }
     if (clones.length) { setUndoStack(stk => [...stk, { type: 'apply_all', clones }]); toast('Объект добавлен на все страницы', 'success') }
   }
   function onCanvasDrop (e) {
     e.preventDefault(); const dt = e.dataTransfer; if (!dt) return
-    const types = Array.from(dt.types || [])
-    if (types.includes('application/x-sign-url')) {
-      const url = dt.getData('application/x-sign-url')
-      if (url && url !== 'add') placeFromLib(url)
-      return
-    }
+    const types = Array.from(dt.types || []); if (types.includes('application/x-sign-url')) { const url = dt.getData('application/x-sign-url'); if (url && url !== 'add') placeFromLib(url); return }
     const fs = Array.from(dt.files || []); if (fs.length) handleFiles(fs)
   }
   function placeFromLib (url) {
@@ -1297,60 +1052,22 @@ export default function Editor () {
     ensureCanvas(page, cur, sendPatch).then(async (cv) => {
       await ensurePageRendered(cur); const img = new F.Image(await loadImageEl(url), { objectCaching: true, noScaleCache: false })
       const s = Math.min(1, (cv.width * 0.25) / (img.width || 1))
-      img.set({
-        left: Math.round(cv.width / 2 - (img.width * s) / 2),
-        top: Math.round(cv.height / 2 - (img.height * s) / 2),
-        scaleX: s,
-        scaleY: s,
-        selectable: true
-      })
+      img.set({ left: Math.round(cv.width / 2 - (img.width * s) / 2), top: Math.round(cv.height / 2 - (img.height * s) / 2), scaleX: s, scaleY: s, selectable: true })
       img.__srcOriginal = url; ensureDeleteControlFor(img); img.__scannyId = 'ov_' + Math.random().toString(36).slice(2); cv.add(img); cv.setActiveObject(img); cv.requestRenderAll()
       clamp(img)
-      sendPatch([{
-        op: 'overlay_upsert',
-        page: cur,
-        obj: {
-          t: 'im',
-          id: img.__scannyId,
-          left: img.left,
-          top: img.top,
-          angle: img.angle,
-          flipX: !!img.flipX,
-          flipY: !!img.flipY,
-          scaleX: img.scaleX,
-          scaleY: img.scaleY,
-          src: url
-        }
-      }])
+      sendPatch([{ op: 'overlay_upsert', page: cur, obj: { t: 'im', id: img.__scannyId, left: img.left, top: img.top, angle: img.angle, flipX: !!img.flipX, flipY: !!img.flipY, scaleX: img.scaleX, scaleY: img.scaleY, src: url } }])
       setUndoStack(stk => [...stk, { type: 'add_one', page: cur, id: img.__scannyId }])
     })
   }
   async function applyPromo () {
-    try {
-      if (!promo) { setPromoPercent(0); setPromoError(''); return }
-      const res = await AuthAPI.validatePromo(promo); const percent = Number(res?.percent || 0)
-      if (percent > 0) { setPromoPercent(percent); setPromoError('') } else { setPromoPercent(0); setPromoError('Промокод не найден') }
-    } catch (e) {
-      setPromoPercent(0); setPromoError(e.message || 'Ошибка промокода')
-    }
+    try { if (!promo) { setPromoPercent(0); setPromoError(''); return } const res = await AuthAPI.validatePromo(promo); const percent = Number(res?.percent || 0); if (percent > 0) { setPromoPercent(percent); setPromoError('') } else { setPromoPercent(0); setPromoError('Промокод не найден') } } catch (e) { setPromoPercent(0); setPromoError(e.message || 'Ошибка промокода') }
   }
   async function startPurchase () {
-    try {
-      const r = await AuthAPI.startPurchase(plan, promo || '')
-      if (r?.url) {
-        window.open(r.url, '_blank')
-        setPayOpen(false)
-      } else toast('Не удалось сформировать оплату', 'error')
-    } catch (e) {
-      toast(e.message || 'Ошибка оплаты', 'error')
-    }
+    try { const r = await AuthAPI.startPurchase(plan, promo || ''); if (r?.url) { window.open(r.url, '_blank'); setPayOpen(false) } else toast('Не удалось сформировать оплату', 'error') } catch (e) { toast(e.message || 'Ошибка оплаты', 'error') }
   }
   async function exportJPG () {
     try {
-      if (!pagesRef.current || pagesRef.current.length === 0) return
-      const bn = baseName(); if (!bn) return
-      const count = pagesRef.current.length
-      if ((billing?.free_left ?? 0) < count) { setPlan('single'); setPayOpen(true); return }
+      if (!pagesRef.current || pagesRef.current.length === 0) return; const bn = baseName(); if (!bn) return; const count = pagesRef.current.length; if ((billing?.free_left ?? 0) < count) { setPlan('single'); setPayOpen(true); return }
       showProgress('Скачивание', false); setPoPct(0); await ensureJSZip(); const zip = new JSZip()
       for (let i = 0; i < pagesRef.current.length; i++) {
         await ensurePageRendered(i); const p = pagesRef.current[i]; const cv = p.canvas
@@ -1358,23 +1075,14 @@ export default function Editor () {
         const blob = await (await fetch(dataUrl)).blob(); zip.file(`${bn}-p${i + 1}.jpg`, blob)
         updateProgress(Math.min(95, Math.round(((i + 1) / pagesRef.current.length) * 90)))
       }
-      const out = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' }, (meta) => { updateProgress(90 + Math.min(10, (meta.percent || 0) / 10)) })
-      const a = document.createElement('a'); const href = URL.createObjectURL(out); a.href = href; a.download = `${bn}.zip`; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(href), 1500)
+      const out = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' }, (meta) => { updateProgress(90 + Math.min(10, (meta.percent || 0) / 10)) }); const a = document.createElement('a'); const href = URL.createObjectURL(out); a.href = href; a.download = `${bn}.zip`; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(href), 1500)
       try { AuthAPI.recordDownload('jpg', pagesRef.current.length, bn, 'free').catch(() => {}) } catch {}
       toast(`Скачано страниц: ${pagesRef.current.length}`, 'success')
-    } catch (e) {
-      console.error(e)
-      toast(e.message || 'Не удалось выгрузить JPG', 'error')
-    } finally {
-      hideProgress()
-    }
+    } catch (e) { console.error(e); toast(e.message || 'Не удалось выгрузить JPG', 'error') } finally { hideProgress() }
   }
   async function exportPDF () {
     try {
-      if (!pagesRef.current || pagesRef.current.length === 0) return
-      const bn = baseName(); if (!bn) return
-      const count = pagesRef.current.length
-      if ((billing?.free_left ?? 0) < count) { setPlan('single'); setPayOpen(true); return }
+      if (!pagesRef.current || pagesRef.current.length === 0) return; const bn = baseName(); if (!bn) return; const count = pagesRef.current.length; if ((billing?.free_left ?? 0) < count) { setPlan('single'); setPayOpen(true); return }
       showProgress('Скачивание', false); setPoPct(0); const PDFLib = await ensurePDFLib(); const out = await PDFLib.PDFDocument.create()
       for (let i = 0; i < pagesRef.current.length; i++) {
         await ensurePageRendered(i); const p = pagesRef.current[i]; const cv = p.canvas
@@ -1387,24 +1095,14 @@ export default function Editor () {
       const pdfBytes = await out.save(); const blob = new Blob([pdfBytes], { type: 'application/pdf' }); const a = document.createElement('a'); const href = URL.createObjectURL(blob); a.href = href; a.download = `${bn}.pdf`; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(href), 1500)
       try { AuthAPI.recordDownload('pdf', pagesRef.current.length, bn, 'free').catch(() => {}) } catch {}
       toast(`Скачан PDF (${pagesRef.current.length} стр.)`, 'success')
-    } catch (e) {
-      console.error(e)
-      toast(e.message || 'Не удалось выгрузить PDF', 'error')
-    } finally {
-      hideProgress()
-    }
+    } catch (e) { console.error(e); toast(e.message || 'Не удалось выгрузить PDF', 'error') } finally { hideProgress() }
   }
   useEffect(() => {
     const onKey = (e) => {
       const tag = String(e.target?.tagName || '').toLowerCase(); const isTyping = tag === 'input' || tag === 'textarea' || e.target?.isContentEditable; if (isTyping) return
       if ((e.key === 'Delete' || e.key === 'Backspace') && pagesRef.current?.[cur]?.canvas) {
         const cv = pagesRef.current[cur].canvas; const obj = cv.getActiveObject()
-        if (obj) {
-          e.preventDefault()
-          const id = obj.__scannyId || null; cv.remove(obj); cv.discardActiveObject(); cv.requestRenderAll()
-          if (id) sendPatch([{ op: 'overlay_remove', page: cur, id }])
-          toast('Объект удалён', 'success')
-        }
+        if (obj) { e.preventDefault(); const id = obj.__scannyId || null; cv.remove(obj); cv.discardActiveObject(); cv.requestRenderAll(); if (id) sendPatch([{ op: 'overlay_remove', page: cur, id }]); toast('Объект удалён', 'success') }
       }
     }
     document.addEventListener('keydown', onKey); return () => document.removeEventListener('keydown', onKey)
@@ -1814,22 +1512,22 @@ export default function Editor () {
               ensureDeleteControlFor(image)
               image.__scannyId = 'ov_' + Math.random().toString(36).slice(2)
               cv.add(image); cv.setActiveObject(image); cv.requestRenderAll()
-              function clampLocal (obj) {
-                obj.setCoords()
-                const coords = obj.getCoords ? obj.getCoords() : []
-                if (!coords.length) return
-                const xs = coords.map(p => p.x), ys = coords.map(p => p.y)
-                const w = cv.width, h = cv.height
-                let minX = Math.min(...xs), maxX = Math.max(...xs)
-                let minY = Math.min(...ys), maxY = Math.max(...ys)
-                let dx = 0, dy = 0
-                if (minX < 0) dx = -minX
-                else if (maxX > w) dx = w - maxX
-                if (minY < 0) dy = -minY
-                else if (maxY > h) dy = h - maxY
-                if (dx || dy) { obj.left += dx; obj.top += dy; obj.setCoords() }
+              function clamp(obj) {
+                 obj.setCoords()
+                 const coords = obj.getCoords ? obj.getCoords() : []
+                 if(!coords.length) return
+                 const xs = coords.map(p=>p.x), ys = coords.map(p=>p.y)
+                 const w = cv.width, h = cv.height
+                 let minX=Math.min(...xs), maxX=Math.max(...xs)
+                 let minY=Math.min(...ys), maxY=Math.max(...ys)
+                 let dx=0, dy=0
+                 if(minX<0) dx = -minX
+                 else if(maxX>w) dx = w - maxX
+                 if(minY<0) dy = -minY
+                 else if(maxY>h) dy = h - maxY
+                 if(dx||dy) { obj.left += dx; obj.top += dy; obj.setCoords() }
               }
-              clampLocal(image)
+              clamp(image)
               ensureDeleteControlFor(image)
               sendPatch([{
                 op: 'overlay_upsert',
@@ -1874,7 +1572,7 @@ function UnifiedPager ({ total, current, pgText, setPgText, onGo, onPrev, onNext
     }
   }
   return (
-    <div className="ed-pager" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <div className="ed-pager" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
       <button className="pager-btn" onClick={onPrev} disabled={!canPrev} title="Предыдущая">
         <img src={icPrev} alt="Prev" />
       </button>
