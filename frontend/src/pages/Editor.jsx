@@ -774,46 +774,92 @@ function clamp (obj) {
     img.setCoords()
   }
 
-  // ВОССТАНОВЛЕНА СТАРАЯ ЛОГИКА СМЕЩЕНИЙ + ИСПРАВЛЕНО МАСШТАБИРОВАНИЕ ФОНА ДЛЯ ДЕСКТОПА
-  async function rotatePage () {
+    async function rotatePage () {
     if (!pagesRef.current || pagesRef.current.length === 0) return
     const page = pagesRef.current[cur]
     const cv = await ensureCanvas(page, cur, sendPatch)
     
+    // 1. Запоминаем старые размеры
     const oldW = cv.width
     const oldH = cv.height
+
+    // Определяем "якорь" — реальный центр фона и его масштаб СЕЙЧАС
+    // Если фона нет (белый лист), используем центр холста
+    let anchorX = oldW / 2
+    let anchorY = oldH / 2
+    let oldBgScale = 1
+
+    if (page.bgObj) {
+        const center = page.bgObj.getCenterPoint()
+        anchorX = center.x
+        anchorY = center.y
+        oldBgScale = page.bgObj.scaleX // Берем фактический масштаб, который видит глаз
+    }
+    
+    // 2. Меняем размеры холста (swap)
     const newW = oldH
     const newH = oldW
     
-    // Меняем размеры
-    cv.setDimensions({ width: newW, height: newH })
+    // Новый центр холста (куда встанет фон)
+    const newCx = newW / 2
+    const newCy = newH / 2
     
-    // Считаем смещение центра, чтобы объекты остались "на месте" относительно документа
-    const deltaX = (newW - oldW) / 2
-    const deltaY = (newH - oldH) / 2
+    cv.setDimensions({ width: newW, height: newH })
 
-    const objs = cv.getObjects().filter(o => o !== page.bgObj)
-    for (const obj of objs) {
-        obj.left += deltaX
-        obj.top += deltaY
-        obj.setCoords()
-        // Используем clamp из старого файла
-        clamp(obj)
+    // 3. Считаем будущий масштаб фона (вписывание contain)
+    let newBgScale = 1
+    if (page.bgObj) {
+       const w = page.bgObj.width || 1
+       const h = page.bgObj.height || 1
+       // Считаем точно так же, как в fitCanvasForPage или начальной загрузке
+       newBgScale = Math.min(newW / w, newH / h)
+    } else {
+       // Если фона нет, масштаб меняем пропорционально изменению ширины (для условной сетки)
+       // или оставляем 1. Для пустого листа логичнее оставить привязку к ширине.
+       newBgScale = newW / oldW 
     }
 
-    if (page.bgObj) {
-        page.bgObj.scaleX = 1
-        page.bgObj.scaleY = 1
-        
-        // ВАЖНО: Убрали "if (isMobile)", теперь фон вписывается всегда (фикс растягивания на ПК)
-        const w = page.bgObj.width || 1
-        const h = page.bgObj.height || 1
-        const s = Math.min(newW / w, newH / h)
-        page.bgObj.scaleX = s
-        page.bgObj.scaleY = s
+    // Коэффициент трансформации
+    const scaleFactor = newBgScale / oldBgScale
 
-        page.bgObj.center()
+    // 4. Обновляем фон
+    if (page.bgObj) {
+        page.bgObj.scaleX = newBgScale
+        page.bgObj.scaleY = newBgScale
+        page.bgObj.center() // Фон всегда встает ровно в новый центр
         page.bgObj.setCoords()
+    }
+
+    // 5. Пересчитываем объекты
+    const objs = cv.getObjects().filter(o => o !== page.bgObj)
+    for (const obj of objs) {
+        // Центр объекта сейчас
+        const objCenter = obj.getCenterPoint()
+        
+        // Вектор от ЯКОРЯ (центра фона) до объекта
+        const vecX = objCenter.x - anchorX
+        const vecY = objCenter.y - anchorY
+
+        // Масштабируем вектор
+        const newVecX = vecX * scaleFactor
+        const newVecY = vecY * scaleFactor
+
+        // Новая позиция = Новый центр фона + Новый вектор
+        const finalX = newCx + newVecX
+        const finalY = newCy + newVecY
+
+        // Применяем масштаб к самому объекту
+        obj.scaleX = obj.scaleX * scaleFactor
+        obj.scaleY = obj.scaleY * scaleFactor
+
+        // Ставим через setPositionByOrigin (самый точный способ в Fabric)
+        // Используем 'center', 'center', чтобы поворот объекта вокруг своей оси не влиял на позицию
+        obj.setPositionByOrigin(new fabric.Point(finalX, finalY), 'center', 'center')
+        
+        obj.setCoords()
+        
+        // Clamp вызываем, чтобы вернуть объект, если он вдруг оказался за краем
+        clamp(obj)
     }
 
     page.meta.doc_w = newW
