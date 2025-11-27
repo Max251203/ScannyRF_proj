@@ -32,9 +32,12 @@ const ACCEPT_DOC = '.jpg,.jpeg,.png,.pdf,.doc,.docx,.xls,.xlsx'
 const FONTS = ['Arial', 'Times New Roman', 'Ermilov', 'Segoe UI', 'Roboto', 'Georgia']
 const PDF_RENDER_SCALE = 3.0
 const RASTER_RENDER_SCALE = 3.0
-const UI_CORNER_SIZE = 18
-const UI_TOUCH_CORNER_SIZE = 32
-const UI_DELETE_RADIUS = 14
+
+const UI_CORNER_SIZE = 10
+const UI_TOUCH_CORNER_SIZE = 24
+const UI_DELETE_RADIUS = 11
+const UI_DELETE_OFFSET = 14
+const UI_ROT_OFFSET = 30
 
 async function ensurePDFLib () {
   if (window.PDFLib) return window.PDFLib
@@ -131,7 +134,7 @@ function sliceCanvasToPages (canvas) {
     tmp.width = canvas.width; tmp.height = sliceH
     try { tctx.textBaseline = 'alphabetic' } catch {}
     tctx.fillStyle = '#fff'
-    tctx.fillRect(0,0, tmp.width, tmp.height)
+    tctx.fillRect(0, 0, tmp.width, tmp.height)
     tctx.drawImage(canvas, 0, y, canvas.width, sliceH, 0, 0, tmp.width, tmp.height)
     out.push(tmp.toDataURL('image/png'))
   }
@@ -291,7 +294,7 @@ export default function Editor () {
       document.documentElement.classList.remove('no-footer')
     }
   }, [])
-  
+
   const canvasWrapRef = useRef(null)
   const docFileRef = useRef(null)
   const bgFileRef = useRef(null)
@@ -300,7 +303,7 @@ export default function Editor () {
   const sheetAddRef = useRef(null)
   const sheetDownloadRef = useRef(null)
   const [isMobile, setIsMobile] = useState(() => window.matchMedia('(max-width: 960px)').matches)
-  
+
   useEffect(() => {
     const mq = window.matchMedia('(max-width: 960px)')
     const on = () => setIsMobile(mq.matches)
@@ -473,7 +476,7 @@ export default function Editor () {
     ctxRef.current = ctx
     ensurePageRenderedRef.current = ensurePageRenderedFactory(ctx)
   }, [pagesRef, setPages, sendPatch])
-  
+
   function ensurePageRendered (index) {
     let fn = ensurePageRenderedRef.current
     if (typeof fn !== 'function') {
@@ -505,8 +508,8 @@ export default function Editor () {
     const del = new F.Control({
       x: 0.5,
       y: -0.5,
-      offsetX: 24,
-      offsetY: -24,
+      offsetX: 0,
+      offsetY: 0,
       cursorStyle: 'pointer',
       mouseUpHandler: (_, tr) => {
         const t = tr.target
@@ -525,20 +528,16 @@ export default function Editor () {
         return true
       },
       render: (ctx, left, top, styleOverride, fabricObject) => {
-        const scale = fabricObject?.canvas?.__uiScale || 1
-        const r = UI_DELETE_RADIUS / scale
-
+        const uiScale = fabricObject?.canvas?.__uiScale || 1
+        const r = UI_DELETE_RADIUS / uiScale
         ctx.save()
-        ctx.shadowColor = 'rgba(0,0,0,0.25)'
-        ctx.shadowBlur = 4
         ctx.fillStyle = '#E26D5C'
         ctx.beginPath()
         ctx.arc(left, top, r, 0, Math.PI * 2)
         ctx.fill()
-
         ctx.strokeStyle = '#fff'
-        ctx.lineWidth = 2 / scale
-        const c = r * 0.55
+        ctx.lineWidth = 2 / uiScale
+        const c = r * 0.6
         ctx.beginPath()
         ctx.moveTo(left - c, top - c)
         ctx.lineTo(left + c, top + c)
@@ -559,7 +558,13 @@ export default function Editor () {
       if (obj && obj.controls && window.__scannyDelControl) {
         obj.controls.tr = window.__scannyDelControl
       }
-      const scale = obj.canvas?.__uiScale || 1
+
+      const uiScale = obj.canvas?.__uiScale || 1
+      const sx = Math.abs(obj.scaleX || 1)
+      const sy = Math.abs(obj.scaleY || 1)
+      const objScale = (sx + sy) / 2 || 1
+      const rotScale = uiScale * objScale
+
       obj.set({
         hasControls: true,
         hasBorders: true,
@@ -569,9 +574,17 @@ export default function Editor () {
         cornerColor: '#E26D5C',
         borderColor: '#3C6FD8',
         borderDashArray: null,
-        cornerSize: Math.round(UI_CORNER_SIZE / scale),
-        touchCornerSize: Math.round(UI_TOUCH_CORNER_SIZE / scale)
+        borderScaleFactor: 2.2,
+        cornerSize: Math.max(4, Math.round(UI_CORNER_SIZE / uiScale)),
+        touchCornerSize: Math.max(8, Math.round(UI_TOUCH_CORNER_SIZE / uiScale)),
+        hasRotatingPoint: true,
+        rotatingPointOffset: UI_ROT_OFFSET / rotScale
       })
+
+      if (obj.controls && obj.controls.tr) {
+        obj.controls.tr.offsetX = UI_DELETE_OFFSET / (uiScale * objScale)
+        obj.controls.tr.offsetY = -UI_DELETE_OFFSET / (uiScale * objScale)
+      }
     } catch {}
   }
 
@@ -707,6 +720,13 @@ export default function Editor () {
       const cv = await ensureCanvas(page, index, sendPatch)
       if (page._bgRendered) {
         fitCanvasForPage(page)
+        const objs = cv.getObjects() || []
+        for (const o of objs) {
+          if (o !== page.bgObj) {
+            ensureDeleteControlFor(o)
+          }
+        }
+        cv.requestRenderAll()
         return
       }
       try {
@@ -771,13 +791,19 @@ export default function Editor () {
           page._pendingOverlays = []
         }
         fitCanvasForPage(page)
+        const objs = cv.getObjects() || []
+        for (const o of objs) {
+          if (o !== page.bgObj) {
+            ensureDeleteControlFor(o)
+          }
+        }
         cv.requestRenderAll()
       } catch (e) {
         console.warn('ensurePageRendered failed', e)
       }
     }
   }
-  
+
   function placeBgObject (cv, page, img) {
     page.bgObj = img
     const meta = page.meta || {}
@@ -825,7 +851,7 @@ export default function Editor () {
       const h = page.bgObj.height || 1
       newBgScale = Math.min(newW / w, newH / h)
     } else {
-      newBgScale = newW / oldW 
+      newBgScale = newW / oldW
     }
     const scaleFactor = newBgScale / oldBgScale
     if (page.bgObj) {
