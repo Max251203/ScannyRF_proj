@@ -57,7 +57,7 @@ function toUint8Copy (input) {
 }
 function u8ToB64 (u8) {
   let bin = ''; const chunk = 0x8000
-  for (let i = 0; i < u8.length; i += chunk) { bin += String.fromCharCode.apply(null, u8.subarray(i, i + chunk)) }
+  for (let i = 0; i < u8.length; i += chunk) bin += String.fromCharCode.apply(null, u8.subarray(i, i + chunk))
   return btoa(bin)
 }
 function b64ToU8 (b64) {
@@ -511,41 +511,8 @@ export default function Editor () {
       offsetX: 0,
       offsetY: 0,
       cursorStyle: 'pointer',
-      mouseUpHandler: (_, tr) => {
-        const t = tr.target
-        const cv = t?.canvas
-        if (!cv) return true
-        if (window.confirm('Удалить объект со страницы?')) {
-          const idx = cv.__pageIndex ?? -1
-          const oid = t.__scannyId || null
-          cv.remove(t)
-          cv.discardActiveObject()
-          cv.requestRenderAll()
-          if (oid && idx >= 0) {
-            cv.__onPatch?.([{ op: 'overlay_remove', page: idx, id: oid }])
-          }
-        }
-        return true
-      },
-      render: (ctx, left, top, styleOverride, fabricObject) => {
-        const uiScale = fabricObject?.canvas?.__uiScale || 1
-        const r = UI_DELETE_RADIUS / uiScale
-        ctx.save()
-        ctx.fillStyle = '#E26D5C'
-        ctx.beginPath()
-        ctx.arc(left, top, r, 0, Math.PI * 2)
-        ctx.fill()
-        ctx.strokeStyle = '#fff'
-        ctx.lineWidth = 2 / uiScale
-        const c = r * 0.6
-        ctx.beginPath()
-        ctx.moveTo(left - c, top - c)
-        ctx.lineTo(left + c, top + c)
-        ctx.moveTo(left + c, top - c)
-        ctx.lineTo(left - c, top + c)
-        ctx.stroke()
-        ctx.restore()
-      }
+      mouseUpHandler: () => true,
+      render: () => {}
     })
 
     fobj.prototype.controls.tr = del
@@ -555,35 +522,34 @@ export default function Editor () {
 
   function ensureDeleteControlFor (obj) {
     try {
-      if (obj && obj.controls && window.__scannyDelControl) {
-        obj.controls.tr = window.__scannyDelControl
-      }
-
       const uiScale = obj.canvas?.__uiScale || 1
-      const sx = Math.abs(obj.scaleX || 1)
-      const sy = Math.abs(obj.scaleY || 1)
-      const objScale = (sx + sy) / 2 || 1
-      const rotScale = uiScale * objScale
 
       obj.set({
         hasControls: true,
         hasBorders: true,
         lockUniScaling: false,
-        transparentCorners: false,
+        transparentCorners: true,
         cornerStyle: 'circle',
-        cornerColor: '#E26D5C',
-        borderColor: '#3C6FD8',
+        cornerColor: 'rgba(0,0,0,0)',
+        borderColor: 'rgba(0,0,0,0)',
         borderDashArray: null,
-        borderScaleFactor: 2.2,
+        borderScaleFactor: 1,
         cornerSize: Math.max(4, Math.round(UI_CORNER_SIZE / uiScale)),
         touchCornerSize: Math.max(8, Math.round(UI_TOUCH_CORNER_SIZE / uiScale)),
         hasRotatingPoint: true,
-        rotatingPointOffset: UI_ROT_OFFSET / rotScale
+        rotatingPointOffset: UI_ROT_OFFSET / uiScale
       })
 
       if (obj.controls && obj.controls.tr) {
-        obj.controls.tr.offsetX = UI_DELETE_OFFSET / (uiScale * objScale)
-        obj.controls.tr.offsetY = -UI_DELETE_OFFSET / (uiScale * objScale)
+        obj.controls.tr.visible = false
+      }
+
+      const mtr = obj.controls?.mtr
+      if (mtr && !mtr.__scannyHidden) {
+        const origRender = mtr.render
+        mtr.render = function () {}
+        mtr.__scannyHidden = true
+        mtr.__origRender = origRender
       }
     } catch {}
   }
@@ -883,6 +849,13 @@ export default function Editor () {
       if (o !== page.bgObj) ensureDeleteControlFor(o)
     })
     cv.requestRenderAll()
+
+    const active = cv.getActiveObject()
+    if (active) {
+      active.setCoords()
+      cv.fire('object:modified', { target: active })
+    }
+
     try {
       const snapshot = await serializeDocument()
       if (snapshot) {
@@ -998,7 +971,7 @@ export default function Editor () {
 
   function baseName () {
     const nm = (fileNameRef.current || '').trim()
-    if (!nm) { toast('Введите название файла вверху', 'error'); return null }
+    if (!nm) { toast('Введите название файла при скачивании', 'error'); return null }
     return sanitizeName(nm)
   }
 
@@ -1694,6 +1667,25 @@ export default function Editor () {
     }
   }
 
+  async function handleDeleteSelected () {
+    const pagesLocal = pagesRef.current || []
+    const page = pagesLocal[cur]
+    const cv = page?.canvas
+    if (!cv) return
+    const obj = cv.getActiveObject()
+    if (!obj) return
+    if (!window.confirm('Удалить объект со страницы?')) return
+
+    const oid = obj.__scannyId || null
+    cv.remove(obj)
+    cv.discardActiveObject()
+    cv.requestRenderAll()
+
+    if (oid) {
+      sendPatch([{ op: 'overlay_remove', page: cur, id: oid }])
+    }
+  }
+
   useEffect(() => {
     const onKey = (e) => {
       const tag = String(e.target?.tagName || '').toLowerCase()
@@ -1736,6 +1728,18 @@ export default function Editor () {
         max={progress.max}
         suffix={progress.suffix}
       />
+
+      {(menuActionsOpen || menuAddOpen || menuDownloadOpen) && (
+        <div
+          className="ed-dim"
+          onClick={() => {
+            setMenuActionsOpen(false)
+            setMenuAddOpen(false)
+            setMenuDownloadOpen(false)
+          }}
+        />
+      )}
+
       {banner && <div className="ed-banner">{banner}</div>}
       {!panelOpen ? (
         <div className="ed-top">
@@ -1822,7 +1826,13 @@ export default function Editor () {
           </div>
         </aside>
         <section className="ed-center">
-          <div className="ed-canvas-wrap" ref={canvasWrapRef} onDragOver={(e) => e.preventDefault()} onDrop={onCanvasDrop}>
+          <div
+            className="ed-canvas-wrap"
+            ref={canvasWrapRef}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={onCanvasDrop}
+            style={{ position: 'relative' }}
+          >
             {pages.map((p, idx) => (
               <div key={p.id} className={`ed-canvas ${idx === cur ? 'active' : ''}`}>
                 <button
@@ -1841,6 +1851,8 @@ export default function Editor () {
                 <div className="dz-types">JPG, JPEG, PNG, PDF, DOC, DOCX, XLS, XLSX</div>
               </div>
             )}
+
+            <SelectionOverlay page={pages[cur]} onDelete={handleDeleteSelected} />
           </div>
         </section>
         <aside className="ed-right">
@@ -2224,3 +2236,223 @@ function UnifiedPager ({ total, current, pgText, setPgText, onGo, onPrev, onNext
     </div>
   )
 }
+
+function SelectionOverlay ({ page, onDelete }) {
+  const [rect, setRect] = useState(null)
+
+  useEffect(() => {
+    const cv = page?.canvas
+    if (!cv) {
+      setRect(null)
+      return
+    }
+
+    let frame = 0
+
+    function updateNow () {
+      try {
+        const obj = cv.getActiveObject()
+        const lower = cv.lowerCanvasEl
+        if (!obj || !lower) {
+          setRect(null)
+          return
+        }
+
+        const canvasRect = lower.getBoundingClientRect()
+        const logicalW = cv.getWidth()
+        const logicalH = cv.getHeight()
+
+        if (!logicalW || !logicalH || !canvasRect.width || !canvasRect.height) {
+          setRect(null)
+          return
+        }
+
+        obj.setCoords()
+        const center = obj.getCenterPoint()
+        const wLogical = obj.getScaledWidth()
+        const hLogical = obj.getScaledHeight()
+
+        const kx = canvasRect.width / logicalW
+        const ky = canvasRect.height / logicalH
+        const k = (kx + ky) / 2 || 1
+
+        const wCss = wLogical * k
+        const hCss = hLogical * k
+
+        const centerCssX = canvasRect.left + center.x * k
+        const centerCssY = canvasRect.top + center.y * k
+
+        const left = centerCssX - wCss / 2
+        const top = centerCssY - hCss / 2
+
+        if (
+          !Number.isFinite(left) ||
+          !Number.isFinite(top) ||
+          !Number.isFinite(wCss) ||
+          !Number.isFinite(hCss)
+        ) {
+          setRect(null)
+          return
+        }
+
+        const angle = obj.angle || 0
+
+        setRect({
+          left,
+          top,
+          width: wCss,
+          height: hCss,
+          angle
+        })
+      } catch {
+        setRect(null)
+      }
+    }
+
+    function scheduleUpdate () {
+      if (frame) return
+      frame = requestAnimationFrame(() => {
+        frame = 0
+        updateNow()
+      })
+    }
+
+    const handler = () => scheduleUpdate()
+
+    cv.on('selection:created', handler)
+    cv.on('selection:updated', handler)
+    cv.on('selection:cleared', handler)
+    cv.on('object:modified', handler)
+    cv.on('object:moving', handler)
+    cv.on('object:scaling', handler)
+    cv.on('object:rotating', handler)
+
+    window.addEventListener('resize', handler)
+    window.addEventListener('orientationchange', handler)
+
+    scheduleUpdate()
+
+    return () => {
+      if (frame) cancelAnimationFrame(frame)
+      cv.off('selection:created', handler)
+      cv.off('selection:updated', handler)
+      cv.off('selection:cleared', handler)
+      cv.off('object:modified', handler)
+      cv.off('object:moving', handler)
+      cv.off('object:scaling', handler)
+      cv.off('object:rotating', handler)
+      window.removeEventListener('resize', handler)
+      window.removeEventListener('orientationchange', handler)
+    }
+  }, [page])
+
+  if (!rect) return null
+
+  const { left, top, width, height, angle } = rect
+  const borderWidth = 1.5
+  const handleSize = UI_CORNER_SIZE
+  const deleteR = UI_DELETE_RADIUS
+
+  const commonHandleStyle = {
+    position: 'absolute',
+    width: handleSize,
+    height: handleSize,
+    borderRadius: '50%',
+    background: '#E26D5C',
+    transform: 'translate(-50%, -50%)',
+    pointerEvents: 'none'
+  }
+
+  const lineLength = UI_ROT_OFFSET
+
+  return (
+    <div
+      style={{
+        position: 'fixed',
+        left,
+        top,
+        width,
+        height,
+        pointerEvents: 'none',
+        zIndex: 150
+      }}
+    >
+      <div
+        style={{
+          position: 'absolute',
+          left: 0,
+          top: 0,
+          width: '100%',
+          height: '100%',
+          transform: `rotate(${angle}deg)`,
+          transformOrigin: '50% 50%'
+        }}
+      >
+        <div
+          style={{
+            position: 'absolute',
+            left: 0,
+            top: 0,
+            width: '100%',
+            height: '100%',
+            border: `${borderWidth}px solid #3C6FD8`,
+            boxSizing: 'border-box'
+          }}
+        />
+        <div style={{ ...commonHandleStyle, left: 0, top: 0 }} />
+        <div style={{ ...commonHandleStyle, left: '100%', top: 0 }} />
+        <div style={{ ...commonHandleStyle, left: 0, top: '100%' }} />
+        <div style={{ ...commonHandleStyle, left: '100%', top: '100%' }} />
+        <div style={{ ...commonHandleStyle, left: '50%', top: 0 }} />
+        <div style={{ ...commonHandleStyle, left: '50%', top: '100%' }} />
+        <div style={{ ...commonHandleStyle, left: 0, top: '50%' }} />
+        <div style={{ ...commonHandleStyle, left: '100%', top: '50%' }} />
+        <div
+          style={{
+            position: 'absolute',
+            left: '50%',
+            top: -lineLength,
+            width: 2,
+            height: lineLength,
+            background: '#3C6FD8',
+            transform: 'translateX(-50%)',
+            pointerEvents: 'none'
+          }}
+        />
+        <div
+          style={{
+            ...commonHandleStyle,
+            left: '50%',
+            top: -lineLength
+          }}
+        />
+        <button
+          type="button"
+          onClick={onDelete}
+          style={{
+            position: 'absolute',
+            top: -deleteR * 2,
+            left: width + deleteR * 2,
+            width: deleteR * 2,
+            height: deleteR * 2,
+            borderRadius: '50%',
+            border: 'none',
+            background: '#E26D5C',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            cursor: 'pointer',
+            pointerEvents: 'auto',
+            color: '#fff',
+            fontSize: deleteR,
+            fontWeight: 700,
+            transform: 'translate(-50%, 0)'
+          }}
+        >
+          ×
+        </button>
+      </div>
+    </div>
+  )
+}
+
