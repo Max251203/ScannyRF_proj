@@ -32,6 +32,9 @@ const ACCEPT_DOC = '.jpg,.jpeg,.png,.pdf,.doc,.docx,.xls,.xlsx'
 const FONTS = ['Arial', 'Times New Roman', 'Ermilov', 'Segoe UI', 'Roboto', 'Georgia']
 const PDF_RENDER_SCALE = 3.0
 const RASTER_RENDER_SCALE = 3.0
+const UI_CORNER_SIZE = 18
+const UI_TOUCH_CORNER_SIZE = 32
+const UI_DELETE_RADIUS = 14
 
 async function ensurePDFLib () {
   if (window.PDFLib) return window.PDFLib
@@ -155,34 +158,37 @@ function fitCanvasForPage (page) {
   const wrap = cv.wrapperEl ? cv.wrapperEl.parentNode : null
   const container = document.querySelector('.ed-canvas-wrap')
   if (!wrap || !container) return
-  
+
   const contW = container.clientWidth
   const contH = container.clientHeight
   if (contW < 10 || contH < 10) return
 
   const docW = cv.width
   const docH = cv.height
-  
+
   const isMobile = window.matchMedia('(max-width: 960px)').matches
-  const margin = isMobile ? 0 : 24 
-  
+  const margin = isMobile ? 0 : 24
+
   const availW = Math.max(100, contW - margin)
   const availH = Math.max(100, contH - margin)
-  
-  const scale = Math.min(availW / docW, availH / docH)
-  
+
+  const scale = Math.min(availW / docW, availH / docH) || 1
+
   const finalW = Math.floor(docW * scale)
   const finalH = Math.floor(docH * scale)
 
   wrap.style.width = `${finalW}px`
   wrap.style.height = `${finalH}px`
-  
+
   if (cv.wrapperEl) {
     cv.wrapperEl.style.transform = `scale(${scale}) translateZ(0)`
     cv.wrapperEl.style.transformOrigin = 'top left'
     cv.wrapperEl.style.width = `${docW}px`
     cv.wrapperEl.style.height = `${docH}px`
   }
+
+  cv.__uiScale = scale
+  page.__uiScale = scale
   cv.calcOffset()
 }
 
@@ -495,38 +501,54 @@ export default function Editor () {
     const fobj = fabric.Object
     if (!fobj || fobj.__delPatched) return
     const F = fabric
+
     const del = new F.Control({
-      x: 0.5, y: -0.5, offsetX: 24, offsetY: -24, cursorStyle: 'pointer',
+      x: 0.5,
+      y: -0.5,
+      offsetX: 24,
+      offsetY: -24,
+      cursorStyle: 'pointer',
       mouseUpHandler: (_, tr) => {
-        const t = tr.target; const cv = t?.canvas
+        const t = tr.target
+        const cv = t?.canvas
         if (!cv) return true
         if (window.confirm('Удалить объект со страницы?')) {
-          const idx = (cv.__pageIndex ?? -1)
+          const idx = cv.__pageIndex ?? -1
           const oid = t.__scannyId || null
-          cv.remove(t); cv.discardActiveObject(); cv.requestRenderAll()
-          if (oid && idx >= 0) cv.__onPatch?.([{ op: 'overlay_remove', page: idx, id: oid }])
+          cv.remove(t)
+          cv.discardActiveObject()
+          cv.requestRenderAll()
+          if (oid && idx >= 0) {
+            cv.__onPatch?.([{ op: 'overlay_remove', page: idx, id: oid }])
+          }
         }
         return true
       },
-      render: (ctx, left, top) => {
-        const size = 24
+      render: (ctx, left, top, styleOverride, fabricObject) => {
+        const scale = fabricObject?.canvas?.__uiScale || 1
+        const r = UI_DELETE_RADIUS / scale
+
         ctx.save()
-        ctx.shadowColor = 'rgba(0,0,0,0.35)'
-        ctx.shadowBlur = 6
+        ctx.shadowColor = 'rgba(0,0,0,0.25)'
+        ctx.shadowBlur = 4
         ctx.fillStyle = '#E26D5C'
-        ctx.strokeStyle = '#fff'
-        ctx.lineWidth = 2
-        ctx.beginPath(); ctx.arc(left, top, size / 2, 0, Math.PI * 2); ctx.fill(); ctx.stroke()
-        ctx.shadowColor = 'transparent'
-        ctx.strokeStyle = '#fff'; ctx.lineWidth = 3; ctx.lineCap = 'round'
-        const s = size * 0.3
         ctx.beginPath()
-        ctx.moveTo(left - s, top - s); ctx.lineTo(left + s, top + s)
-        ctx.moveTo(left + s, top - s); ctx.lineTo(left - s, top + s)
+        ctx.arc(left, top, r, 0, Math.PI * 2)
+        ctx.fill()
+
+        ctx.strokeStyle = '#fff'
+        ctx.lineWidth = 2 / scale
+        const c = r * 0.55
+        ctx.beginPath()
+        ctx.moveTo(left - c, top - c)
+        ctx.lineTo(left + c, top + c)
+        ctx.moveTo(left + c, top - c)
+        ctx.lineTo(left - c, top + c)
         ctx.stroke()
         ctx.restore()
       }
     })
+
     fobj.prototype.controls.tr = del
     window.__scannyDelControl = del
     fobj.__delPatched = true
@@ -534,12 +556,21 @@ export default function Editor () {
 
   function ensureDeleteControlFor (obj) {
     try {
-      if (obj && obj.controls && window.__scannyDelControl) obj.controls.tr = window.__scannyDelControl
+      if (obj && obj.controls && window.__scannyDelControl) {
+        obj.controls.tr = window.__scannyDelControl
+      }
+      const scale = obj.canvas?.__uiScale || 1
       obj.set({
-        hasControls: true, hasBorders: true, lockUniScaling: false,
-        transparentCorners: false, cornerStyle: 'circle', cornerColor: '#E26D5C',
-        cornerStrokeColor: '#fff', borderColor: '#E26D5C', borderDashArray: [5, 5],
-        padding: 8, objectCaching: true, noScaleCache: false, cornerSize: 20, touchCornerSize: 48
+        hasControls: true,
+        hasBorders: true,
+        lockUniScaling: false,
+        transparentCorners: false,
+        cornerStyle: 'circle',
+        cornerColor: '#E26D5C',
+        borderColor: '#3C6FD8',
+        borderDashArray: null,
+        cornerSize: Math.round(UI_CORNER_SIZE / scale),
+        touchCornerSize: Math.round(UI_TOUCH_CORNER_SIZE / scale)
       })
     } catch {}
   }
@@ -822,6 +853,9 @@ export default function Editor () {
     page.meta.doc_h = newH
     page.landscape = !page.landscape
     fitCanvasForPage(page)
+    cv.getObjects().forEach(o => {
+      if (o !== page.bgObj) ensureDeleteControlFor(o)
+    })
     cv.requestRenderAll()
     try {
       const snapshot = await serializeDocument()
