@@ -1,28 +1,24 @@
-import { useMemo } from 'react'
+import React from 'react'
 
-/**
- * Простой оверлей прогресса:
- * - open: boolean
- * - label: string ('Загрузка' | 'Восстановление' | 'Скачивание' | ...)
- * - percent: 0..100 (если indeterminate=false)
- * - indeterminate: boolean (по умолчанию true)
- */
-export default function ProgressOverlay({ open=false, label='Загрузка', percent=0, indeterminate=true }) {
-  const pct = Math.max(0, Math.min(100, Math.round(percent || 0)))
-  const title = useMemo(() => {
-    if (indeterminate) return label
-    return `${label} — ${pct}%`
-  }, [indeterminate, label, pct])
-
+export default function ProgressOverlay({ open, label, val, max, suffix = '' }) {
   if (!open) return null
+
+  const safeMax = Math.max(1, max || 1)
+  const safeVal = Math.min(safeMax, Math.max(0, val || 0))
+  const pct = max > 0 ? (safeVal / safeMax) * 100 : 100
+
   return (
-    <div className="progress-overlay" role="status" aria-live="polite" aria-label={title}>
+    <div className="progress-overlay">
       <div className="po-card">
         <div className="po-title">{label}</div>
-        <div className={`po-bar ${indeterminate ? 'ind' : ''}`}>
-          <div className="po-fill" style={indeterminate ? undefined : { width: `${pct}%` }} />
+        <div className="po-bar">
+          <div className="po-fill" style={{ width: `${pct}%` }}>
+            <div className="po-shimmer" />
+          </div>
         </div>
-        {!indeterminate && <div className="po-pct">{pct}%</div>}
+        <div className="po-stat">
+          {max > 0 ? `${safeVal} из ${safeMax} ${suffix}` : '...'}
+        </div>
       </div>
     </div>
   )

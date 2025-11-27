@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
+import { useEffect, useRef, useState, useCallback } from 'react'
 import { toast } from '../components/Toast.jsx'
 import { AuthAPI } from '../api'
 import {
@@ -149,7 +149,6 @@ async function renderPDFPageToCanvas (pdf, pageNum, scale) {
   return canvas
 }
 
-// Функция подгонки (с округлением и translateZ для четкости)
 function fitCanvasForPage (page) {
   if (!page || !page.canvas) return
   const cv = page.canvas
@@ -164,7 +163,6 @@ function fitCanvasForPage (page) {
   const docW = cv.width
   const docH = cv.height
   
-  // На мобильном убираем margin для максимального размера
   const isMobile = window.matchMedia('(max-width: 960px)').matches
   const margin = isMobile ? 0 : 24 
   
@@ -173,7 +171,6 @@ function fitCanvasForPage (page) {
   
   const scale = Math.min(availW / docW, availH / docH)
   
-  // Округляем размеры контейнера, чтобы избежать субпиксельного мыла
   const finalW = Math.floor(docW * scale)
   const finalH = Math.floor(docH * scale)
 
@@ -181,11 +178,10 @@ function fitCanvasForPage (page) {
   wrap.style.height = `${finalH}px`
   
   if (cv.wrapperEl) {
-      // translateZ(0) форсирует GPU, улучшает четкость на мобилках
-      cv.wrapperEl.style.transform = `scale(${scale}) translateZ(0)`
-      cv.wrapperEl.style.transformOrigin = 'top left'
-      cv.wrapperEl.style.width = `${docW}px`
-      cv.wrapperEl.style.height = `${docH}px`
+    cv.wrapperEl.style.transform = `scale(${scale}) translateZ(0)`
+    cv.wrapperEl.style.transformOrigin = 'top left'
+    cv.wrapperEl.style.width = `${docW}px`
+    cv.wrapperEl.style.height = `${docH}px`
   }
   cv.calcOffset()
 }
@@ -197,6 +193,11 @@ function sanitizeName (s) {
   s = s.replace(/[^\p{L}\p{N}._-]+/gu, '-').replace(/-+/g, '-').replace(/^[-_.]+|[-_.]+$/g, '')
   return s.slice(0, 64) || genDefaultName()
 }
+function setDraftHint (flag) {
+  try {
+    localStorage.setItem('has_draft', flag ? '1' : '0')
+  } catch {}
+}
 
 export default function Editor () {
   const [docId, setDocId] = useState(null)
@@ -207,7 +208,6 @@ export default function Editor () {
   const canPrev = hasDoc && cur > 0
   const canNext = hasDoc && cur < pages.length - 1
   const [signLib, setSignLib] = useState([])
-  const [libLoading, setLibLoading] = useState(false)
   const [panelOpen, setPanelOpen] = useState(false)
   const [font, setFont] = useState('Arial')
   const [fontSize, setFontSize] = useState(42)
@@ -247,17 +247,27 @@ export default function Editor () {
   useEffect(() => { fileNameRef.current = fileName }, [fileName])
   const wsRef = useRef(null)
   const draftExistsRef = useRef(false)
-  const isDeletingRef = useRef(false)
   const initialRenderPendingRef = useRef(false)
   const restPatchBufferRef = useRef([])
   const restPatchTimerRef = useRef(0)
+
+  const [progress, setProgress] = useState({
+    active: false,
+    mode: null,
+    phase: null,
+    label: '',
+    val: 0,
+    max: 0,
+    suffix: ''
+  })
+
   function flushRestPatchesSoon () {
     window.clearTimeout(restPatchTimerRef.current)
     restPatchTimerRef.current = window.setTimeout(async () => {
       const ops = restPatchBufferRef.current
       restPatchBufferRef.current = []
       if (!isAuthed || ops.length === 0) return
-      try { await AuthAPI.patchDraft(ops) } catch {}
+      try { await AuthAPI.patchDraft(ops); setDraftHint(true) } catch {}
     }, 240)
   }
   function sendPatch (ops) {
@@ -266,15 +276,7 @@ export default function Editor () {
     restPatchBufferRef.current.push(...ops)
     flushRestPatchesSoon()
   }
-  const [poOpen, setPoOpen] = useState(false)
-  const [poLabel, setPoLabel] = useState('Загрузка')
-  const [poPct, setPoPct] = useState(0)
-  const [poInd, setPoInd] = useState(true)
-  const showProgress = (label, ind = true) => {
-    setPoLabel(label); setPoInd(ind); setPoPct(0); setPoOpen(true)
-  }
-  const updateProgress = (p) => { setPoPct(Math.max(0, Math.min(100, Math.round(p)))) }
-  const hideProgress = () => { setPoOpen(false); setPoPct(0) }
+
   useEffect(() => {
     document.body.classList.add('no-footer')
     document.documentElement.classList.add('no-footer')
@@ -283,6 +285,7 @@ export default function Editor () {
       document.documentElement.classList.remove('no-footer')
     }
   }, [])
+  
   const canvasWrapRef = useRef(null)
   const docFileRef = useRef(null)
   const bgFileRef = useRef(null)
@@ -291,32 +294,20 @@ export default function Editor () {
   const sheetAddRef = useRef(null)
   const sheetDownloadRef = useRef(null)
   const [isMobile, setIsMobile] = useState(() => window.matchMedia('(max-width: 960px)').matches)
+  
   useEffect(() => {
     const mq = window.matchMedia('(max-width: 960px)')
     const on = () => setIsMobile(mq.matches)
     mq.addEventListener('change', on)
     return () => mq.removeEventListener('change', on)
   }, [])
-  useEffect(() => { ensurePDFJS().catch(() => {}) }, [])
+
   const onTopMenuClick = (e) => {
     const r = e.currentTarget.getBoundingClientRect()
     setMenuPos({ top: r.bottom + 8 + window.scrollY, left: r.left + window.scrollX })
     setMenuActionsOpen(o => !o)
   }
-  useEffect(() => {
-    if (isAuthed) {
-      AuthAPI.getBillingStatus().then((st) => {
-          setBilling(st)
-          if (st && ('price_single' in st)) {
-            setPrices({
-              single: Number(st.price_single || 0),
-              month: Number(st.price_month || 0),
-              year: Number(st.price_year || 0)
-            })
-          }
-        }).catch(() => {})
-    }
-  }, [isAuthed])
+
   useEffect(() => {
     const onUser = async () => {
       if (localStorage.getItem('access')) {
@@ -362,6 +353,7 @@ export default function Editor () {
       window.removeEventListener('storage', onStorage)
     }
   }, [])
+
   function throttle (fn, wait = 160) {
     let last = 0; let tid = null
     return (...args) => {
@@ -375,10 +367,11 @@ export default function Editor () {
       }
     }
   }
+
   useEffect(() => {
     if (!canvasWrapRef.current) return
     const handleResize = throttle(() => {
-       pagesRef.current.forEach((p) => { if (p?.canvas) fitCanvasForPage(p) })
+      pagesRef.current.forEach((p) => { if (p?.canvas) fitCanvasForPage(p) })
     }, 50)
     const ro = new ResizeObserver(handleResize)
     ro.observe(canvasWrapRef.current)
@@ -390,19 +383,21 @@ export default function Editor () {
       window.removeEventListener('orientationchange', handleResize)
     }
   }, [])
+
   async function loadLibrary () {
     if (!isAuthed) { setSignLib([]); return }
-    setLibLoading(true)
     try {
       const list = await AuthAPI.listSigns()
       setSignLib(Array.isArray(list) ? list : [])
     } catch {
       setSignLib([])
-    } finally {
-      setLibLoading(false)
     }
   }
-  useEffect(() => { if (isAuthed) loadLibrary() }, [isAuthed])
+
+  useEffect(() => {
+    if (isAuthed) loadLibrary()
+  }, [isAuthed])
+
   function ensureWS () {
     if (!isAuthed || !docIdRef.current) return
     const token = localStorage.getItem('access') || ''
@@ -416,30 +411,55 @@ export default function Editor () {
     }
     try { wsRef.current.connect() } catch {}
   }
+
   useEffect(() => {
     if (isAuthed && docId) ensureWS()
   }, [isAuthed, docId])
+
   useEffect(() => {
     return () => {
       try { wsRef.current?.destroy?.() } catch {}
       wsRef.current = null
     }
   }, [])
+
   useEffect(() => {
-    (async () => {
-      if (pagesRef.current.length || isDeletingRef.current) return
-      if (!localStorage.getItem('access')) return
-      const srv = await AuthAPI.getDraft().catch(() => null)
-      if (isDeletingRef.current) return
-      if (srv && srv.exists && srv.data) {
-        showProgress('Восстановление', true)
-        draftExistsRef.current = true
-        await restoreDocumentFromDraft(srv.data)
-        hideProgress()
-        showBanner('Восстановлен последний документ')
+    if (!isAuthed) return
+
+    ;(async () => {
+      let srv
+      try {
+        srv = await AuthAPI.getDraft()
+      } catch {
+        return
       }
+      if (!srv || !srv.exists || !srv.data) {
+        setDraftHint(false)
+        return
+      }
+
+      const total = Array.isArray(srv.data.pages) ? srv.data.pages.length : 0
+
+      setProgress({
+        active: true,
+        mode: 'restore',
+        phase: null,
+        label: 'Восстановление документа',
+        val: 0,
+        max: total || 1,
+        suffix: 'стр.'
+      })
+
+      await restoreDocumentFromDraft(srv.data, (idx, t) => {
+        setProgress(p => ({ ...p, val: idx, max: t || p.max || 1 }))
+      })
+
+      setDraftHint(true)
+      setProgress(p => ({ ...p, val: p.max, active: false }))
+      showBanner('Восстановлен последний документ')
     })()
-  }, [])
+  }, [isAuthed])
+
   const ctxRef = useRef(null)
   const ensurePageRenderedRef = useRef(null)
   useEffect(() => {
@@ -447,6 +467,7 @@ export default function Editor () {
     ctxRef.current = ctx
     ensurePageRenderedRef.current = ensurePageRenderedFactory(ctx)
   }, [pagesRef, setPages, sendPatch])
+  
   function ensurePageRendered (index) {
     let fn = ensurePageRenderedRef.current
     if (typeof fn !== 'function') {
@@ -455,6 +476,7 @@ export default function Editor () {
     }
     return fn(index)
   }
+
   useEffect(() => {
     if (initialRenderPendingRef.current && pages.length > 0) {
       const fn = (typeof ensurePageRenderedRef.current === 'function')
@@ -469,7 +491,6 @@ export default function Editor () {
     }
   }, [pages])
 
-  // ВОССТАНОВЛЕНА СТАРАЯ ФУНКЦИЯ (исправляет область нажатия кнопки)
   function installDeleteControl () {
     const fobj = fabric.Object
     if (!fobj || fobj.__delPatched) return
@@ -511,7 +532,6 @@ export default function Editor () {
     fobj.__delPatched = true
   }
 
-  // ВОССТАНОВЛЕНА СТАРАЯ ФУНКЦИЯ (исправляет отступы контролов)
   function ensureDeleteControlFor (obj) {
     try {
       if (obj && obj.controls && window.__scannyDelControl) obj.controls.tr = window.__scannyDelControl
@@ -524,58 +544,45 @@ export default function Editor () {
     } catch {}
   }
 
-  // ВОССТАНОВЛЕНА СТАРАЯ ЛОГИКА CLAMP (ограничение перемещения)
-  // ВОССТАНОВЛЕНА СТАРАЯ ЛОГИКА CLAMP (ограничение перемещения) + допуск по пикселям
-function clamp (obj) {
-  obj.setCoords()
-  const w = obj.canvas.width
-  const h = obj.canvas.height
-  const r = obj.getBoundingRect()
-
-  // Небольшой допуск, чтобы не было "подъедания" масштаба и микро‑сдвигов
-  const EPS = 1 // 1 пиксель
-
-  // Масштабируем только если объект ЗНАЧИМО больше холста,
-  // а не из‑за плавающих 0.5–1 px при смене ориентации.
-  if (r.width - w > EPS) {
-    const currentScale = obj.scaleX || 1
-    const newScale = currentScale * (w / r.width)
-    obj.scaleX = newScale
-    obj.scaleY = newScale
+  function clamp (obj) {
     obj.setCoords()
+    const w = obj.canvas.width
+    const h = obj.canvas.height
+    const r = obj.getBoundingRect()
+    const EPS = 1
+    if (r.width - w > EPS) {
+      const currentScale = obj.scaleX || 1
+      const newScale = currentScale * (w / r.width)
+      obj.scaleX = newScale
+      obj.scaleY = newScale
+      obj.setCoords()
+    }
+    if (r.height - h > EPS) {
+      const currentScale = obj.scaleY || 1
+      const newScale = currentScale * (h / r.height)
+      obj.scaleX = newScale
+      obj.scaleY = newScale
+      obj.setCoords()
+    }
+    const br = obj.getBoundingRect()
+    let dx = 0
+    let dy = 0
+    if (br.left < -EPS) {
+      dx = -br.left
+    } else if (br.left + br.width - w > EPS) {
+      dx = w - (br.left + br.width)
+    }
+    if (br.top < -EPS) {
+      dy = -br.top
+    } else if (br.top + br.height - h > EPS) {
+      dy = h - (br.top + br.height)
+    }
+    if (dx || dy) {
+      obj.left += dx
+      obj.top += dy
+      obj.setCoords()
+    }
   }
-  if (r.height - h > EPS) {
-    const currentScale = obj.scaleY || 1
-    const newScale = currentScale * (h / r.height)
-    obj.scaleX = newScale
-    obj.scaleY = newScale
-    obj.setCoords()
-  }
-
-  const br = obj.getBoundingRect()
-  let dx = 0
-  let dy = 0
-
-  // Сдвигаем внутрь только если реально вылезли больше, чем на EPS,
-  // чтобы при поворотах туда‑обратно не накапливались микро‑сдвиги.
-  if (br.left < -EPS) {
-    dx = -br.left
-  } else if (br.left + br.width - w > EPS) {
-    dx = w - (br.left + br.width)
-  }
-
-  if (br.top < -EPS) {
-    dy = -br.top
-  } else if (br.top + br.height - h > EPS) {
-    dy = h - (br.top + br.height)
-  }
-
-  if (dx || dy) {
-    obj.left += dx
-    obj.top += dy
-    obj.setCoords()
-  }
-}
 
   async function ensureCanvas (page, pageIndex, onPatch) {
     await ensureFabric()
@@ -617,9 +624,9 @@ function clamp (obj) {
     c.on('selection:created', onSelectionChanged)
     c.on('selection:updated', onSelectionChanged)
     c.on('selection:cleared', () => setPanelOpen(false))
-    c.on('object:moving', (e) => { if(e.target) clamp(e.target) })
-    c.on('object:scaling', (e) => { if(e.target) clamp(e.target) })
-    c.on('object:rotating', (e) => { if(e.target) clamp(e.target) })
+    c.on('object:moving', (e) => { if (e.target) clamp(e.target) })
+    c.on('object:scaling', (e) => { if (e.target) clamp(e.target) })
+    c.on('object:rotating', (e) => { if (e.target) clamp(e.target) })
     function overlayFromObject (obj) {
       const base = {
         id: obj.__scannyId || ('ov_' + Math.random().toString(36).slice(2)),
@@ -655,11 +662,12 @@ function clamp (obj) {
       if (!obj.__scannyId) obj.__scannyId = ov.id
       c.__onPatch([{ op: 'overlay_upsert', page: c.__pageIndex, obj: ov }])
     }
-    c.on('object:modified', (e) => { if(e.target) sendUpsertForObject(e.target) })
-    try { c.on('text:changed', (e) => { if(e.target) { c.requestRenderAll(); sendUpsertForObject(e.target) } }) } catch {}
+    c.on('object:modified', (e) => { if (e.target) sendUpsertForObject(e.target) })
+    try { c.on('text:changed', (e) => { if (e.target) { c.requestRenderAll(); sendUpsertForObject(e.target) } }) } catch {}
     installDeleteControl()
     return c
   }
+
   function ensurePageRenderedFactory (ctx) {
     const { pagesRef, sendPatch } = ctx
     return async function ensurePageRenderedInner (index) {
@@ -667,8 +675,8 @@ function clamp (obj) {
       if (!page) return
       const cv = await ensureCanvas(page, index, sendPatch)
       if (page._bgRendered) {
-          fitCanvasForPage(page)
-          return
+        fitCanvasForPage(page)
+        return
       }
       try {
         const pg = page.meta || {}
@@ -701,33 +709,33 @@ function clamp (obj) {
         if (overlays.length) {
           const F = fabric
           for (const o of overlays) {
-             const type = o.t || (o.text !== undefined ? 'tb' : (o.src ? 'im' : 'unknown'))
-             if (type === 'tb') {
-                const tb = new F.Textbox(o.text || '', {
-                  left: o.left || 0, top: o.top || 0, angle: o.angle || 0,
-                  fontFamily: o.fontFamily || 'Arial',
-                  fontSize: o.fontSize || 42,
-                  fontStyle: o.fontStyle || 'normal',
-                  fontWeight: o.fontWeight || 'normal',
-                  fill: o.fill || '#000',
-                  width: Math.max(20, Number(o.width || 200)),
-                  textAlign: o.textAlign || 'left',
-                  scaleX: Number(o.scaleX || 1), scaleY: Number(o.scaleY || 1),
-                  selectable: true, objectCaching: true, noScaleCache: false
-                })
-                tb.__scannyId = o.id || ('ov_' + Math.random().toString(36).slice(2))
-                ensureDeleteControlFor(tb); cv.add(tb)
-             } else if (type === 'im' && o.src) {
-                const im = new F.Image(await loadImageEl(o.src), {
-                   left: o.left || 0, top: o.top || 0, angle: o.angle || 0,
-                   flipX: !!o.flipX, flipY: !!o.flipY,
-                   scaleX: Number(o.scaleX || 1), scaleY: Number(o.scaleY || 1),
-                   selectable: true, objectCaching: true, noScaleCache: false
-                })
-                im.__scannyId = o.id || ('ov_' + Math.random().toString(36).slice(2))
-                im.__srcOriginal = o.src
-                ensureDeleteControlFor(im); cv.add(im)
-             }
+            const type = o.t || (o.text !== undefined ? 'tb' : (o.src ? 'im' : 'unknown'))
+            if (type === 'tb') {
+              const tb = new F.Textbox(o.text || '', {
+                left: o.left || 0, top: o.top || 0, angle: o.angle || 0,
+                fontFamily: o.fontFamily || 'Arial',
+                fontSize: o.fontSize || 42,
+                fontStyle: o.fontStyle || 'normal',
+                fontWeight: o.fontWeight || 'normal',
+                fill: o.fill || '#000',
+                width: Math.max(20, Number(o.width || 200)),
+                textAlign: o.textAlign || 'left',
+                scaleX: Number(o.scaleX || 1), scaleY: Number(o.scaleY || 1),
+                selectable: true, objectCaching: true, noScaleCache: false
+              })
+              tb.__scannyId = o.id || ('ov_' + Math.random().toString(36).slice(2))
+              ensureDeleteControlFor(tb); cv.add(tb)
+            } else if (type === 'im' && o.src) {
+              const im = new F.Image(await loadImageEl(o.src), {
+                left: o.left || 0, top: o.top || 0, angle: o.angle || 0,
+                flipX: !!o.flipX, flipY: !!o.flipY,
+                scaleX: Number(o.scaleX || 1), scaleY: Number(o.scaleY || 1),
+                selectable: true, objectCaching: true, noScaleCache: false
+              })
+              im.__scannyId = o.id || ('ov_' + Math.random().toString(36).slice(2))
+              im.__srcOriginal = o.src
+              ensureDeleteControlFor(im); cv.add(im)
+            }
           }
           page._pendingOverlays = []
         }
@@ -741,172 +749,144 @@ function clamp (obj) {
   
   function placeBgObject (cv, page, img) {
     page.bgObj = img
-
-    // meta содержит логический размер документа (doc_w/doc_h)
-    // и исходный размер содержимого (pdf_w/pdf_h или w/h)
     const meta = page.meta || {}
-
     const contentW = meta.type === 'pdf'
       ? (meta.pdf_w || img.width || 1)
       : (meta.w || img.width || 1)
     const contentH = meta.type === 'pdf'
       ? (meta.pdf_h || img.height || 1)
       : (meta.h || img.height || 1)
-
-    // doc_w/doc_h — то, что мы сохраняем в черновике и меняем при повороте.
-    // Если их нет (старый черновик) — берём исходные размеры содержимого.
     const targetW = meta.doc_w || contentW
     const targetH = meta.doc_h || contentH
-
-    // Размер холста = логический размер документа (учитывает поворот)
     cv.setDimensions({ width: targetW, height: targetH })
-
     cv.add(img)
     img.sendToBack()
-
-    // Масштабируем фон так же, как при повороте страницы:
-    // вписываем исходное содержимое в doc_w/doc_h без искажения пропорций.
     const s = Math.min(targetW / contentW, targetH / contentH) || 1
     img.scaleX = s
     img.scaleY = s
-
     img.center()
     img.setCoords()
   }
 
-    async function rotatePage () {
+  async function rotatePage () {
     if (!pagesRef.current || pagesRef.current.length === 0) return
     const page = pagesRef.current[cur]
     const cv = await ensureCanvas(page, cur, sendPatch)
-    
-    // 1. Запоминаем старые размеры
     const oldW = cv.width
     const oldH = cv.height
-
-    // Определяем "якорь" — реальный центр фона и его масштаб СЕЙЧАС
-    // Если фона нет (белый лист), используем центр холста
     let anchorX = oldW / 2
     let anchorY = oldH / 2
     let oldBgScale = 1
-
     if (page.bgObj) {
-        const center = page.bgObj.getCenterPoint()
-        anchorX = center.x
-        anchorY = center.y
-        oldBgScale = page.bgObj.scaleX // Берем фактический масштаб, который видит глаз
+      const center = page.bgObj.getCenterPoint()
+      anchorX = center.x
+      anchorY = center.y
+      oldBgScale = page.bgObj.scaleX
     }
-    
-    // 2. Меняем размеры холста (swap)
     const newW = oldH
     const newH = oldW
-    
-    // Новый центр холста (куда встанет фон)
     const newCx = newW / 2
     const newCy = newH / 2
-    
     cv.setDimensions({ width: newW, height: newH })
-
-    // 3. Считаем будущий масштаб фона (вписывание contain)
     let newBgScale = 1
     if (page.bgObj) {
-       const w = page.bgObj.width || 1
-       const h = page.bgObj.height || 1
-       // Считаем точно так же, как в fitCanvasForPage или начальной загрузке
-       newBgScale = Math.min(newW / w, newH / h)
+      const w = page.bgObj.width || 1
+      const h = page.bgObj.height || 1
+      newBgScale = Math.min(newW / w, newH / h)
     } else {
-       // Если фона нет, масштаб меняем пропорционально изменению ширины (для условной сетки)
-       // или оставляем 1. Для пустого листа логичнее оставить привязку к ширине.
-       newBgScale = newW / oldW 
+      newBgScale = newW / oldW 
     }
-
-    // Коэффициент трансформации
     const scaleFactor = newBgScale / oldBgScale
-
-    // 4. Обновляем фон
     if (page.bgObj) {
-        page.bgObj.scaleX = newBgScale
-        page.bgObj.scaleY = newBgScale
-        page.bgObj.center() // Фон всегда встает ровно в новый центр
-        page.bgObj.setCoords()
+      page.bgObj.scaleX = newBgScale
+      page.bgObj.scaleY = newBgScale
+      page.bgObj.center()
+      page.bgObj.setCoords()
     }
-
-    // 5. Пересчитываем объекты
     const objs = cv.getObjects().filter(o => o !== page.bgObj)
     for (const obj of objs) {
-        // Центр объекта сейчас
-        const objCenter = obj.getCenterPoint()
-        
-        // Вектор от ЯКОРЯ (центра фона) до объекта
-        const vecX = objCenter.x - anchorX
-        const vecY = objCenter.y - anchorY
-
-        // Масштабируем вектор
-        const newVecX = vecX * scaleFactor
-        const newVecY = vecY * scaleFactor
-
-        // Новая позиция = Новый центр фона + Новый вектор
-        const finalX = newCx + newVecX
-        const finalY = newCy + newVecY
-
-        // Применяем масштаб к самому объекту
-        obj.scaleX = obj.scaleX * scaleFactor
-        obj.scaleY = obj.scaleY * scaleFactor
-
-        // Ставим через setPositionByOrigin (самый точный способ в Fabric)
-        // Используем 'center', 'center', чтобы поворот объекта вокруг своей оси не влиял на позицию
-        obj.setPositionByOrigin(new fabric.Point(finalX, finalY), 'center', 'center')
-        
-        obj.setCoords()
-        
-        // Clamp вызываем, чтобы вернуть объект, если он вдруг оказался за краем
-        clamp(obj)
+      const objCenter = obj.getCenterPoint()
+      const vecX = objCenter.x - anchorX
+      const vecY = objCenter.y - anchorY
+      const newVecX = vecX * scaleFactor
+      const newVecY = vecY * scaleFactor
+      const finalX = newCx + newVecX
+      const finalY = newCy + newVecY
+      obj.scaleX = obj.scaleX * scaleFactor
+      obj.scaleY = obj.scaleY * scaleFactor
+      obj.setPositionByOrigin(new fabric.Point(finalX, finalY), 'center', 'center')
+      obj.setCoords()
+      clamp(obj)
     }
-
     page.meta.doc_w = newW
     page.meta.doc_h = newH
     page.landscape = !page.landscape
-    
     fitCanvasForPage(page)
     cv.requestRenderAll()
-    
     try {
-       const snapshot = await serializeDocument()
-       if (snapshot) await AuthAPI.saveDraft(snapshot)
+      const snapshot = await serializeDocument()
+      if (snapshot) {
+        await AuthAPI.saveDraft(snapshot)
+        setDraftHint(true)
+      }
     } catch {}
   }
 
   async function deletePageAt (idx) {
-      if (!pagesRef.current?.length) return
-      if (pagesRef.current.length <= 1) {
-        if (!window.confirm('Удалить весь документ?')) return
-        pagesRef.current.forEach(pp => { try { pp.canvas?.dispose?.() } catch {} })
-        setPages([]); setCur(0); setPanelOpen(false); setFileName(''); setUndoStack([])
-        try { if (docIdRef.current) await AuthAPI.deleteUploadsByClient(docIdRef.current) } catch {}
-        try { await AuthAPI.clearDraft() } catch {}
-        draftExistsRef.current = false
-        setDocId(null)
-        toast('Документ удалён', 'success')
-        return
-      }
-      if (!window.confirm('Удалить текущую страницу?')) return
-      const p = pagesRef.current[idx]; try { p.canvas?.dispose?.() } catch {}
-      const nextPages = pagesRef.current.filter((_, i) => i !== idx)
-      setPages(nextPages)
-      setCur(i => Math.max(0, idx - 1))
-      await persistPageOps([{ op: 'page_remove', index: idx }])
-      toast('Страница удалена', 'success')
+    if (!pagesRef.current?.length) return
+    if (pagesRef.current.length <= 1) {
+      if (!window.confirm('Удалить весь документ?')) return
+      pagesRef.current.forEach(pp => { try { pp.canvas?.dispose?.() } catch {} })
+      setPages([]); setCur(0); setPanelOpen(false); setFileName(''); setUndoStack([])
+      try { if (docIdRef.current) await AuthAPI.deleteUploadsByClient(docIdRef.current) } catch {}
+      try { await AuthAPI.clearDraft() } catch {}
+      draftExistsRef.current = false
+      setDocId(null)
+      setDraftHint(false)
+      toast('Документ удалён', 'success')
+      return
+    }
+    if (!window.confirm('Удалить текущую страницу?')) return
+    const p = pagesRef.current[idx]; try { p.canvas?.dispose?.() } catch {}
+    const nextPages = pagesRef.current.filter((_, i) => i !== idx)
+    setPages(nextPages)
+    setCur(i => Math.max(0, idx - 1))
+    await persistPageOps([{ op: 'page_remove', index: idx }])
+    toast('Страница удалена', 'success')
   }
+
   async function persistPageOps (ops = []) {
     const list = Array.isArray(ops) ? ops.filter(Boolean) : []
     if (list.length === 0) return
     if (!draftExistsRef.current) {
       const snapshot = await serializeDocument()
-      if (snapshot) { try { await AuthAPI.saveDraft(snapshot); wsRef.current?.commit?.(snapshot); draftExistsRef.current = true } catch {} }
+      if (snapshot) {
+        try {
+          await AuthAPI.saveDraft(snapshot)
+          wsRef.current?.commit?.(snapshot)
+          draftExistsRef.current = true
+          setDraftHint(true)
+        } catch {}
+      }
       return
     }
     try { wsRef.current?.sendPatch?.(list) } catch {}
-    try { await AuthAPI.patchDraft(list) } catch { try { const snapshot = await serializeDocument(); if (snapshot) { await AuthAPI.saveDraft(snapshot); wsRef.current?.commit?.(snapshot); draftExistsRef.current = true } } catch {} }
+    try {
+      await AuthAPI.patchDraft(list)
+      setDraftHint(true)
+    } catch {
+      try {
+        const snapshot = await serializeDocument()
+        if (snapshot) {
+          await AuthAPI.saveDraft(snapshot)
+          wsRef.current?.commit?.(snapshot)
+          draftExistsRef.current = true
+          setDraftHint(true)
+        }
+      } catch {}
+    }
   }
+
   async function createPageFromImage (dataUrl, w, h, mime = 'image/png', landscape = false, opsOut = null, index = null) {
     const id = 'p_' + Math.random().toString(36).slice(2)
     const elId = 'cv_' + id
@@ -919,6 +899,7 @@ function clamp (obj) {
     await new Promise(r => requestAnimationFrame(r))
     return page
   }
+
   async function addRasterPagesFromCanvas (canvas, opsOut = null, indexStart = null) {
     const slices = sliceCanvasToPages(canvas)
     let count = 0
@@ -931,6 +912,7 @@ function clamp (obj) {
     }
     return count
   }
+
   async function addPagesFromPDFBytes (bytes, opsOut = null, indexStart = null) {
     await ensurePDFJS()
     const pdf = await pdfjsLib.getDocument({ data: bytes.slice() }).promise
@@ -953,23 +935,89 @@ function clamp (obj) {
     }
     return added
   }
-  function baseName () { const nm = (fileNameRef.current || '').trim(); if (!nm) { toast('Введите название файла вверху', 'error'); return null } return sanitizeName(nm) }
+
+  function baseName () {
+    const nm = (fileNameRef.current || '').trim()
+    if (!nm) { toast('Введите название файла вверху', 'error'); return null }
+    return sanitizeName(nm)
+  }
+
   const filePickBusyRef = useRef(false)
-  function pickDocument () { if (filePickBusyRef.current) return; filePickBusyRef.current = true; try { docFileRef.current?.click() } finally { setTimeout(() => { filePickBusyRef.current = false }, 1500) } }
-  async function onPickDocument (e) { const files = Array.from(e.target.files || []); e.target.value = ''; if (!files.length) return; await handleFiles(files); filePickBusyRef.current = false }
-  async function onPickBgFile (e) { const files = Array.from(e.target.files || []); e.target.value = ''; if (!files.length) return; await assignFirstFileToCurrent(files[0]) }
-  async function estimateUnits (files) { let total = 0; for (const f of files) { const ext = (f.name.split('.').pop() || '').toLowerCase(); if (['jpg', 'jpeg', 'png'].includes(ext)) total += 1; else if (ext === 'pdf') { try { await ensurePDFJS(); const pdf = await pdfjsLib.getDocument({ data: await f.arrayBuffer() }).promise; total += pdf.numPages || 1 } catch { total += 1 } } else if (['docx', 'doc', 'xls', 'xlsx'].includes(ext)) { total += 2 } else { total += 1 } } return Math.max(1, total) }
+
+  function pickDocument () {
+    if (filePickBusyRef.current) return
+    filePickBusyRef.current = true
+    try { docFileRef.current?.click() } finally { setTimeout(() => { filePickBusyRef.current = false }, 1500) }
+  }
+
+  async function onPickDocument (e) {
+    const files = Array.from(e.target.files || [])
+    e.target.value = ''
+    if (!files.length) return
+    await handleFiles(files)
+    filePickBusyRef.current = false
+  }
+
+  async function onPickBgFile (e) {
+    const files = Array.from(e.target.files || [])
+    e.target.value = ''
+    if (!files.length) return
+    await assignFirstFileToCurrent(files[0])
+  }
+
+  async function estimateUnits (files) {
+    let total = 0
+    for (const f of files) {
+      const ext = (f.name.split('.').pop() || '').toLowerCase()
+      if (['jpg', 'jpeg', 'png'].includes(ext)) total += 1
+      else if (ext === 'pdf') {
+        try {
+          await ensurePDFJS()
+          const pdf = await pdfjsLib.getDocument({ data: await f.arrayBuffer() }).promise
+          total += pdf.numPages || 1
+        } catch { total += 1 }
+      } else if (['docx', 'doc', 'xls', 'xlsx'].includes(ext)) {
+        total += 2
+      } else {
+        total += 1
+      }
+    }
+    return Math.max(1, total)
+  }
+
   async function handleFiles (files) {
-    showProgress('Загрузка', false)
     try {
+      const totalUnits = await estimateUnits(files)
+      setProgress({
+        active: true,
+        mode: 'upload',
+        phase: null,
+        label: 'Обработка документа',
+        val: 0,
+        max: totalUnits,
+        suffix: 'стр.'
+      })
+
       let curDocId = docIdRef.current
       if (!curDocId) { curDocId = randDocId(); setDocId(curDocId) }
       ensureWS()
-      const baseIndex = pagesRef.current?.length || 0; let addedPages = 0; let initialName = fileNameRef.current; const opsAdd = []
-      const totalUnits = await estimateUnits(files); let doneUnits = 0; const tick = (inc = 1) => { doneUnits += inc; updateProgress(Math.min(100, (doneUnits / totalUnits) * 100)) }
+      const baseIndex = pagesRef.current?.length || 0
+      let addedPages = 0
+      let initialName = fileNameRef.current
+      const opsAdd = []
+      let doneUnits = 0
+      const tick = (inc = 1) => {
+        doneUnits += inc
+        setProgress(p => ({ ...p, val: doneUnits }))
+      }
+
       for (const f of files) {
         const ext = (f.name.split('.').pop() || '').toLowerCase()
-        if (!initialName) { const base = f.name.replace(/\.[^.]+$/, ''); initialName = sanitizeName(base); setFileName(initialName) }
+        if (!initialName) {
+          const base = f.name.replace(/\.[^.]+$/, '')
+          initialName = sanitizeName(base)
+          setFileName(initialName)
+        }
         if (['jpg', 'jpeg', 'png'].includes(ext)) {
           const url = await readAsDataURL(f); const img = await loadImageEl(url); const idx = baseIndex + addedPages
           await createPageFromImage(url, img.naturalWidth || img.width, img.naturalHeight || img.height, f.type || 'image/png', false, opsAdd, idx)
@@ -983,18 +1031,42 @@ function clamp (obj) {
         } else if (['xls', 'xlsx'].includes(ext)) {
           const canv = await renderXLSXToCanvas(f); const n = await addRasterPagesFromCanvas(canv, opsAdd, baseIndex + addedPages)
           addedPages += n; tick(Math.max(1, n))
-        } else { toast(`Формат не поддерживается: ${ext}`, 'error'); tick(1) }
+        } else {
+          toast(`Формат не поддерживается: ${ext}`, 'error')
+          tick(1)
+        }
       }
       await new Promise(r => requestAnimationFrame(r))
       for (let i = 0; i < pagesRef.current.length; i++) { await ensurePageRendered(i) }
       if (addedPages > 0) { await persistPageOps(opsAdd) }
-      try { if (isAuthed && addedPages > 0) { const nm = sanitizeName(initialName || fileNameRef.current || genDefaultName()); await AuthAPI.recordUpload(curDocId, nm, addedPages) } } catch {}
+      try {
+        if (isAuthed && addedPages > 0) {
+          const nm = sanitizeName(initialName || fileNameRef.current || genDefaultName())
+          await AuthAPI.recordUpload(curDocId, nm, addedPages)
+        }
+      } catch {}
       toast('Страницы добавлены', 'success')
-    } catch (err) { console.error(err); toast(err.message || 'Ошибка загрузки файлов', 'error') } finally { hideProgress() }
+    } catch (err) {
+      console.error(err)
+      toast(err.message || 'Ошибка загрузки файлов', 'error')
+    } finally {
+      setProgress(p => ({ ...p, active: false }))
+    }
   }
+
   async function assignFirstFileToCurrent (file) {
-    const ext = (file.name.split('.').pop() || '').toLowerCase(); const page = pages[cur]; if (!page) return
-    showProgress('Загрузка', true)
+    const ext = (file.name.split('.').pop() || '').toLowerCase()
+    const page = pages[cur]
+    if (!page) return
+    setProgress({
+      active: true,
+      mode: 'upload',
+      phase: null,
+      label: 'Обновление страницы',
+      val: 0,
+      max: 0,
+      suffix: ''
+    })
     try {
       if (['jpg', 'jpeg', 'png'].includes(ext)) {
         const url = await readAsDataURL(file); const img = await loadImageEl(url)
@@ -1002,7 +1074,7 @@ function clamp (obj) {
         page._bgRendered = false; await ensurePageRendered(cur)
       } else if (ext === 'pdf') {
         const ab = await file.arrayBuffer(); const bytes = toUint8Copy(ab)
-        const pdf = await pdfjsLib.getDocument({ data: bytes.slice() }).promise; const p1 = await pdf.getPage(1); const vp1 = p1.getViewport({scale: PDF_RENDER_SCALE})
+        const pdf = await pdfjsLib.getDocument({ data: bytes.slice() }).promise; const p1 = await pdf.getPage(1); const vp1 = p1.getViewport({ scale: PDF_RENDER_SCALE })
         page.meta = { type: 'pdf', bytes, index: 0, pdf_w: vp1.width, pdf_h: vp1.height, doc_w: vp1.width, doc_h: vp1.height }
         page._bgRendered = false; await ensurePageRendered(cur)
       } else {
@@ -1011,148 +1083,580 @@ function clamp (obj) {
         page.meta = { type: 'image', src: url, w: img.naturalWidth, h: img.naturalHeight, mime: 'image/png', doc_w: img.naturalWidth, doc_h: img.naturalHeight }
         page._bgRendered = false; await ensurePageRendered(cur)
       }
-      const snapshot = await serializeDocument(); if (snapshot) { await AuthAPI.saveDraft(snapshot); wsRef.current?.commit?.(snapshot); draftExistsRef.current = true }
-    } catch (e) { toast(e.message || 'Ошибка', 'error') } finally { hideProgress() }
+      const snapshot = await serializeDocument()
+      if (snapshot) {
+        await AuthAPI.saveDraft(snapshot)
+        wsRef.current?.commit?.(snapshot)
+        draftExistsRef.current = true
+        setDraftHint(true)
+      }
+    } catch (e) {
+      toast(e.message || 'Ошибка', 'error')
+    } finally {
+      setProgress(p => ({ ...p, active: false }))
+    }
   }
+
   async function serializeDocument () {
     if (!pagesRef.current || pagesRef.current.length === 0) return null
-    const pagesLocal = pagesRef.current; const outPages = []
+    const pagesLocal = pagesRef.current
+    const outPages = []
     for (let i = 0; i < pagesLocal.length; i++) {
-      const p = pagesLocal[i]; const cv = await ensureCanvas(p, i, sendPatch); const meta = p.meta || {}
-      const rawObjs = (cv.getObjects() || []).filter(o => o !== p.bgObj); const overlays = []
+      const p = pagesLocal[i]
+      const cv = await ensureCanvas(p, i, sendPatch)
+      const meta = p.meta || {}
+      const rawObjs = (cv.getObjects() || []).filter(o => o !== p.bgObj)
+      const overlays = []
       for (const o of rawObjs) {
-         if (o.type === 'textbox') { overlays.push({ t: 'tb', id: o.__scannyId, text: o.text, left: o.left, top: o.top, angle: o.angle, fontFamily: o.fontFamily, fontSize: o.fontSize, fontStyle: o.fontStyle, fontWeight: o.fontWeight, fill: o.fill, width: o.width, textAlign: o.textAlign, scaleX: o.scaleX, scaleY: o.scaleY }) }
-         else if (o.type === 'image') { const src = o.__srcOriginal || o._element?.src; overlays.push({ t: 'im', id: o.__scannyId, src, left: o.left, top: o.top, angle: o.angle, scaleX: o.scaleX, scaleY: o.scaleY, flipX: o.flipX, flipY: o.flipY }) }
+        if (o.type === 'textbox') {
+          overlays.push({
+            t: 'tb', id: o.__scannyId, text: o.text, left: o.left, top: o.top, angle: o.angle,
+            fontFamily: o.fontFamily, fontSize: o.fontSize, fontStyle: o.fontStyle,
+            fontWeight: o.fontWeight, fill: o.fill, width: o.width, textAlign: o.textAlign,
+            scaleX: o.scaleX, scaleY: o.scaleY
+          })
+        } else if (o.type === 'image') {
+          const src = o.__srcOriginal || o._element?.src
+          overlays.push({
+            t: 'im', id: o.__scannyId, src, left: o.left, top: o.top,
+            angle: o.angle, scaleX: o.scaleX, scaleY: o.scaleY,
+            flipX: o.flipX, flipY: o.flipY
+          })
+        }
       }
-      if (meta.type === 'pdf' && meta.bytes) { outPages.push({ type: 'pdf', index: meta.index || 0, bytes_b64: u8ToB64(meta.bytes), pdf_w: meta.pdf_w, pdf_h: meta.pdf_h, doc_w: meta.doc_w, doc_h: meta.doc_h, landscape: !!p.landscape, overlays }) }
-      else if (meta.type === 'image' || meta.type === 'raster') { outPages.push({ type: meta.type, src: meta.src, w: meta.w, h: meta.h, mime: meta.mime, doc_w: meta.doc_w, doc_h: meta.doc_h, landscape: !!p.landscape, overlays }) }
-      else { outPages.push({ type: 'raster', src: '', w: 2480, h: 3508, landscape: !!p.landscape, overlays }) }
+      if (meta.type === 'pdf' && meta.bytes) {
+        outPages.push({
+          type: 'pdf',
+          index: meta.index || 0,
+          bytes_b64: u8ToB64(meta.bytes),
+          pdf_w: meta.pdf_w,
+          pdf_h: meta.pdf_h,
+          doc_w: meta.doc_w,
+          doc_h: meta.doc_h,
+          landscape: !!p.landscape,
+          overlays
+        })
+      } else if (meta.type === 'image' || meta.type === 'raster') {
+        outPages.push({
+          type: meta.type,
+          src: meta.src,
+          w: meta.w,
+          h: meta.h,
+          mime: meta.mime,
+          doc_w: meta.doc_w,
+          doc_h: meta.doc_h,
+          landscape: !!p.landscape,
+          overlays
+        })
+      } else {
+        outPages.push({
+          type: 'raster',
+          src: '',
+          w: 2480,
+          h: 3508,
+          landscape: !!p.landscape,
+          overlays
+        })
+      }
     }
     return { client_id: docIdRef.current || null, name: fileNameRef.current || genDefaultName(), pages: outPages }
   }
-  async function restoreDocumentFromDraft (draft) {
+
+  async function restoreDocumentFromDraft (draft, onStep) {
     try {
-      await ensurePDFJS(); await ensureFabric(); const pagesData = Array.isArray(draft?.pages) ? draft.pages : []; const created = []
+      await ensurePDFJS()
+      await ensureFabric()
+
+      const pagesData = Array.isArray(draft?.pages) ? draft.pages : []
+      const total = pagesData.length || 1
+      const created = []
+
       for (let i = 0; i < pagesData.length; i++) {
-        const pg = pagesData[i] || {}; const id = 'p_' + Math.random().toString(36).slice(2); const elId = 'cv_' + id; let meta
-        if (pg.type === 'pdf' && pg.bytes_b64) { meta = { type: 'pdf', bytes: b64ToU8(pg.bytes_b64), index: Number(pg.index || 0), pdf_w: pg.pdf_w || 2480, pdf_h: pg.pdf_h || 3508, doc_w: pg.doc_w || pg.pdf_w || 2480, doc_h: pg.doc_h || pg.pdf_h || 3508 } }
-        else if (pg.type === 'image' || pg.type === 'raster') { meta = { type: pg.type, src: pg.src, w: pg.w || 2480, h: pg.h || 3508, mime: pg.mime || 'image/png', doc_w: pg.doc_w || pg.w || 2480, doc_h: pg.doc_h || pg.h || 3508 } }
-        else { meta = { type: 'raster', src: '', w: 2480, h: 3508, mime: 'image/png', doc_w: 2480, doc_h: 3508 } }
-        created.push({ id, elId, canvas: null, bgObj: null, landscape: !!pg.landscape, meta, _bgRendered: false, _pendingOverlays: Array.isArray(pg.overlays) ? pg.overlays : [] })
+        const pg = pagesData[i] || {}
+        const id = 'p_' + Math.random().toString(36).slice(2)
+        const elId = 'cv_' + id
+        let meta
+
+        if (pg.type === 'pdf' && pg.bytes_b64) {
+          meta = {
+            type: 'pdf',
+            bytes: b64ToU8(pg.bytes_b64),
+            index: Number(pg.index || 0),
+            pdf_w: pg.pdf_w || 2480,
+            pdf_h: pg.pdf_h || 3508,
+            doc_w: pg.doc_w || pg.pdf_w || 2480,
+            doc_h: pg.doc_h || pg.pdf_h || 3508
+          }
+        } else if (pg.type === 'image' || pg.type === 'raster') {
+          meta = {
+            type: pg.type,
+            src: pg.src,
+            w: pg.w || 2480,
+            h: pg.h || 3508,
+            mime: pg.mime || 'image/png',
+            doc_w: pg.doc_w || pg.w || 2480,
+            doc_h: pg.doc_h || pg.h || 3508
+          }
+        } else {
+          meta = { type: 'raster', src: '', w: 2480, h: 3508, mime: 'image/png', doc_w: 2480, doc_h: 3508 }
+        }
+
+        created.push({
+          id,
+          elId,
+          canvas: null,
+          bgObj: null,
+          landscape: !!pg.landscape,
+          meta,
+          _bgRendered: false,
+          _pendingOverlays: Array.isArray(pg.overlays) ? pg.overlays : []
+        })
       }
-      setPages(created); initialRenderPendingRef.current = true; setCur(created.length ? 0 : 0); setFileName((draft?.name || '').trim() || genDefaultName()); setDocId(draft?.client_id || randDocId()); draftExistsRef.current = true
-      await new Promise(r => requestAnimationFrame(r))
-    } catch (e) { console.error('restoreDocumentFromDraft error', e) }
+
+      pagesRef.current = created
+      setPages(created)
+      setCur(created.length ? 0 : 0)
+      setFileName((draft?.name || '').trim() || genDefaultName())
+      setDocId(draft?.client_id || randDocId())
+      draftExistsRef.current = true
+
+      await new Promise(r => setTimeout(r, 0))
+
+      for (let i = 0; i < created.length; i++) {
+        await ensurePageRendered(i)
+        if (onStep) onStep(i + 1, total)
+        await new Promise(r => requestAnimationFrame(r))
+      }
+    } catch (e) {
+      console.error('restoreDocumentFromDraft error', e)
+    }
   }
+
   async function addText () {
     if (!pagesRef.current || pagesRef.current.length === 0) { toast('Сначала добавьте страницу', 'error'); return }
     const F = fabric
     const page = pagesRef.current[cur]
     const cv = await ensureCanvas(page, cur, sendPatch)
     await ensurePageRendered(cur)
-    const tb = new F.Textbox('Вставьте текст', { left: Math.round(cv.width / 2 - 100), top: Math.round(cv.height / 2 - 20), fontSize: 48, fill: '#000000', fontFamily: 'Arial', fontWeight: 'bold', width: 200, textAlign: 'center', selectable: true, objectCaching: true, noScaleCache: false })
+    const tb = new F.Textbox('Вставьте текст', {
+      left: Math.round(cv.width / 2 - 100),
+      top: Math.round(cv.height / 2 - 20),
+      fontSize: 48,
+      fill: '#000000',
+      fontFamily: 'Arial',
+      fontWeight: 'bold',
+      width: 200,
+      textAlign: 'center',
+      selectable: true,
+      objectCaching: true,
+      noScaleCache: false
+    })
     tb.__scannyId = 'ov_' + Math.random().toString(36).slice(2)
-    ensureDeleteControlFor(tb); cv.add(tb); cv.setActiveObject(tb); cv.requestRenderAll()
-    sendPatch([{ op: 'overlay_upsert', page: cur, obj: { t: 'tb', id: tb.__scannyId, left: tb.left, top: tb.top, angle: tb.angle, scaleX: tb.scaleX, scaleY: tb.scaleY, text: tb.text, fontFamily: 'Arial', fontSize: 48, fontWeight: 'bold', fill: '#000000', width: 200, textAlign: 'center' } }])
+    ensureDeleteControlFor(tb)
+    cv.add(tb)
+    cv.setActiveObject(tb)
+    cv.requestRenderAll()
+    sendPatch([{
+      op: 'overlay_upsert',
+      page: cur,
+      obj: {
+        t: 'tb',
+        id: tb.__scannyId,
+        left: tb.left,
+        top: tb.top,
+        angle: tb.angle,
+        scaleX: tb.scaleX,
+        scaleY: tb.scaleY,
+        text: tb.text,
+        fontFamily: 'Arial',
+        fontSize: 48,
+        fontWeight: 'bold',
+        fill: '#000000',
+        width: 200,
+        textAlign: 'center'
+      }
+    }])
     setUndoStack(stk => [...stk, { type: 'add_one', page: cur, id: tb.__scannyId }])
     setPanelOpen(true)
   }
+
   const applyPanel = useCallback(() => {
-    const page = pagesRef.current?.[cur]; const cv = page?.canvas; if (!cv) return
-    const obj = cv.getActiveObject(); if (!obj || obj.type !== 'textbox') return
-    obj.set({ fontFamily: font, fontSize: fontSize, fontWeight: bold ? 'bold' : 'normal', fontStyle: italic ? 'italic' : 'normal', fill: color })
+    const page = pagesRef.current?.[cur]
+    const cv = page?.canvas
+    if (!cv) return
+    const obj = cv.getActiveObject()
+    if (!obj || obj.type !== 'textbox') return
+    obj.set({
+      fontFamily: font,
+      fontSize: fontSize,
+      fontWeight: bold ? 'bold' : 'normal',
+      fontStyle: italic ? 'italic' : 'normal',
+      fill: color
+    })
     cv.requestRenderAll()
-    sendPatch([{ op: 'overlay_upsert', page: cur, obj: { t: 'tb', id: obj.__scannyId, left: obj.left, top: obj.top, angle: obj.angle, scaleX: obj.scaleX, scaleY: obj.scaleY, text: obj.text, fontFamily: font, fontSize, fontStyle: italic ? 'italic' : 'normal', fontWeight: bold ? 'bold' : 'normal', fill: color, width: obj.width, textAlign: obj.textAlign } }])
+    sendPatch([{
+      op: 'overlay_upsert',
+      page: cur,
+      obj: {
+        t: 'tb',
+        id: obj.__scannyId,
+        left: obj.left,
+        top: obj.top,
+        angle: obj.angle,
+        scaleX: obj.scaleX,
+        scaleY: obj.scaleY,
+        text: obj.text,
+        fontFamily: font,
+        fontSize,
+        fontStyle: italic ? 'italic' : 'normal',
+        fontWeight: bold ? 'bold' : 'normal',
+        fill: color,
+        width: obj.width,
+        textAlign: obj.textAlign
+      }
+    }])
   }, [cur, font, fontSize, bold, italic, color])
+
   useEffect(() => { if (panelOpen) applyPanel() }, [panelOpen, applyPanel])
+
   async function applyToAllPages () {
     if (!pagesRef.current || pagesRef.current.length === 0) return
     const F = fabric
-    const srcPage = pagesRef.current[cur]; const cvSrc = await ensureCanvas(srcPage, cur, sendPatch); const obj = cvSrc.getActiveObject()
+    const srcPage = pagesRef.current[cur]
+    const cvSrc = await ensureCanvas(srcPage, cur, sendPatch)
+    const obj = cvSrc.getActiveObject()
     if (!obj) { toast('Выберите объект на странице', 'error'); return }
     const clones = []
     for (let i = 0; i < pagesRef.current.length; i++) {
       if (i === cur) continue
-      const dstPage = pagesRef.current[i]; const cvDst = await ensureCanvas(dstPage, i, sendPatch); await ensurePageRendered(i)
+      const dstPage = pagesRef.current[i]
+      const cvDst = await ensureCanvas(dstPage, i, sendPatch)
+      await ensurePageRendered(i)
       if (obj.type === 'textbox') {
-        const tb = new F.Textbox(obj.text || '', { left: obj.left, top: obj.top, fontFamily: obj.fontFamily, fontStyle: obj.fontStyle, fontWeight: obj.fontWeight, fill: obj.fill, fontSize: obj.fontSize, angle: obj.angle, width: obj.width, textAlign: obj.textAlign, scaleX: obj.scaleX, scaleY: obj.scaleY, selectable: true, objectCaching: true, noScaleCache: false })
-        tb.__scannyId = 'ov_' + Math.random().toString(36).slice(2); ensureDeleteControlFor(tb); cvDst.add(tb); cvDst.requestRenderAll(); clones.push({ page: i, id: tb.__scannyId })
-        sendPatch([{ op: 'overlay_upsert', page: i, obj: { t: 'tb', id: tb.__scannyId, left: tb.left, top: tb.top, angle: tb.angle, scaleX: tb.scaleX, scaleY: tb.scaleY, text: tb.text, fontFamily: tb.fontFamily, fontSize: tb.fontSize, fontStyle: tb.fontStyle, fontWeight: tb.fontWeight, fill: tb.fill, width: tb.width, textAlign: tb.textAlign } }])
+        const tb = new F.Textbox(obj.text || '', {
+          left: obj.left,
+          top: obj.top,
+          fontFamily: obj.fontFamily,
+          fontStyle: obj.fontStyle,
+          fontWeight: obj.fontWeight,
+          fill: obj.fill,
+          fontSize: obj.fontSize,
+          angle: obj.angle,
+          width: obj.width,
+          textAlign: obj.textAlign,
+          scaleX: obj.scaleX,
+          scaleY: obj.scaleY,
+          selectable: true,
+          objectCaching: true,
+          noScaleCache: false
+        })
+        tb.__scannyId = 'ov_' + Math.random().toString(36).slice(2)
+        ensureDeleteControlFor(tb)
+        cvDst.add(tb)
+        cvDst.requestRenderAll()
+        clones.push({ page: i, id: tb.__scannyId })
+        sendPatch([{
+          op: 'overlay_upsert',
+          page: i,
+          obj: {
+            t: 'tb',
+            id: tb.__scannyId,
+            left: tb.left,
+            top: tb.top,
+            angle: tb.angle,
+            scaleX: tb.scaleX,
+            scaleY: tb.scaleY,
+            text: tb.text,
+            fontFamily: tb.fontFamily,
+            fontSize: tb.fontSize,
+            fontStyle: tb.fontStyle,
+            fontWeight: tb.fontWeight,
+            fill: tb.fill,
+            width: tb.width,
+            textAlign: tb.textAlign
+          }
+        }])
       } else if (obj.type === 'image') {
-        const orig = obj.__srcOriginal || (obj._element?.src); const imgEl = await loadImageEl(orig)
-        const im = new F.Image(imgEl, { angle: obj.angle, selectable: true, flipX: !!obj.flipX, flipY: !!obj.flipY, objectCaching: true, noScaleCache: false, left: obj.left, top: obj.top, scaleX: obj.scaleX, scaleY: obj.scaleY })
-        im.__scannyId = 'ov_' + Math.random().toString(36).slice(2); im.__srcOriginal = orig; ensureDeleteControlFor(im); cvDst.add(im); cvDst.requestRenderAll(); clones.push({ page: i, id: im.__scannyId })
-        sendPatch([{ op: 'overlay_upsert', page: i, obj: { t: 'im', id: im.__scannyId, left: im.left, top: im.top, angle: im.angle, flipX: !!im.flipX, flipY: !!im.flipY, scaleX: im.scaleX, scaleY: im.scaleY, src: orig } }])
+        const orig = obj.__srcOriginal || (obj._element?.src)
+        const imgEl = await loadImageEl(orig)
+        const im = new F.Image(imgEl, {
+          angle: obj.angle,
+          selectable: true,
+          flipX: !!obj.flipX,
+          flipY: !!obj.flipY,
+          objectCaching: true,
+          noScaleCache: false,
+          left: obj.left,
+          top: obj.top,
+          scaleX: obj.scaleX,
+          scaleY: obj.scaleY
+        })
+        im.__scannyId = 'ov_' + Math.random().toString(36).slice(2)
+        im.__srcOriginal = orig
+        ensureDeleteControlFor(im)
+        cvDst.add(im)
+        cvDst.requestRenderAll()
+        clones.push({ page: i, id: im.__scannyId })
+        sendPatch([{
+          op: 'overlay_upsert',
+          page: i,
+          obj: {
+            t: 'im',
+            id: im.__scannyId,
+            left: im.left,
+            top: im.top,
+            angle: im.angle,
+            flipX: !!im.flipX,
+            flipY: !!im.flipY,
+            scaleX: im.scaleX,
+            scaleY: im.scaleY,
+            src: orig
+          }
+        }])
       }
     }
-    if (clones.length) { setUndoStack(stk => [...stk, { type: 'apply_all', clones }]); toast('Объект добавлен на все страницы', 'success') }
+    if (clones.length) {
+      setUndoStack(stk => [...stk, { type: 'apply_all', clones }])
+      toast('Объект добавлен на все страницы', 'success')
+    }
   }
+
   function onCanvasDrop (e) {
-    e.preventDefault(); const dt = e.dataTransfer; if (!dt) return
-    const types = Array.from(dt.types || []); if (types.includes('application/x-sign-url')) { const url = dt.getData('application/x-sign-url'); if (url && url !== 'add') placeFromLib(url); return }
-    const fs = Array.from(dt.files || []); if (fs.length) handleFiles(fs)
+    e.preventDefault()
+    const dt = e.dataTransfer
+    if (!dt) return
+    const types = Array.from(dt.types || [])
+    if (types.includes('application/x-sign-url')) {
+      const url = dt.getData('application/x-sign-url')
+      if (url && url !== 'add') placeFromLib(url)
+      return
+    }
+    const fs = Array.from(dt.files || [])
+    if (fs.length) handleFiles(fs)
   }
+
   function placeFromLib (url) {
     if (!pagesRef.current || pagesRef.current.length === 0) { toast('Сначала добавьте страницу', 'error'); return }
-    const F = fabric; const page = pagesRef.current[cur]
+    const F = fabric
+    const page = pagesRef.current[cur]
     ensureCanvas(page, cur, sendPatch).then(async (cv) => {
-      await ensurePageRendered(cur); const img = new F.Image(await loadImageEl(url), { objectCaching: true, noScaleCache: false })
+      await ensurePageRendered(cur)
+      const img = new F.Image(await loadImageEl(url), { objectCaching: true, noScaleCache: false })
       const s = Math.min(1, (cv.width * 0.25) / (img.width || 1))
-      img.set({ left: Math.round(cv.width / 2 - (img.width * s) / 2), top: Math.round(cv.height / 2 - (img.height * s) / 2), scaleX: s, scaleY: s, selectable: true })
-      img.__srcOriginal = url; ensureDeleteControlFor(img); img.__scannyId = 'ov_' + Math.random().toString(36).slice(2); cv.add(img); cv.setActiveObject(img); cv.requestRenderAll()
+      img.set({
+        left: Math.round(cv.width / 2 - (img.width * s) / 2),
+        top: Math.round(cv.height / 2 - (img.height * s) / 2),
+        scaleX: s,
+        scaleY: s,
+        selectable: true
+      })
+      img.__srcOriginal = url
+      ensureDeleteControlFor(img)
+      img.__scannyId = 'ov_' + Math.random().toString(36).slice(2)
+      cv.add(img)
+      cv.setActiveObject(img)
+      cv.requestRenderAll()
       clamp(img)
-      sendPatch([{ op: 'overlay_upsert', page: cur, obj: { t: 'im', id: img.__scannyId, left: img.left, top: img.top, angle: img.angle, flipX: !!img.flipX, flipY: !!img.flipY, scaleX: img.scaleX, scaleY: img.scaleY, src: url } }])
+      sendPatch([{
+        op: 'overlay_upsert',
+        page: cur,
+        obj: {
+          t: 'im',
+          id: img.__scannyId,
+          left: img.left,
+          top: img.top,
+          angle: img.angle,
+          flipX: !!img.flipX,
+          flipY: !!img.flipY,
+          scaleX: img.scaleX,
+          scaleY: img.scaleY,
+          src: url
+        }
+      }])
       setUndoStack(stk => [...stk, { type: 'add_one', page: cur, id: img.__scannyId }])
     })
   }
+
   async function applyPromo () {
-    try { if (!promo) { setPromoPercent(0); setPromoError(''); return } const res = await AuthAPI.validatePromo(promo); const percent = Number(res?.percent || 0); if (percent > 0) { setPromoPercent(percent); setPromoError('') } else { setPromoPercent(0); setPromoError('Промокод не найден') } } catch (e) { setPromoPercent(0); setPromoError(e.message || 'Ошибка промокода') }
+    try {
+      if (!promo) { setPromoPercent(0); setPromoError(''); return }
+      const res = await AuthAPI.validatePromo(promo)
+      const percent = Number(res?.percent || 0)
+      if (percent > 0) {
+        setPromoPercent(percent)
+        setPromoError('')
+      } else {
+        setPromoPercent(0)
+        setPromoError('Промокод не найден')
+      }
+    } catch (e) {
+      setPromoPercent(0)
+      setPromoError(e.message || 'Ошибка промокода')
+    }
   }
+
   async function startPurchase () {
-    try { const r = await AuthAPI.startPurchase(plan, promo || ''); if (r?.url) { window.open(r.url, '_blank'); setPayOpen(false) } else toast('Не удалось сформировать оплату', 'error') } catch (e) { toast(e.message || 'Ошибка оплаты', 'error') }
+    try {
+      const r = await AuthAPI.startPurchase(plan, promo || '')
+      if (r?.url) {
+        window.open(r.url, '_blank')
+        setPayOpen(false)
+      } else toast('Не удалось сформировать оплату', 'error')
+    } catch (e) {
+      toast(e.message || 'Ошибка оплаты', 'error')
+    }
   }
+
   async function exportJPG () {
     try {
-      if (!pagesRef.current || pagesRef.current.length === 0) return; const bn = baseName(); if (!bn) return; const count = pagesRef.current.length; if ((billing?.free_left ?? 0) < count) { setPlan('single'); setPayOpen(true); return }
-      showProgress('Скачивание', false); setPoPct(0); await ensureJSZip(); const zip = new JSZip()
+      if (!pagesRef.current || pagesRef.current.length === 0) return
+      const bn = baseName()
+      if (!bn) return
+      const count = pagesRef.current.length
+      if ((billing?.free_left ?? 0) < count) { setPlan('single'); setPayOpen(true); return }
+
+      setProgress({
+        active: true,
+        mode: 'export',
+        phase: 'prepare',
+        label: 'Подготовка JPG',
+        val: 0,
+        max: count,
+        suffix: 'стр.'
+      })
+
+      await ensureJSZip()
+      const zip = new JSZip()
       for (let i = 0; i < pagesRef.current.length; i++) {
-        await ensurePageRendered(i); const p = pagesRef.current[i]; const cv = p.canvas
+        await ensurePageRendered(i)
+        const p = pagesRef.current[i]
+        const cv = p.canvas
         const dataUrl = cv.toDataURL({ format: 'jpeg', quality: 1.0, multiplier: 2 })
-        const blob = await (await fetch(dataUrl)).blob(); zip.file(`${bn}-p${i + 1}.jpg`, blob)
-        updateProgress(Math.min(95, Math.round(((i + 1) / pagesRef.current.length) * 90)))
+        const blob = await (await fetch(dataUrl)).blob()
+        zip.file(`${bn}-p${i + 1}.jpg`, blob)
+        setProgress(pr => ({ ...pr, val: i + 1 }))
+        await new Promise(r => requestAnimationFrame(r))
       }
-      const out = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' }, (meta) => { updateProgress(90 + Math.min(10, (meta.percent || 0) / 10)) }); const a = document.createElement('a'); const href = URL.createObjectURL(out); a.href = href; a.download = `${bn}.zip`; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(href), 1500)
+
+      const out = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' })
+
+      setProgress({
+        active: true,
+        mode: 'export',
+        phase: 'download',
+        label: 'Скачивание JPG',
+        val: 1,
+        max: 1,
+        suffix: ''
+      })
+
+      const a = document.createElement('a')
+      const href = URL.createObjectURL(out)
+      a.href = href
+      a.download = `${bn}.zip`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      setTimeout(() => URL.revokeObjectURL(href), 1500)
+
       try { AuthAPI.recordDownload('jpg', pagesRef.current.length, bn, 'free').catch(() => {}) } catch {}
       toast(`Скачано страниц: ${pagesRef.current.length}`, 'success')
-    } catch (e) { console.error(e); toast(e.message || 'Не удалось выгрузить JPG', 'error') } finally { hideProgress() }
+    } catch (e) {
+      console.error(e)
+      toast(e.message || 'Не удалось выгрузить JPG', 'error')
+    } finally {
+      setProgress(p => ({ ...p, active: false }))
+    }
   }
+
   async function exportPDF () {
     try {
-      if (!pagesRef.current || pagesRef.current.length === 0) return; const bn = baseName(); if (!bn) return; const count = pagesRef.current.length; if ((billing?.free_left ?? 0) < count) { setPlan('single'); setPayOpen(true); return }
-      showProgress('Скачивание', false); setPoPct(0); const PDFLib = await ensurePDFLib(); const out = await PDFLib.PDFDocument.create()
+      if (!pagesRef.current || pagesRef.current.length === 0) return
+      const bn = baseName()
+      if (!bn) return
+      const count = pagesRef.current.length
+      if ((billing?.free_left ?? 0) < count) { setPlan('single'); setPayOpen(true); return }
+
+      setProgress({
+        active: true,
+        mode: 'export',
+        phase: 'prepare',
+        label: 'Подготовка PDF',
+        val: 0,
+        max: count,
+        suffix: 'стр.'
+      })
+
+      const PDFLib = await ensurePDFLib()
+      const out = await PDFLib.PDFDocument.create()
       for (let i = 0; i < pagesRef.current.length; i++) {
-        await ensurePageRendered(i); const p = pagesRef.current[i]; const cv = p.canvas
+        await ensurePageRendered(i)
+        const p = pagesRef.current[i]
+        const cv = p.canvas
         const dataUrl = cv.toDataURL({ format: 'jpeg', quality: 1.0, multiplier: 2 })
-        const bytes = await (await fetch(dataUrl)).arrayBuffer(); const img = await out.embedJpg(bytes)
+        const bytes = await (await fetch(dataUrl)).arrayBuffer()
+        const img = await out.embedJpg(bytes)
         const pageRef = out.addPage([img.width, img.height])
         pageRef.drawImage(img, { x: 0, y: 0, width: img.width, height: img.height })
-        updateProgress(Math.min(95, Math.round(((i + 1) / pagesRef.current.length) * 95)))
+        setProgress(pr => ({ ...pr, val: i + 1 }))
+        await new Promise(r => requestAnimationFrame(r))
       }
-      const pdfBytes = await out.save(); const blob = new Blob([pdfBytes], { type: 'application/pdf' }); const a = document.createElement('a'); const href = URL.createObjectURL(blob); a.href = href; a.download = `${bn}.pdf`; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(href), 1500)
+
+      const pdfBytes = await out.save()
+
+      setProgress({
+        active: true,
+        mode: 'export',
+        phase: 'download',
+        label: 'Скачивание PDF',
+        val: 1,
+        max: 1,
+        suffix: ''
+      })
+
+      const blob = new Blob([pdfBytes], { type: 'application/pdf' })
+      const a = document.createElement('a')
+      const href = URL.createObjectURL(blob)
+      a.href = href
+      a.download = `${bn}.pdf`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      setTimeout(() => URL.revokeObjectURL(href), 1500)
+
       try { AuthAPI.recordDownload('pdf', pagesRef.current.length, bn, 'free').catch(() => {}) } catch {}
       toast(`Скачан PDF (${pagesRef.current.length} стр.)`, 'success')
-    } catch (e) { console.error(e); toast(e.message || 'Не удалось выгрузить PDF', 'error') } finally { hideProgress() }
+    } catch (e) {
+      console.error(e)
+      toast(e.message || 'Не удалось выгрузить PDF', 'error')
+    } finally {
+      setProgress(p => ({ ...p, active: false }))
+    }
   }
+
   useEffect(() => {
     const onKey = (e) => {
-      const tag = String(e.target?.tagName || '').toLowerCase(); const isTyping = tag === 'input' || tag === 'textarea' || e.target?.isContentEditable; if (isTyping) return
+      const tag = String(e.target?.tagName || '').toLowerCase()
+      const isTyping = tag === 'input' || tag === 'textarea' || e.target?.isContentEditable
+      if (isTyping) return
       if ((e.key === 'Delete' || e.key === 'Backspace') && pagesRef.current?.[cur]?.canvas) {
-        const cv = pagesRef.current[cur].canvas; const obj = cv.getActiveObject()
-        if (obj) { e.preventDefault(); const id = obj.__scannyId || null; cv.remove(obj); cv.discardActiveObject(); cv.requestRenderAll(); if (id) sendPatch([{ op: 'overlay_remove', page: cur, id }]); toast('Объект удалён', 'success') }
+        const cv = pagesRef.current[cur].canvas
+        const obj = cv.getActiveObject()
+        if (obj) {
+          e.preventDefault()
+          const id = obj.__scannyId || null
+          cv.remove(obj)
+          cv.discardActiveObject()
+          cv.requestRenderAll()
+          if (id) sendPatch([{ op: 'overlay_remove', page: cur, id }])
+          toast('Объект удалён', 'success')
+        }
       }
     }
-    document.addEventListener('keydown', onKey); return () => document.removeEventListener('keydown', onKey)
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
   }, [cur])
+
   const onRenameChange = (e) => { setFileName(sanitizeName(e.target.value)) }
   const onRenameBlur = () => { if (pagesRef.current?.length) sendPatch([{ op: 'set_name', name: fileNameRef.current || '' }]) }
   const [pgText, setPgText] = useState('1')
@@ -1162,9 +1666,16 @@ function clamp (obj) {
     const n = Math.max(1, Math.min(pagesRef.current.length, Number(v) || 1))
     setCur(n - 1)
   }
+
   return (
     <div className="doc-editor page" style={{ paddingTop: 0 }}>
-      <ProgressOverlay open={poOpen} label={poLabel} percent={poPct} indeterminate={poInd} />
+      <ProgressOverlay
+        open={progress.active}
+        label={progress.label}
+        val={progress.val}
+        max={progress.max}
+        suffix={progress.suffix}
+      />
       {banner && <div className="ed-banner">{banner}</div>}
       {!panelOpen ? (
         <div className="ed-top">
@@ -1222,7 +1733,6 @@ function clamp (obj) {
             >
               <img src={icPlus} alt="+" style={{ width: 22, height: 22, opacity: 0.6 }} />
             </div>
-            {libLoading && <div style={{ gridColumn: '1 / -1', opacity: 0.7, padding: 8 }}>Загрузка…</div>}
             {signLib.map(item => (
               <div
                 key={item.id}
@@ -1286,6 +1796,7 @@ function clamp (obj) {
                 try { await AuthAPI.clearDraft() } catch {}
                 draftExistsRef.current = false
                 setDocId(null)
+                setDraftHint(false)
                 toast('Документ удалён', 'success')
               }}
             >
@@ -1409,6 +1920,7 @@ function clamp (obj) {
               try { await AuthAPI.clearDraft() } catch {}
               draftExistsRef.current = false
               setDocId(null)
+              setDraftHint(false)
               toast('Документ удалён', 'success')
             }}
           >
@@ -1493,7 +2005,6 @@ function clamp (obj) {
             <h3 className="modal-title">Библиотека</h3>
             <div style={{ flex: '1 1 auto', overflowY: 'auto', padding: '8px' }}>
               <div className="defaults-grid" style={{ gridTemplateColumns: '1fr' }}>
-                {libLoading && <div style={{ gridColumn: '1 / -1', opacity: 0.7, padding: 8 }}>Загрузка…</div>}
                 {signLib.map(item => (
                   <div key={item.id} className="thumb">
                     <img
@@ -1515,7 +2026,7 @@ function clamp (obj) {
                     >×</button>
                   </div>
                 ))}
-                {(!libLoading && signLib.length === 0) && <div style={{ gridColumn: '1 / -1', opacity: 0.7, padding: 8 }}>Пока пусто</div>}
+                {(signLib.length === 0) && <div style={{ gridColumn: '1 / -1', opacity: 0.7, padding: 8 }}>Пока пусто</div>}
               </div>
             </div>
           </div>
@@ -1558,22 +2069,22 @@ function clamp (obj) {
               ensureDeleteControlFor(image)
               image.__scannyId = 'ov_' + Math.random().toString(36).slice(2)
               cv.add(image); cv.setActiveObject(image); cv.requestRenderAll()
-              function clamp(obj) {
-                 obj.setCoords()
-                 const coords = obj.getCoords ? obj.getCoords() : []
-                 if(!coords.length) return
-                 const xs = coords.map(p=>p.x), ys = coords.map(p=>p.y)
-                 const w = cv.width, h = cv.height
-                 let minX=Math.min(...xs), maxX=Math.max(...xs)
-                 let minY=Math.min(...ys), maxY=Math.max(...ys)
-                 let dx=0, dy=0
-                 if(minX<0) dx = -minX
-                 else if(maxX>w) dx = w - maxX
-                 if(minY<0) dy = -minY
-                 else if(maxY>h) dy = h - maxY
-                 if(dx||dy) { obj.left += dx; obj.top += dy; obj.setCoords() }
+              function clampInner (obj) {
+                obj.setCoords()
+                const coords = obj.getCoords ? obj.getCoords() : []
+                if (!coords.length) return
+                const xs = coords.map(p => p.x), ys = coords.map(p => p.y)
+                const w = cv.width, h = cv.height
+                let minX = Math.min(...xs), maxX = Math.max(...xs)
+                let minY = Math.min(...ys), maxY = Math.max(...ys)
+                let dx = 0, dy = 0
+                if (minX < 0) dx = -minX
+                else if (maxX > w) dx = w - maxX
+                if (minY < 0) dy = -minY
+                else if (maxY > h) dy = h - maxY
+                if (dx || dy) { obj.left += dx; obj.top += dy; obj.setCoords() }
               }
-              clamp(image)
+              clampInner(image)
               ensureDeleteControlFor(image)
               sendPatch([{
                 op: 'overlay_upsert',
@@ -1602,6 +2113,7 @@ function clamp (obj) {
     </div>
   )
 }
+
 function UnifiedPager ({ total, current, pgText, setPgText, onGo, onPrev, onNext, canPrev, canNext, hasDoc, onAdd }) {
   const onChange = (e) => {
     const v = e.target.value.replace(/[^\d]/g, '')
@@ -1618,7 +2130,7 @@ function UnifiedPager ({ total, current, pgText, setPgText, onGo, onPrev, onNext
     }
   }
   return (
-        <div className="ed-pager" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+    <div className="ed-pager" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
       <button className="pager-btn" onClick={onPrev} disabled={!canPrev} title="Предыдущая">
         <img src={icPrev} alt="Prev" />
       </button>
