@@ -1,3 +1,4 @@
+// FIXED VERSION Editor.jsx — часть 1/3
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { toast } from '../components/Toast.jsx'
 import { AuthAPI } from '../api'
@@ -8,6 +9,7 @@ import {
 import { EditorWS } from '../utils/wsClient'
 import CropModal from '../components/CropModal.jsx'
 import ProgressOverlay from '../components/ProgressOverlay.jsx'
+
 import icMore from '../assets/icons/kebab.png'
 import icText from '../assets/icons/text.png'
 import icSign from '../assets/icons/sign-upload.png'
@@ -24,20 +26,56 @@ import icPlus from '../assets/icons/plus.png'
 import icPrev from '../assets/icons/prev.png'
 import icDocAdd from '../assets/icons/doc-add.svg'
 import icLibrary from '../assets/icons/library.png'
+
 import plan1 from '../assets/images/один документ.png'
 import plan2 from '../assets/images/безлимит.png'
 import plan3 from '../assets/images/безлимит про.png'
+
+// Иконки крестика и поворота
+import icClose from '../assets/icons/x-close.svg'
+import icRotateHandle from '../assets/icons/rotate-handle.svg'
 
 const ACCEPT_DOC = '.jpg,.jpeg,.png,.pdf,.doc,.docx,.xls,.xlsx'
 const FONTS = ['Arial', 'Times New Roman', 'Ermilov', 'Segoe UI', 'Roboto', 'Georgia']
 const PDF_RENDER_SCALE = 3.0
 const RASTER_RENDER_SCALE = 3.0
 
+// UI-константы (в ЭКРАННЫХ пикселях)
 const UI_CORNER_SIZE = 10
 const UI_TOUCH_CORNER_SIZE = 24
-const UI_DELETE_RADIUS = 11
-const UI_DELETE_OFFSET = 14
-const UI_ROT_OFFSET = 30
+const UI_DELETE_RADIUS = 11           // радиус кружка delete
+const UI_DELETE_OFFSET = 14           // отступ delete от рамки
+const UI_ROT_OFFSET = 80  // было 48–60, делаем явно больше
+
+// Глобальные картинки для кастомных контроллов
+let DELETE_ICON_IMG = null
+let ROTATE_ICON_IMG = null
+
+function ensureControlIconsLoaded () {
+  if (!DELETE_ICON_IMG) {
+    DELETE_ICON_IMG = new Image()
+    DELETE_ICON_IMG.src = icClose
+  }
+  if (!ROTATE_ICON_IMG) {
+    ROTATE_ICON_IMG = new Image()
+    ROTATE_ICON_IMG.src = icRotateHandle
+  }
+}
+
+// FIX#4: гасим скролл от скрытого textarea Fabric + уводим его за экран
+function suppressFabricScroll () {
+  const F = window.fabric
+  if (!F || !F.hiddenTextarea) return
+  const ta = F.hiddenTextarea
+  if (ta.__noScrollPatched) return
+  try {
+    ta.scrollIntoView = () => {}
+  } catch {}
+  ta.style.position = 'fixed'
+  ta.style.top = '-10000px'
+  ta.style.left = '-10000px'
+  ta.__noScrollPatched = true
+}
 
 async function ensurePDFLib () {
   if (window.PDFLib) return window.PDFLib
@@ -208,6 +246,8 @@ function setDraftHint (flag) {
   } catch {}
 }
 
+// ---------- КОМПОНЕНТ EDITOR ----------
+
 export default function Editor () {
   const [docId, setDocId] = useState(null)
   const [fileName, setFileName] = useState('')
@@ -303,6 +343,17 @@ export default function Editor () {
   const sheetAddRef = useRef(null)
   const sheetDownloadRef = useRef(null)
   const [isMobile, setIsMobile] = useState(() => window.matchMedia('(max-width: 960px)').matches)
+
+  // FIX#1.0: гарантируем настройку глобальных контроллов Fabric сразу после монтирования редактора
+  useEffect(() => {
+    (async () => {
+      try {
+        await ensureFabric()
+        installDeleteControl()
+        suppressFabricScroll()
+      } catch {}
+    })()
+  }, [])
 
   useEffect(() => {
     const mq = window.matchMedia('(max-width: 960px)')
@@ -500,57 +551,163 @@ export default function Editor () {
     }
   }, [pages])
 
+  // ---------- КАСТОМНЫЕ КОНТРОЛЛЫ FABRIC (DELETE + ROTATE) ----------
+
   function installDeleteControl () {
-    const fobj = fabric.Object
-    if (!fobj || fobj.__delPatched) return
-    const F = fabric
+  const fobj = window.fabric?.Object
+  if (!fobj || fobj.__scannyControlsPatched) return
+  const F = window.fabric
+  ensureControlIconsLoaded()
+  suppressFabricScroll()
 
-    const del = new F.Control({
-      x: 0.5,
-      y: -0.5,
-      offsetX: 0,
-      offsetY: 0,
-      cursorStyle: 'pointer',
-      mouseUpHandler: () => true,
-      render: () => {}
-    })
+  F.Object.prototype.borderScaleFactor = 3
+  F.Object.prototype.transparentCorners = false
+  F.Object.prototype.cornerStyle = 'circle'
+  F.Object.prototype.cornerColor = '#E26D5C'
+  F.Object.prototype.borderColor = '#3C6FD8'
 
-    fobj.prototype.controls.tr = del
-    window.__scannyDelControl = del
-    fobj.__delPatched = true
+  const origMtr = fobj.prototype.controls.mtr || F.Object.prototype.controls.mtr
+
+  const del = new F.Control({
+    x: 0.5,
+    y: -0.5,
+    offsetX: 0,
+    offsetY: 0,
+    cursorStyle: 'pointer',
+    mouseUpHandler: (_, tr) => {
+      const t = tr?.target
+      const cv = t?.canvas
+      if (!cv || !t) return true
+      const pageIndex = typeof cv.__pageIndex === 'number' ? cv.__pageIndex : -1
+      const onPatch = cv.__onPatch
+      const oid = t.__scannyId || null
+
+      if (!window.confirm('Удалить объект со страницы?')) return true
+
+      cv.remove(t)
+      cv.discardActiveObject()
+      cv.requestRenderAll()
+
+      if (oid && pageIndex >= 0 && typeof onPatch === 'function') {
+        onPatch([{ op: 'overlay_remove', page: pageIndex, id: oid }])
+      }
+      toast('Объект удалён', 'success')
+      return true
+    },
+    render: (ctx, left, top, styleOverride, fabricObject) => {
+      const uiScale = fabricObject?.canvas?.__uiScale || 1
+      const radiusScreen = UI_DELETE_RADIUS
+      const radiusCanvas = radiusScreen / uiScale
+      const iconSizeScreen = radiusScreen * 2 * 0.9
+      const iconSizeCanvas = iconSizeScreen / uiScale
+
+      ctx.save()
+      ctx.beginPath()
+      ctx.arc(left, top, radiusCanvas, 0, Math.PI * 2)
+      ctx.fillStyle = '#E26D5C'
+      ctx.fill()
+
+      if (DELETE_ICON_IMG && DELETE_ICON_IMG.complete) {
+        ctx.drawImage(
+          DELETE_ICON_IMG,
+          left - iconSizeCanvas / 2,
+          top - iconSizeCanvas / 2,
+          iconSizeCanvas,
+          iconSizeCanvas
+        )
+      } else {
+        ctx.strokeStyle = '#fff'
+        ctx.lineWidth = 2 / uiScale
+        const c = radiusCanvas * 0.6
+        ctx.beginPath()
+        ctx.moveTo(left - c, top - c)
+        ctx.lineTo(left + c, top + c)
+        ctx.moveTo(left + c, top - c)
+        ctx.lineTo(left - c, top + c)
+        ctx.stroke()
+      }
+      ctx.restore()
+    }
+  })
+
+  const mtrCfg = {
+    ...(origMtr || {}),
+    withConnection: false,
+    render: (ctx, left, top, styleOverride, fabricObject) => {
+      const uiScale = fabricObject?.canvas?.__uiScale || 1
+      const sizeScreen = 24
+      const sizeCanvas = sizeScreen / uiScale
+
+      ctx.save()
+      if (ROTATE_ICON_IMG && ROTATE_ICON_IMG.complete) {
+        ctx.drawImage(
+          ROTATE_ICON_IMG,
+          left - sizeCanvas / 2,
+          top - sizeCanvas / 2,
+          sizeCanvas,
+          sizeCanvas
+        )
+      } else {
+        ctx.fillStyle = '#E26D5C'
+        ctx.beginPath()
+        ctx.arc(left, top, sizeCanvas / 2, 0, Math.PI * 2)
+        ctx.fill()
+      }
+      ctx.restore()
+    }
   }
+  const mtr = new F.Control(mtrCfg)
 
-  function ensureDeleteControlFor (obj) {
+  window.__scannyDelControl = del
+  window.__scannyMtrControl = mtr
+
+  fobj.prototype.controls.tr = del
+  fobj.prototype.controls.mtr = mtr
+  fobj.__scannyControlsPatched = true
+}
+
+    function ensureDeleteControlFor (obj) {
     try {
-      const uiScale = obj.canvas?.__uiScale || 1
+      // 1) Гарантируем, что глобальные контроллы проинициализированы
+      installDeleteControl()
+
+      const cv = obj.canvas
+      const uiScale = cv?.__uiScale || 1
+
+      if (obj.controls) {
+        if (window.__scannyDelControl) {
+          obj.controls.tr = window.__scannyDelControl
+        }
+        if (window.__scannyMtrControl) {
+          obj.controls.mtr = window.__scannyMtrControl
+        }
+      }
+
+      const rotOffsetCanvas = UI_ROT_OFFSET / uiScale
+      const delOffsetCanvas = UI_DELETE_OFFSET / uiScale
 
       obj.set({
         hasControls: true,
         hasBorders: true,
         lockUniScaling: false,
-        transparentCorners: true,
+        transparentCorners: false,
         cornerStyle: 'circle',
-        cornerColor: 'rgba(0,0,0,0)',
-        borderColor: 'rgba(0,0,0,0)',
+        cornerColor: '#E26D5C',
+        borderColor: '#3C6FD8',
         borderDashArray: null,
-        borderScaleFactor: 1,
-        cornerSize: Math.max(4, Math.round(UI_CORNER_SIZE / uiScale)),
-        touchCornerSize: Math.max(8, Math.round(UI_TOUCH_CORNER_SIZE / uiScale)),
+        borderScaleFactor: 3,
         hasRotatingPoint: true,
-        rotatingPointOffset: UI_ROT_OFFSET / uiScale
+        rotatingPointOffset: rotOffsetCanvas,
+        cornerSize: Math.max(4, Math.round(UI_CORNER_SIZE / uiScale)),
+        touchCornerSize: Math.max(8, Math.round(UI_TOUCH_CORNER_SIZE / uiScale))
       })
 
       if (obj.controls && obj.controls.tr) {
-        obj.controls.tr.visible = false
+        obj.controls.tr.offsetX = delOffsetCanvas
+        obj.controls.tr.offsetY = -delOffsetCanvas
       }
 
-      const mtr = obj.controls?.mtr
-      if (mtr && !mtr.__scannyHidden) {
-        const origRender = mtr.render
-        mtr.render = function () {}
-        mtr.__scannyHidden = true
-        mtr.__origRender = origRender
-      }
+      obj.setCoords()
     } catch {}
   }
 
@@ -596,6 +753,8 @@ export default function Editor () {
 
   async function ensureCanvas (page, pageIndex, onPatch) {
     await ensureFabric()
+    installDeleteControl()
+    suppressFabricScroll()
     if (page.canvas) return page.canvas
     await new Promise((res, rej) => {
       const t0 = Date.now()
@@ -606,7 +765,7 @@ export default function Editor () {
         requestAnimationFrame(loop)
       })()
     })
-    const c = new fabric.Canvas(page.elId, {
+    const c = new window.fabric.Canvas(page.elId, {
       backgroundColor: '#fff',
       preserveObjectStacking: true,
       selection: true,
@@ -620,6 +779,7 @@ export default function Editor () {
     c.__pageIndex = pageIndex
     c.__onPatch = onPatch
     page.canvas = c
+
     const onSelectionChanged = (e) => {
       const obj = e?.selected?.[0]
       if (obj && obj.type === 'textbox') {
@@ -637,6 +797,7 @@ export default function Editor () {
     c.on('object:moving', (e) => { if (e.target) clamp(e.target) })
     c.on('object:scaling', (e) => { if (e.target) clamp(e.target) })
     c.on('object:rotating', (e) => { if (e.target) clamp(e.target) })
+
     function overlayFromObject (obj) {
       const base = {
         id: obj.__scannyId || ('ov_' + Math.random().toString(36).slice(2)),
@@ -674,7 +835,9 @@ export default function Editor () {
     }
     c.on('object:modified', (e) => { if (e.target) sendUpsertForObject(e.target) })
     try { c.on('text:changed', (e) => { if (e.target) { c.requestRenderAll(); sendUpsertForObject(e.target) } }) } catch {}
+
     installDeleteControl()
+
     return c
   }
 
@@ -699,9 +862,11 @@ export default function Editor () {
         const pg = page.meta || {}
         if (pg.type === 'pdf' && pg.bytes) {
           await ensurePDFJS()
+          // eslint-disable-next-line no-undef
           const pdf = await pdfjsLib.getDocument({ data: pg.bytes.slice() }).promise
           const off = await renderPDFPageToCanvas(pdf, (pg.index || 0) + 1, PDF_RENDER_SCALE)
           const url = off.toDataURL('image/png')
+          // eslint-disable-next-line no-undef
           const img = new fabric.Image(await loadImageEl(url), {
             selectable: false, evented: false, objectCaching: false, noScaleCache: true
           })
@@ -712,6 +877,7 @@ export default function Editor () {
           placeBgObject(cv, page, img)
         } else if ((pg.type === 'image' || pg.type === 'raster') && pg.src) {
           const im = await loadImageEl(pg.src)
+          // eslint-disable-next-line no-undef
           const img = new fabric.Image(im, {
             selectable: false, evented: false, objectCaching: false, noScaleCache: true
           })
@@ -724,6 +890,7 @@ export default function Editor () {
         page._bgRendered = true
         const overlays = Array.isArray(page._pendingOverlays) ? page._pendingOverlays : []
         if (overlays.length) {
+          // eslint-disable-next-line no-undef
           const F = fabric
           for (const o of overlays) {
             const type = o.t || (o.text !== undefined ? 'tb' : (o.src ? 'im' : 'unknown'))
@@ -795,22 +962,26 @@ export default function Editor () {
     if (!pagesRef.current || pagesRef.current.length === 0) return
     const page = pagesRef.current[cur]
     const cv = await ensureCanvas(page, cur, sendPatch)
+
     const oldW = cv.width
     const oldH = cv.height
     let anchorX = oldW / 2
     let anchorY = oldH / 2
     let oldBgScale = 1
+
     if (page.bgObj) {
       const center = page.bgObj.getCenterPoint()
       anchorX = center.x
       anchorY = center.y
-      oldBgScale = page.bgObj.scaleX
+      oldBgScale = page.bgObj.scaleX || 1
     }
+
     const newW = oldH
     const newH = oldW
     const newCx = newW / 2
     const newCy = newH / 2
     cv.setDimensions({ width: newW, height: newH })
+
     let newBgScale = 1
     if (page.bgObj) {
       const w = page.bgObj.width || 1
@@ -820,13 +991,16 @@ export default function Editor () {
       newBgScale = newW / oldW
     }
     const scaleFactor = newBgScale / oldBgScale
+
     if (page.bgObj) {
       page.bgObj.scaleX = newBgScale
       page.bgObj.scaleY = newBgScale
       page.bgObj.center()
       page.bgObj.setCoords()
     }
+
     const objs = cv.getObjects().filter(o => o !== page.bgObj)
+    // FIX#1: поворачиваем все объекты вокруг центра страницы (как раньше)
     for (const obj of objs) {
       const objCenter = obj.getCenterPoint()
       const vecX = objCenter.x - anchorX
@@ -837,14 +1011,17 @@ export default function Editor () {
       const finalY = newCy + newVecY
       obj.scaleX = obj.scaleX * scaleFactor
       obj.scaleY = obj.scaleY * scaleFactor
+      // eslint-disable-next-line no-undef
       obj.setPositionByOrigin(new fabric.Point(finalX, finalY), 'center', 'center')
       obj.setCoords()
       clamp(obj)
     }
+
     page.meta.doc_w = newW
     page.meta.doc_h = newH
     page.landscape = !page.landscape
     fitCanvasForPage(page)
+
     cv.getObjects().forEach(o => {
       if (o !== page.bgObj) ensureDeleteControlFor(o)
     })
@@ -948,6 +1125,7 @@ export default function Editor () {
 
   async function addPagesFromPDFBytes (bytes, opsOut = null, indexStart = null) {
     await ensurePDFJS()
+    // eslint-disable-next-line no-undef
     const pdf = await pdfjsLib.getDocument({ data: bytes.slice() }).promise
     const total = pdf.numPages
     const bytes_b64 = u8ToB64(bytes)
@@ -1006,6 +1184,7 @@ export default function Editor () {
       else if (ext === 'pdf') {
         try {
           await ensurePDFJS()
+          // eslint-disable-next-line no-undef
           const pdf = await pdfjsLib.getDocument({ data: await f.arrayBuffer() }).promise
           total += pdf.numPages || 1
         } catch { total += 1 }
@@ -1107,6 +1286,7 @@ export default function Editor () {
         page._bgRendered = false; await ensurePageRendered(cur)
       } else if (ext === 'pdf') {
         const ab = await file.arrayBuffer(); const bytes = toUint8Copy(ab)
+        // eslint-disable-next-line no-undef
         const pdf = await pdfjsLib.getDocument({ data: bytes.slice() }).promise; const p1 = await pdf.getPage(1); const vp1 = p1.getViewport({ scale: PDF_RENDER_SCALE })
         page.meta = { type: 'pdf', bytes, index: 0, pdf_w: vp1.width, pdf_h: vp1.height, doc_w: vp1.width, doc_h: vp1.height }
         page._bgRendered = false; await ensurePageRendered(cur)
@@ -1199,6 +1379,8 @@ export default function Editor () {
     try {
       await ensurePDFJS()
       await ensureFabric()
+      installDeleteControl()
+      suppressFabricScroll()
 
       const pagesData = Array.isArray(draft?.pages) ? draft.pages : []
       const total = pagesData.length || 1
@@ -1266,7 +1448,10 @@ export default function Editor () {
   }
 
   async function addText () {
-    if (!pagesRef.current || pagesRef.current.length === 0) { toast('Сначала добавьте страницу', 'error'); return }
+    if (!pagesRef.current || pagesRef.current.length === 0) {
+      toast('Сначала добавьте страницу', 'error'); return
+    }
+    // eslint-disable-next-line no-undef
     const F = fabric
     const page = pagesRef.current[cur]
     const cv = await ensureCanvas(page, cur, sendPatch)
@@ -1354,6 +1539,7 @@ export default function Editor () {
 
   async function applyToAllPages () {
     if (!pagesRef.current || pagesRef.current.length === 0) return
+    // eslint-disable-next-line no-undef
     const F = fabric
     const srcPage = pagesRef.current[cur]
     const cvSrc = await ensureCanvas(srcPage, cur, sendPatch)
@@ -1470,6 +1656,7 @@ export default function Editor () {
 
   function placeFromLib (url) {
     if (!pagesRef.current || pagesRef.current.length === 0) { toast('Сначала добавьте страницу', 'error'); return }
+    // eslint-disable-next-line no-undef
     const F = fabric
     const page = pagesRef.current[cur]
     ensureCanvas(page, cur, sendPatch).then(async (cv) => {
@@ -1559,6 +1746,7 @@ export default function Editor () {
       })
 
       await ensureJSZip()
+      // eslint-disable-next-line no-undef
       const zip = new JSZip()
       for (let i = 0; i < pagesRef.current.length; i++) {
         await ensurePageRendered(i)
@@ -1667,25 +1855,6 @@ export default function Editor () {
     }
   }
 
-  async function handleDeleteSelected () {
-    const pagesLocal = pagesRef.current || []
-    const page = pagesLocal[cur]
-    const cv = page?.canvas
-    if (!cv) return
-    const obj = cv.getActiveObject()
-    if (!obj) return
-    if (!window.confirm('Удалить объект со страницы?')) return
-
-    const oid = obj.__scannyId || null
-    cv.remove(obj)
-    cv.discardActiveObject()
-    cv.requestRenderAll()
-
-    if (oid) {
-      sendPatch([{ op: 'overlay_remove', page: cur, id: oid }])
-    }
-  }
-
   useEffect(() => {
     const onKey = (e) => {
       const tag = String(e.target?.tagName || '').toLowerCase()
@@ -1711,8 +1880,10 @@ export default function Editor () {
 
   const onRenameChange = (e) => { setFileName(sanitizeName(e.target.value)) }
   const onRenameBlur = () => { if (pagesRef.current?.length) sendPatch([{ op: 'set_name', name: fileNameRef.current || '' }]) }
+
   const [pgText, setPgText] = useState('1')
   useEffect(() => { setPgText(String(pagesRef.current?.length ? (cur + 1) : 0)) }, [cur, pages.length])
+
   const onPagerGo = (v) => {
     if (!pagesRef.current?.length) return
     const n = Math.max(1, Math.min(pagesRef.current.length, Number(v) || 1))
@@ -1741,6 +1912,7 @@ export default function Editor () {
       )}
 
       {banner && <div className="ed-banner">{banner}</div>}
+
       {!panelOpen ? (
         <div className="ed-top">
           <button className="ed-menu-btn mobile-only" aria-label="Меню действий" onClick={onTopMenuClick}>
@@ -1778,6 +1950,7 @@ export default function Editor () {
           </div>
         </div>
       )}
+
       <div className="ed-body">
         <aside className="ed-left">
           <div className="ed-tools">
@@ -1811,7 +1984,7 @@ export default function Editor () {
                   style={{ width: '100%', height: '100%', objectFit: 'contain', cursor: 'pointer' }}
                 />
                 <button
-                  className="thumb-x"
+                  className="thumb-x x-btn x-btn--small"
                   onClick={async () => {
                     if (!window.confirm('Удалить элемент из библиотеки?')) return
                     try {
@@ -1820,11 +1993,14 @@ export default function Editor () {
                       toast('Удалено', 'success')
                     } catch (e) { toast(e.message || 'Не удалось удалить', 'error') }
                   }}
-                >×</button>
+                >
+                  <img src={icClose} alt="Удалить" />
+                </button>
               </div>
             ))}
           </div>
         </aside>
+
         <section className="ed-center">
           <div
             className="ed-canvas-wrap"
@@ -1836,13 +2012,16 @@ export default function Editor () {
             {pages.map((p, idx) => (
               <div key={p.id} className={`ed-canvas ${idx === cur ? 'active' : ''}`}>
                 <button
-                  className="ed-page-x desktop-only"
+                  className="ed-page-x desktop-only x-btn x-btn--medium"
                   title="Удалить эту страницу"
                   onClick={() => deletePageAt(idx)}
-                >×</button>
+                >
+                  <img src={icClose} alt="Удалить страницу" />
+                </button>
                 <canvas id={p.elId} />
               </div>
             ))}
+
             {!pagesRef.current?.length && (
               <div className="ed-dropzone" onClick={pickDocument}>
                 <img src={icDocAdd} alt="" style={{ width: 140, height: 'auto', opacity: 0.9 }} />
@@ -1851,10 +2030,9 @@ export default function Editor () {
                 <div className="dz-types">JPG, JPEG, PNG, PDF, DOC, DOCX, XLS, XLSX</div>
               </div>
             )}
-
-            <SelectionOverlay page={pages[cur]} onDelete={handleDeleteSelected} />
           </div>
         </section>
+
         <aside className="ed-right">
           <div className="ed-actions">
             <button
@@ -1922,6 +2100,7 @@ export default function Editor () {
               <img src={icAddPage} alt="" style={{ width: 18, height: 18, marginRight: 8 }} />На все страницы
             </button>
           </div>
+
           <div className="ed-download">
             <div className="ed-dl-title">Скачать бесплатно:</div>
             <div className="ed-dl-row">
@@ -1944,6 +2123,7 @@ export default function Editor () {
           </div>
         </aside>
       </div>
+
       <div className="ed-bottom">
         <button className="fab fab-add mobile-only" onClick={() => { if (pagesRef.current?.length) { setMenuAddOpen(o => !o) } else { pickDocument() } }} title="Добавить">
           <img src={icPlus} alt="+" />
@@ -1965,6 +2145,7 @@ export default function Editor () {
           <img src={icDownload} alt="↓" />
         </button>
       </div>
+
       {menuActionsOpen && (
         <div
           className="ed-sheet"
@@ -2000,6 +2181,7 @@ export default function Editor () {
           </button>
         </div>
       )}
+
       {menuAddOpen && (
         <div className="ed-sheet bottom-left" ref={sheetAddRef}>
           <button className={pagesRef.current?.length ? '' : 'disabled'} onClick={() => { setMenuAddOpen(false); addText() }}>
@@ -2013,6 +2195,7 @@ export default function Editor () {
           </button>
         </div>
       )}
+
       {menuDownloadOpen && (
         <div className="ed-sheet bottom-right" ref={sheetDownloadRef} style={{ padding: 6 }}>
           <button className={`btn ${pagesRef.current?.length ? '' : 'disabled'}`} style={{ padding: '10px 14px' }} onClick={() => { if (pagesRef.current?.length) { setMenuDownloadOpen(false); setPlan('single'); setPayOpen(true) } }}>
@@ -2029,6 +2212,7 @@ export default function Editor () {
           </button>
         </div>
       )}
+
       {payOpen && (
         <div className="modal-overlay" onClick={() => setPayOpen(false)}>
           <div className="modal pay-modal" onClick={e => e.stopPropagation()}>
@@ -2070,6 +2254,7 @@ export default function Editor () {
           </div>
         </div>
       )}
+
       {libOpen && (
         <div className="modal-overlay" onClick={() => setLibOpen(false)}>
           <div className="modal" onClick={e => e.stopPropagation()} style={{ width: 'min(420px,92vw)', height: 'min(70vh,560px)', display: 'flex', flexDirection: 'column' }}>
@@ -2086,7 +2271,7 @@ export default function Editor () {
                       onClick={() => { placeFromLib(item.url); setLibOpen(false) }}
                     />
                     <button
-                      className="thumb-x"
+                      className="thumb-x x-btn x-btn--small"
                       onClick={async () => {
                         if (!window.confirm('Удалить элемент из библиотеки?')) return
                         try {
@@ -2095,7 +2280,9 @@ export default function Editor () {
                           toast('Удалено', 'success')
                         } catch (e) { toast(e.message || 'Не удалось удалить', 'error') }
                       }}
-                    >×</button>
+                    >
+                      <img src={icClose} alt="Удалить" />
+                    </button>
                   </div>
                 ))}
                 {(signLib.length === 0) && <div style={{ gridColumn: '1 / -1', opacity: 0.7, padding: 8 }}>Пока пусто</div>}
@@ -2104,6 +2291,7 @@ export default function Editor () {
           </div>
         </div>
       )}
+
       <input ref={docFileRef} type="file" accept={ACCEPT_DOC} hidden multiple onChange={onPickDocument} />
       <input ref={bgFileRef} type="file" accept={ACCEPT_DOC} hidden onChange={onPickBgFile} />
       <input
@@ -2130,6 +2318,7 @@ export default function Editor () {
           try {
             try { await AuthAPI.addSign({ kind, data_url: dataUrl }); await loadLibrary() } catch {}
             if (pagesRef.current?.length > 0) {
+              // eslint-disable-next-line no-undef
               const F = fabric
               const page = pagesRef.current[cur]
               const cv = await ensureCanvas(page, cur, sendPatch)
@@ -2236,223 +2425,3 @@ function UnifiedPager ({ total, current, pgText, setPgText, onGo, onPrev, onNext
     </div>
   )
 }
-
-function SelectionOverlay ({ page, onDelete }) {
-  const [rect, setRect] = useState(null)
-
-  useEffect(() => {
-    const cv = page?.canvas
-    if (!cv) {
-      setRect(null)
-      return
-    }
-
-    let frame = 0
-
-    function updateNow () {
-      try {
-        const obj = cv.getActiveObject()
-        const lower = cv.lowerCanvasEl
-        if (!obj || !lower) {
-          setRect(null)
-          return
-        }
-
-        const canvasRect = lower.getBoundingClientRect()
-        const logicalW = cv.getWidth()
-        const logicalH = cv.getHeight()
-
-        if (!logicalW || !logicalH || !canvasRect.width || !canvasRect.height) {
-          setRect(null)
-          return
-        }
-
-        obj.setCoords()
-        const center = obj.getCenterPoint()
-        const wLogical = obj.getScaledWidth()
-        const hLogical = obj.getScaledHeight()
-
-        const kx = canvasRect.width / logicalW
-        const ky = canvasRect.height / logicalH
-        const k = (kx + ky) / 2 || 1
-
-        const wCss = wLogical * k
-        const hCss = hLogical * k
-
-        const centerCssX = canvasRect.left + center.x * k
-        const centerCssY = canvasRect.top + center.y * k
-
-        const left = centerCssX - wCss / 2
-        const top = centerCssY - hCss / 2
-
-        if (
-          !Number.isFinite(left) ||
-          !Number.isFinite(top) ||
-          !Number.isFinite(wCss) ||
-          !Number.isFinite(hCss)
-        ) {
-          setRect(null)
-          return
-        }
-
-        const angle = obj.angle || 0
-
-        setRect({
-          left,
-          top,
-          width: wCss,
-          height: hCss,
-          angle
-        })
-      } catch {
-        setRect(null)
-      }
-    }
-
-    function scheduleUpdate () {
-      if (frame) return
-      frame = requestAnimationFrame(() => {
-        frame = 0
-        updateNow()
-      })
-    }
-
-    const handler = () => scheduleUpdate()
-
-    cv.on('selection:created', handler)
-    cv.on('selection:updated', handler)
-    cv.on('selection:cleared', handler)
-    cv.on('object:modified', handler)
-    cv.on('object:moving', handler)
-    cv.on('object:scaling', handler)
-    cv.on('object:rotating', handler)
-
-    window.addEventListener('resize', handler)
-    window.addEventListener('orientationchange', handler)
-
-    scheduleUpdate()
-
-    return () => {
-      if (frame) cancelAnimationFrame(frame)
-      cv.off('selection:created', handler)
-      cv.off('selection:updated', handler)
-      cv.off('selection:cleared', handler)
-      cv.off('object:modified', handler)
-      cv.off('object:moving', handler)
-      cv.off('object:scaling', handler)
-      cv.off('object:rotating', handler)
-      window.removeEventListener('resize', handler)
-      window.removeEventListener('orientationchange', handler)
-    }
-  }, [page])
-
-  if (!rect) return null
-
-  const { left, top, width, height, angle } = rect
-  const borderWidth = 1.5
-  const handleSize = UI_CORNER_SIZE
-  const deleteR = UI_DELETE_RADIUS
-
-  const commonHandleStyle = {
-    position: 'absolute',
-    width: handleSize,
-    height: handleSize,
-    borderRadius: '50%',
-    background: '#E26D5C',
-    transform: 'translate(-50%, -50%)',
-    pointerEvents: 'none'
-  }
-
-  const lineLength = UI_ROT_OFFSET
-
-  return (
-    <div
-      style={{
-        position: 'fixed',
-        left,
-        top,
-        width,
-        height,
-        pointerEvents: 'none',
-        zIndex: 150
-      }}
-    >
-      <div
-        style={{
-          position: 'absolute',
-          left: 0,
-          top: 0,
-          width: '100%',
-          height: '100%',
-          transform: `rotate(${angle}deg)`,
-          transformOrigin: '50% 50%'
-        }}
-      >
-        <div
-          style={{
-            position: 'absolute',
-            left: 0,
-            top: 0,
-            width: '100%',
-            height: '100%',
-            border: `${borderWidth}px solid #3C6FD8`,
-            boxSizing: 'border-box'
-          }}
-        />
-        <div style={{ ...commonHandleStyle, left: 0, top: 0 }} />
-        <div style={{ ...commonHandleStyle, left: '100%', top: 0 }} />
-        <div style={{ ...commonHandleStyle, left: 0, top: '100%' }} />
-        <div style={{ ...commonHandleStyle, left: '100%', top: '100%' }} />
-        <div style={{ ...commonHandleStyle, left: '50%', top: 0 }} />
-        <div style={{ ...commonHandleStyle, left: '50%', top: '100%' }} />
-        <div style={{ ...commonHandleStyle, left: 0, top: '50%' }} />
-        <div style={{ ...commonHandleStyle, left: '100%', top: '50%' }} />
-        <div
-          style={{
-            position: 'absolute',
-            left: '50%',
-            top: -lineLength,
-            width: 2,
-            height: lineLength,
-            background: '#3C6FD8',
-            transform: 'translateX(-50%)',
-            pointerEvents: 'none'
-          }}
-        />
-        <div
-          style={{
-            ...commonHandleStyle,
-            left: '50%',
-            top: -lineLength
-          }}
-        />
-        <button
-          type="button"
-          onClick={onDelete}
-          style={{
-            position: 'absolute',
-            top: -deleteR * 2,
-            left: width + deleteR * 2,
-            width: deleteR * 2,
-            height: deleteR * 2,
-            borderRadius: '50%',
-            border: 'none',
-            background: '#E26D5C',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            cursor: 'pointer',
-            pointerEvents: 'auto',
-            color: '#fff',
-            fontSize: deleteR,
-            fontWeight: 700,
-            transform: 'translate(-50%, 0)'
-          }}
-        >
-          ×
-        </button>
-      </div>
-    </div>
-  )
-}
-
