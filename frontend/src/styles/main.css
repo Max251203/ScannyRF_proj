@@ -474,6 +474,7 @@ main { flex:1; }
   overflow:auto;padding-right:4px;
   max-height:calc(100dvh - var(--help-top-offset));
 }
+
 .help-card{
   text-align:left;background:#fff;border:1px solid #eee;border-radius:16px;
   padding:18px 20px 48px;box-shadow:0 14px 28px rgba(0,0,0,.06);
@@ -828,6 +829,7 @@ main { flex:1; }
   border:1px solid #e5e5e5;border-radius:10px;
   padding:8px 12px;font-size:16px;background:#fff;
 }
+
 .doc-editor .ed-canvas-wrap{
   flex:1;display:flex;justify-content:center;align-items:center;
   overflow:hidden;position:relative;padding:0;
@@ -1114,6 +1116,7 @@ main { flex:1; }
   #profile .form-grid{grid-template-columns:1fr!important}
 }
 
+/* Прогресс‑оверлей */
 .progress-overlay {
   position: fixed; inset: 0;
   background: rgba(0,0,0,0.75);
@@ -1153,6 +1156,7 @@ main { flex:1; }
 .progress-overlay .po-stat {
   margin-top: 12px; font-weight: 700; color: #555; font-size: 14px;
 }
+
 @keyframes shimmer {
   100% { transform: translateX(100%); }
 }

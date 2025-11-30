@@ -6,7 +6,20 @@
 // - Поворот страницы 0/90:
 //     * На десктопе не меняет трансформ контента (масштаб/позиция),
 //       только ширину рамки страницы.
-//     * На мобилке дополнительно подгоняет масштаб/позицию под экран.
+//     * На мобилке дополнительно подгоняет масштаб/позицию под экран,
+//       но размер оверлеев компенсируем.
+
+import icDelete from '../assets/icons/x-close.svg'
+import icRotate from '../assets/icons/rotate-handle.svg'
+// ожидается, что ты положишь эту иконку по этому пути
+import icScale from '../assets/icons/scale-handle.svg'
+
+const deleteImg = new Image()
+deleteImg.src = icDelete
+const rotateImg = new Image()
+rotateImg.src = icRotate
+const scaleImg = new Image()
+scaleImg.src = icScale
 
 function rotatePoint (x, y, angleRad) {
   const c = Math.cos(angleRad)
@@ -56,12 +69,12 @@ export class CustomCanvasEngine {
     // Оверлеи
     this.overlays = []
 
-    // Ориентация страницы и рамка (может отличаться от docWidth/docHeight)
+    // Ориентация страницы и рамка
     this.rotation = 0 // 0 | 90
     this.pageWidth = this.docWidth
     this.pageHeight = this.docHeight
 
-    // [3] влияет ли rotation на transform (swап fitW/fitH)
+    // rotation влияет на transform только в мобильном режиме
     this.rotationAffectsTransform = false
 
     // Viewport (экран)
@@ -69,7 +82,7 @@ export class CustomCanvasEngine {
     this.viewHeight = canvas.clientHeight || canvas.height || 1
     this.pixelRatio = window.devicePixelRatio || 1
 
-    // [2] margin используем только по вертикали
+    // Вертикальный отступ (сверху/снизу) одинаковый для режимов
     this.viewMargin = typeof opts.viewMargin === 'number' ? Math.max(0, opts.viewMargin) : 24
 
     this.scale = 1
@@ -84,11 +97,11 @@ export class CustomCanvasEngine {
     this._lastControlPositions = null
 
     // UI‑контроллы
-    this.handleRadius = 14
+    this.handleRadius = 13
     this.hitRadius = 26
     this.borderColor = '#3C6FD8'
-    this.handleFill = '#E26D5C'
-    this.handleStroke = '#FFFFFF'
+    this.handleFill = '#FFFFFF'
+    this.handleStroke = '#E26D5C'
 
     this._onPointerDown = this._onPointerDown.bind(this)
     this._onPointerMove = this._onPointerMove.bind(this)
@@ -155,10 +168,10 @@ export class CustomCanvasEngine {
    * Установка ориентации страницы.
    * rotation: 0 | 90
    * recalcTransform:
-   *   - десктоп: false  → не трогаем transform, только рамку страницы;
-   *   - мобилка: true   → rotation участвует в вычислении transform.  [3]
+   *   - десктоп: false → меняем только рамку страницы;
+   *   - мобилка: true  → rotation участвует в transform, компенсируем размер оверлеев.
    */
-    setPageRotation (rotation, recalcTransform = false) {
+  setPageRotation (rotation, recalcTransform = false) {
     this.rotation = rotation === 90 ? 90 : 0
     if (recalcTransform) {
       this.rotationAffectsTransform = true
@@ -167,8 +180,6 @@ export class CustomCanvasEngine {
     this._updatePageSize()
 
     if (recalcTransform) {
-      // мобильный режим: пересчитываем transform, но компенсируем масштаб оверлеев,
-      // чтобы их видимый размер на экране не менялся
       const prevScale = this.scale || 1
       this._updateTransform()
       const newScale = this.scale || 1
@@ -185,9 +196,7 @@ export class CustomCanvasEngine {
   }
 
   /**
-   * Установка режима (десктоп/мобилка).
-   * isMobile = true  → rotation влияет на transform.
-   * isMobile = false → rotation влияет только на рамку. [3]
+   * Смена режима (десктоп/мобилка).
    */
   setMode (isMobile) {
     this.rotationAffectsTransform = !!isMobile
@@ -196,7 +205,7 @@ export class CustomCanvasEngine {
   }
 
   resize (width, height) {
-    // [1] защищаемся от временных 0×0 при резком ресайзе
+    // защищаемся от временных 0×0 при резком ресайзе
     const safeW = Math.max(1, Math.floor(width || 0))
     const safeH = Math.max(1, Math.floor(height || 0))
 
@@ -220,20 +229,19 @@ export class CustomCanvasEngine {
   // ---------- Геометрия и трансформ ----------
 
   /**
-   * Размеры рамки страницы в документных координатах. [3]
+   * Размеры рамки страницы в документных координатах.
    * Портрет: совпадает с docWidth/docHeight.
-   * Альбом: высота остаётся docHeight, ширина = H^2 / W (перевёрнутое соотношение).
+   * Альбом: высота = docHeight, ширина увеличена пропорционально,
+   * чтобы не было квадрата.  (и для десктопа, и для мобилки)
    */
-      _updatePageSize () {
+  _updatePageSize () {
     const W = this.docWidth
     const H = this.docHeight
+
     if (this.rotation === 0) {
-      // Портрет: рамка совпадает с документом
       this.pageWidth = W
       this.pageHeight = H
     } else {
-      // Альбом (для всех режимов): высота = высота документа,
-      // ширина пропорционально растянута (не квадрат). [десктоп и мобилка одинаково]
       if (W > 0) {
         this.pageHeight = H
         this.pageWidth = (H * H) / W
@@ -246,7 +254,7 @@ export class CustomCanvasEngine {
 
   /**
    * Масштабирование содержимого под размер viewport.
-   * rotation учитываем только если rotationAffectsTransform=true (мобилка). [2][3]
+   * rotation учитываем только если rotationAffectsTransform=true (мобилка).
    */
   _updateTransform () {
     const W = this.docWidth
@@ -255,14 +263,15 @@ export class CustomCanvasEngine {
     const ch = this.viewHeight
 
     const margin = this.viewMargin || 0
+
     const availW0 = cw
-    // как было изначально: один margin «съедаем» по высоте
     const availH0 = Math.max(10, ch - margin)
 
     let fitW = availW0
     let fitH = availH0
 
     if (this.rotationAffectsTransform && this.rotation === 90) {
+      // мобильный поворот
       ;[fitW, fitH] = [availH0, availW0]
     }
 
@@ -271,12 +280,9 @@ export class CustomCanvasEngine {
     const actualW = W * scale
     const actualH = H * scale
 
-    const offsetX = (cw - actualW) / 2
-    const offsetY = (ch - actualH) / 2
-
     this.scale = scale
-    this.offsetX = offsetX
-    this.offsetY = offsetY
+    this.offsetX = (cw - actualW) / 2
+    this.offsetY = (ch - actualH) / 2
   }
 
   _docToScreen (x, y) {
@@ -328,7 +334,6 @@ export class CustomCanvasEngine {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     ctx.transform(s, 0, 0, s, ox, oy)
 
-    // фон страницы (pageWidth x pageHeight), центрированный относительно документа
     const docCx = W / 2
     const docCy = H / 2
     const halfPW = pageW / 2
@@ -336,14 +341,16 @@ export class CustomCanvasEngine {
     const pageLeft = docCx - halfPW
     const pageTop = docCy - halfPH
 
+    // белая страница
     ctx.fillStyle = '#ffffff'
     ctx.fillRect(pageLeft, pageTop, pageW, pageH)
 
-    // реальный контент (pdf/растр) в пределах docWidth/docHeight
+    // контент
     if (isDrawable(this.backgroundImage)) {
       ctx.drawImage(this.backgroundImage, 0, 0, W, H)
     }
 
+    // оверлеи
     for (const ov of this.overlays) {
       this._drawOverlay(ov, false)
     }
@@ -456,6 +463,7 @@ export class CustomCanvasEngine {
     ctx.save()
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
 
+    // рамка
     ctx.beginPath()
     ctx.moveTo(p0s.x, p0s.y)
     ctx.lineTo(p1s.x, p1s.y)
@@ -467,7 +475,9 @@ export class CustomCanvasEngine {
     ctx.stroke()
 
     const hr = this.handleRadius
-    const drawHandle = (x, y) => {
+
+    const drawIconHandle = (x, y, kind) => {
+      // круг
       ctx.beginPath()
       ctx.arc(x, y, hr, 0, Math.PI * 2)
       ctx.fillStyle = this.handleFill
@@ -475,14 +485,25 @@ export class CustomCanvasEngine {
       ctx.lineWidth = 1.5
       ctx.strokeStyle = this.handleStroke
       ctx.stroke()
+
+      // иконка
+      let img = null
+      if (kind === 'delete') img = deleteImg
+      else if (kind === 'rotate') img = rotateImg
+      else if (kind === 'scale') img = scaleImg
+
+      if (img && img.complete) {
+        const size = hr * 1.3
+        ctx.drawImage(img, x - size / 2, y - size / 2, size, size)
+      }
     }
 
-    // scale — слева снизу
+    // scale — слева снизу, чуть ближе к рамке
     const bottomLeft = {
-      x: p3s.x - 28,
-      y: p3s.y + 28
+      x: p3s.x - 18,
+      y: p3s.y + 18
     }
-    drawHandle(bottomLeft.x, bottomLeft.y)
+    drawIconHandle(bottomLeft.x, bottomLeft.y, 'scale')
 
     // rotate — над верхней гранью
     const topMid = {
@@ -491,16 +512,16 @@ export class CustomCanvasEngine {
     }
     const rotatePos = {
       x: topMid.x,
-      y: topMid.y - 36
+      y: topMid.y - 32
     }
-    drawHandle(rotatePos.x, rotatePos.y)
+    drawIconHandle(rotatePos.x, rotatePos.y, 'rotate')
 
     // delete — правый верхний
     const deletePos = {
-      x: p1s.x + 28,
-      y: p1s.y - 28
+      x: p1s.x + 22,
+      y: p1s.y - 22
     }
-    drawHandle(deletePos.x, deletePos.y)
+    drawIconHandle(deletePos.x, deletePos.y, 'delete')
 
     ctx.restore()
 

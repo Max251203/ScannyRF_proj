@@ -53,7 +53,6 @@ function setDraftHint (flag) {
   try { localStorage.setItem('has_draft', flag ? '1' : '0') } catch {}
 }
 
-// helper для экспорта, чтобы не падать на некорректных объектах
 function isDrawableForExport (img) {
   if (!img) return false
   if (typeof HTMLImageElement !== 'undefined' && img instanceof HTMLImageElement) return true
@@ -80,7 +79,6 @@ function loadImageEl (src) {
   })
 }
 
-// только для восстановления старых черновиков (type: 'pdf' + bytes_b64)
 function b64ToU8 (b64) {
   const bin = atob(b64)
   const u8 = new Uint8Array(bin.length)
@@ -161,7 +159,7 @@ async function renderPDFPageToCanvas (pdf, pageNum, scale) {
   return canvas
 }
 
-// Рендер страницы в offscreen-канвас для экспорта (учитываем поворот листа)
+// Рендер страницы в offscreen-канвас для экспорта
 function renderPageOffscreen (page, scaleMul = 2) {
   const rot = page.rotation || 0
   const docW = page.docWidth || 1000
@@ -183,10 +181,9 @@ function renderPageOffscreen (page, scaleMul = 2) {
   ctx.setTransform(s, 0, 0, s, 0, 0)
 
   if (rot === 90) {
-    // Для экспорта можно реально повернуть страницу,
-    // но в текущем варианте оставляем как есть (портретный контент). При желании
-    // тут можно добавить поворот, как мы делали ранее. Пока важно, что холст
-    // не искажает оверлеи. [оставлено упрощённо]
+    // Для экспорта можно физически повернуть страницу,
+    // но чтобы не ломать логику, пока оставляем портретный контент.
+    // (при необходимости можно добавить здесь transform)
   }
 
   if (isDrawableForExport(page.bgImage)) {
@@ -249,7 +246,7 @@ export default function Editor () {
   const fileNameRef = useRef(fileName)
   useEffect(() => { fileNameRef.current = fileName }, [fileName])
 
-  const prevPageRef = useRef(null) // для отслеживания rotation-only обновлений
+  const prevPageRef = useRef(null)
 
   const [signLib, setSignLib] = useState([])
   const [panelOpen, setPanelOpen] = useState(false)
@@ -303,8 +300,7 @@ export default function Editor () {
   const canvasRef = useRef(null)
   const canvasWrapRef = useRef(null)
   const engineRef = useRef(null)
-
-  const [docRect, setDocRect] = useState(null) // для позиции кнопки удаления страницы
+  const [docRect, setDocRect] = useState(null)
 
   const docFileRef = useRef(null)
   const bgFileRef = useRef(null)
@@ -316,10 +312,9 @@ export default function Editor () {
   const [isMobile, setIsMobile] = useState(() => window.matchMedia('(max-width: 960px)').matches)
 
   // Режим редактирования текста (двойной клик)
-  const [textEdit, setTextEdit] = useState(null) // {overlayId, rectCanvas:{x,y,w,h}, ...}
+  const [textEdit, setTextEdit] = useState(null)
   const [textEditValue, setTextEditValue] = useState('')
 
-  // таймер отложенного сохранения черновика
   const saveTimerRef = useRef(0)
 
   function scheduleSaveDraft () {
@@ -463,14 +458,13 @@ export default function Editor () {
     setMenuActionsOpen(o => !o)
   }
 
-  // Инициализация движка: один раз, когда появляется хотя бы одна страница
+  // Инициализация движка
   useEffect(() => {
     if (!hasDoc) return
     if (!canvasRef.current) return
     if (engineRef.current) return
 
     const engine = new CustomCanvasEngine(canvasRef.current, {
-      // единый отступ вокруг листа и для десктопа, и для мобилки [отступы]
       viewMargin: 24,
       onBeforeOverlayChange: (snapshot) => {
         const pageIndex = curRef.current
@@ -538,8 +532,6 @@ export default function Editor () {
     const handleResize = () => {
       if (!canvasWrapRef.current || !engineRef.current) return
       const rect = canvasWrapRef.current.getBoundingClientRect()
-      // если контейнер временно схлопнулся (<50px) — не трогаем трансформ,
-      // чтобы контент не "исчезал" при резких изменениях размеров экрана
       if (rect.width < 50 || rect.height < 50) return
       engineRef.current.resize(rect.width, rect.height)
       setDocRect(engineRef.current.getDocumentScreenRect())
@@ -560,16 +552,15 @@ export default function Editor () {
     }
   }, [hasDoc])
 
-  // viewMargin теперь одинаковый — просто фиксируем его после смены isMobile
+  // При смене режима — обновляем режим движка (учёт rotation) и margin
   useEffect(() => {
     if (!engineRef.current) return
-    engineRef.current.setViewMargin(24)    // одинаковые вертикальные отступы
-    engineRef.current.setMode(isMobile)    // [3] переключаем режим десктоп/мобилка
+    engineRef.current.setViewMargin(24)
+    engineRef.current.setMode(isMobile)
     setDocRect(engineRef.current.getDocumentScreenRect())
   }, [isMobile])
 
-  // При смене страницы или её данных — подаём её в движок,
-  // но если поменялся только rotation, не пересчитываем трансформ. [rotation-only]
+  // При смене страницы / её данных — подаём её в движок
   useEffect(() => {
     const page = pages[cur]
     if (!page || !engineRef.current) {
@@ -589,7 +580,6 @@ export default function Editor () {
       prev.rotation !== page.rotation
 
     if (onlyRotationChanged) {
-      // Поворот уже обработан через setPageRotation в rotatePage
       prevPageRef.current = page
       setDocRect(engineRef.current.getDocumentScreenRect())
       return
@@ -606,7 +596,7 @@ export default function Editor () {
     prevPageRef.current = page
   }, [pages, cur])
 
-    // Загрузка библиотеки подписей
+  // Загрузка библиотеки подписей
   async function loadLibrary () {
     if (!isAuthed) { setSignLib([]); return }
     try {
@@ -618,12 +608,11 @@ export default function Editor () {
   }
   useEffect(() => { if (isAuthed) loadLibrary() }, [isAuthed])
 
-  // Если документа больше нет — сбрасываем docRect (кнопка удаления страницы)
   useEffect(() => {
     if (!hasDoc) setDocRect(null)
   }, [hasDoc])
 
-  // Восстановление черновика с сервера (поддержка нового и старого формата)
+  // Восстановление черновика
   useEffect(() => {
     if (!isAuthed) return
 
@@ -655,7 +644,6 @@ export default function Editor () {
 
       const restored = []
       let idx = 0
-
       const isNewFormat = !!pagesData[0].docWidth
 
       if (isNewFormat) {
@@ -704,7 +692,6 @@ export default function Editor () {
           }))
         }
       } else {
-        // Старый формат (type: 'pdf'|'image'|'raster')
         for (const pg of pagesData) {
           let img = null
           let bgSrc = null
@@ -816,7 +803,6 @@ export default function Editor () {
     })()
   }, [isAuthed])
 
-  // Сохранение черновика при закрытии вкладки
   useEffect(() => {
     const onUnload = () => {
       if (!isAuthed) return
@@ -1164,10 +1150,7 @@ export default function Editor () {
       return copy
     })
 
-    // десктоп: recalcTransform=false — контент не масштабируем;
-    // мобилка: true — пересчитываем трансформ под ориентацию экрана.
     engineRef.current.setPageRotation(newRot, isMobile)
-
     setDocRect(engineRef.current.getDocumentScreenRect())
     scheduleSaveDraft()
   }
@@ -1201,7 +1184,7 @@ export default function Editor () {
     if (fs.length) handleFiles(fs)
   }
 
-   function undoLast () {
+  function undoLast () {
     if (!undoStack.length) return
     const last = undoStack[undoStack.length - 1]
     setUndoStack(stk => stk.slice(0, -1))
@@ -1234,7 +1217,6 @@ export default function Editor () {
       return
     }
 
-    // Снимок всех страниц для undo
     const snapshotAll = pagesArr.map((p, idx) => ({
       pageIndex: idx,
       overlays: (p.overlays || []).map(o => ({ ...o, data: { ...o.data } }))
@@ -1445,7 +1427,6 @@ export default function Editor () {
     }
   }
 
-  // Клавиатура: delete
   useEffect(() => {
     const onKey = (e) => {
       const tag = String(e.target?.tagName || '').toLowerCase()
@@ -1491,7 +1472,6 @@ export default function Editor () {
     return !!id && (page.overlays || []).some(o => o.id === id)
   })()
 
-  // Завершение редактирования текста
   function commitTextEdit () {
     if (!textEdit) return
     const { overlayId } = textEdit
@@ -1681,8 +1661,7 @@ export default function Editor () {
                     style={{
                       position: 'absolute',
                       left: docRect.x + docRect.width,
-                      top: docRect.y + 8 // небольшой отступ от верхней панели
-                      // transform не задаём инлайном, чтобы работал :hover из CSS
+                      top: docRect.y + 8
                     }}
                     onClick={() => deletePageAt(cur)}
                   >
