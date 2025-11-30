@@ -73,8 +73,12 @@ export class CustomCanvasEngine {
     this.pageWidth = this.docWidth
     this.pageHeight = this.docHeight
 
-    // rotation влияет на transform только в мобильном режиме
-    this.rotationAffectsTransform = false
+    // Инициализация режима (мобилка/десктоп) сразу (для восстановления черновика на мобилке)
+    const isMobileInitial = (typeof window !== 'undefined' &&
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(max-width: 960px)').matches)
+
+    this.rotationAffectsTransform = isMobileInitial // <-- правка 1: сразу под мобильный режим
 
     // Viewport (экран)
     this.viewWidth = canvas.clientWidth || canvas.width || 1
@@ -98,8 +102,8 @@ export class CustomCanvasEngine {
     this._cursor = 'default'
 
     // UI‑контроллы (в экранных пикселях)
-    this.handleRadius = 13
-    this.hitRadius = 26
+    this.handleRadius = isMobileInitial ? 16 : 13
+    this.hitRadius = isMobileInitial ? 34 : 26
     this.borderColor = '#3C6FD8'
     this.handleFill = '#FFFFFF'
     this.handleStroke = '#E26D5C'
@@ -256,7 +260,6 @@ export class CustomCanvasEngine {
       this.pageWidth = W
       this.pageHeight = H
     } else {
-      // Для простоты и предсказуемости — формула как раньше (немного расширенная ширина)
       if (W > 0) {
         this.pageHeight = H
         this.pageWidth = (H * H) / W
@@ -267,30 +270,30 @@ export class CustomCanvasEngine {
     }
   }
 
-  _updateTransform () {
+    _updateTransform () {
     const W = this.docWidth
     const H = this.docHeight
     const cw = this.viewWidth
     const ch = this.viewHeight
 
     const margin = this.viewMargin || 0
-
     const availW0 = cw
+    // как в исходной версии: один margin «съедаем» по высоте
     const availH0 = Math.max(10, ch - margin)
 
-    let contentW = W
-    let contentH = H
+    let fitW = availW0
+    let fitH = availH0
 
+    // На мобилке при rotation=90 меняем, какое измерение считаем лимитирующим
+    // (без поворота контента) — даёт «альбомное» ощущение
     if (this.rotationAffectsTransform && this.rotation === 90) {
-      // Размеры обрамляющего прямоугольника повернутого документа
-      contentW = H
-      contentH = W
+      ;[fitW, fitH] = [availH0, availW0]
     }
 
-    const scale = Math.min(availW0 / contentW, availH0 / contentH) || 1
+    const scale = Math.min(fitW / W, fitH / H) || 1
 
-    const actualW = contentW * scale
-    const actualH = contentH * scale
+    const actualW = W * scale
+    const actualH = H * scale
 
     this.scale = scale
     this.offsetX = (cw - actualW) / 2
@@ -301,17 +304,6 @@ export class CustomCanvasEngine {
     const s = this.scale
     const ox = this.offsetX
     const oy = this.offsetY
-
-    if (this.rotationAffectsTransform && this.rotation === 90) {
-      const H = this.docHeight
-      const xt = H - y
-      const yt = x
-      return {
-        x: ox + xt * s,
-        y: oy + yt * s
-      }
-    }
-
     return {
       x: ox + x * s,
       y: oy + y * s
@@ -322,16 +314,6 @@ export class CustomCanvasEngine {
     const s = this.scale
     const ox = this.offsetX
     const oy = this.offsetY
-
-    if (this.rotationAffectsTransform && this.rotation === 90) {
-      const H = this.docHeight
-      const xt = (sx - ox) / s
-      const yt = (sy - oy) / s
-      const x = yt
-      const y = H - xt
-      return { x, y }
-    }
-
     return {
       x: (sx - ox) / s,
       y: (sy - oy) / s
@@ -368,12 +350,6 @@ export class CustomCanvasEngine {
     ctx.translate(ox, oy)
     ctx.scale(s, s)
 
-    // Для мобилки при rotation=90 визуально поворачиваем весь документ
-    if (this.rotationAffectsTransform && this.rotation === 90) {
-      ctx.translate(H, 0)
-      ctx.rotate(Math.PI / 2)
-    }
-
     // Центр страницы в координатах документа
     const docCx = W / 2
     const docCy = H / 2
@@ -407,23 +383,7 @@ export class CustomCanvasEngine {
   _drawOverlay (ov) {
     const ctx = this.ctx
 
-    // работаем в координатах документа (transform уже выставлен выше)
-    const dpr = this.pixelRatio || 1
-    const s = this.scale
-    const ox = this.offsetX
-    const oy = this.offsetY
-    const W = this.docWidth
-    const H = this.docHeight
-
     ctx.save()
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-    ctx.translate(ox, oy)
-    ctx.scale(s, s)
-    if (this.rotationAffectsTransform && this.rotation === 90) {
-      ctx.translate(H, 0)
-      ctx.rotate(Math.PI / 2)
-    }
-
     ctx.translate(ov.cx, ov.cy)
     ctx.rotate(ov.angleRad || 0)
     ctx.scale(ov.scaleX || 1, ov.scaleY || 1)
@@ -659,7 +619,13 @@ export class CustomCanvasEngine {
     if (handle && active) {
       this.onBeforeOverlayChange(this.overlays.map(cloneOverlay))
 
+      // Вопрос при удалении (только по кнопке delete)
       if (handle === 'delete') {
+        if (!window.confirm('Удалить объект со страницы?')) {
+          this.isPointerDown = false
+          this._setCursor('default')
+          return
+        }
         const id = active.id
         this.overlays = this.overlays.filter(o => o.id !== id)
         this.activeId = null
