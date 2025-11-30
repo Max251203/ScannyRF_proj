@@ -1,6 +1,12 @@
 // frontend/src/utils/customCanvasEngine.js
 //
 // Кастомный движок редактирования поверх <canvas>.
+// - Документное пространство (docWidth x docHeight) — контент (PDF/растр).
+// - Рамка страницы (pageWidth x pageHeight) — ориентация/ограничения/кнопка delete.
+// - Поворот страницы 0/90:
+//     * На десктопе не меняет трансформ контента (масштаб/позиция),
+//       только ширину рамки страницы.
+//     * На мобилке дополнительно подгоняет масштаб/позицию под экран.
 
 function rotatePoint (x, y, angleRad) {
   const c = Math.cos(angleRad)
@@ -42,33 +48,42 @@ export class CustomCanvasEngine {
     this.onSelectionChange = opts.onSelectionChange || (() => {})
     this.onTextEditRequest = opts.onTextEditRequest || (() => {})
 
-    // Геометрия содержимого (то, что реально нарисовано)
+    // Геометрия контента (pdf/растр)
     this.docWidth = 1000
     this.docHeight = 1414
     this.backgroundImage = null
+
+    // Оверлеи
     this.overlays = []
 
-    // [3] Геометрия страницы (рамки/холста) — может отличаться от docWidth/docHeight
+    // Ориентация страницы и рамка (может отличаться от docWidth/docHeight)
+    this.rotation = 0 // 0 | 90
     this.pageWidth = this.docWidth
     this.pageHeight = this.docHeight
-    this.rotation = 0 // 0 или 90 — ориентация страницы
+
+    // [3] влияет ли rotation на transform (swап fitW/fitH)
+    this.rotationAffectsTransform = false
 
     // Viewport (экран)
     this.viewWidth = canvas.clientWidth || canvas.width || 1
     this.viewHeight = canvas.clientHeight || canvas.height || 1
     this.pixelRatio = window.devicePixelRatio || 1
+
+    // [2] margin используем только по вертикали
     this.viewMargin = typeof opts.viewMargin === 'number' ? Math.max(0, opts.viewMargin) : 24
 
     this.scale = 1
     this.offsetX = 0
     this.offsetY = 0
 
+    // Состояние
     this.activeId = null
     this.activeHandle = null
     this.dragState = null
     this.isPointerDown = false
     this._lastControlPositions = null
 
+    // UI‑контроллы
     this.handleRadius = 14
     this.hitRadius = 26
     this.borderColor = '#3C6FD8'
@@ -110,8 +125,8 @@ export class CustomCanvasEngine {
     this.overlays = (doc.overlays || []).map(cloneOverlay)
     this.rotation = doc.rotation === 90 ? 90 : 0
 
-    this._updatePageSize()   // [3] обновляем рамку страницы под ориентацию
-    this._updateTransform()  // и подгоняем содержимое под экран (новая страница)
+    this._updatePageSize()
+    this._updateTransform()
 
     if (prevActive && this.overlays.some(o => o.id === prevActive)) {
       this.activeId = prevActive
@@ -136,15 +151,61 @@ export class CustomCanvasEngine {
     return this.overlays.map(cloneOverlay)
   }
 
-  resize (width, height) {
-    if (!width || !height) return
+  /**
+   * Установка ориентации страницы.
+   * rotation: 0 | 90
+   * recalcTransform:
+   *   - десктоп: false  → не трогаем transform, только рамку страницы;
+   *   - мобилка: true   → rotation участвует в вычислении transform.  [3]
+   */
+    setPageRotation (rotation, recalcTransform = false) {
+    this.rotation = rotation === 90 ? 90 : 0
+    if (recalcTransform) {
+      this.rotationAffectsTransform = true
+    }
 
-    this.viewWidth = Math.max(1, Math.floor(width))
-    this.viewHeight = Math.max(1, Math.floor(height))
+    this._updatePageSize()
+
+    if (recalcTransform) {
+      // мобильный режим: пересчитываем transform, но компенсируем масштаб оверлеев,
+      // чтобы их видимый размер на экране не менялся
+      const prevScale = this.scale || 1
+      this._updateTransform()
+      const newScale = this.scale || 1
+      const k = newScale ? (prevScale / newScale) : 1
+      if (k && k !== 1) {
+        this.overlays.forEach(ov => {
+          ov.scaleX = (ov.scaleX || 1) * k
+          ov.scaleY = (ov.scaleY || 1) * k
+        })
+      }
+    }
+
+    this._draw()
+  }
+
+  /**
+   * Установка режима (десктоп/мобилка).
+   * isMobile = true  → rotation влияет на transform.
+   * isMobile = false → rotation влияет только на рамку. [3]
+   */
+  setMode (isMobile) {
+    this.rotationAffectsTransform = !!isMobile
+    this._updateTransform()
+    this._draw()
+  }
+
+  resize (width, height) {
+    // [1] защищаемся от временных 0×0 при резком ресайзе
+    const safeW = Math.max(1, Math.floor(width || 0))
+    const safeH = Math.max(1, Math.floor(height || 0))
+
+    this.viewWidth = safeW
+    this.viewHeight = safeH
     this.pixelRatio = window.devicePixelRatio || 1
 
-    this.canvas.width = Math.max(1, Math.floor(this.viewWidth * this.pixelRatio))
-    this.canvas.height = Math.max(1, Math.floor(this.viewHeight * this.pixelRatio))
+    this.canvas.width = Math.max(1, Math.floor(safeW * this.pixelRatio))
+    this.canvas.height = Math.max(1, Math.floor(safeH * this.pixelRatio))
 
     this._updateTransform()
     this._draw()
@@ -156,109 +217,27 @@ export class CustomCanvasEngine {
     this._draw()
   }
 
-  /**
-   * Поворот страницы:
-   * - recalcTransform=false (десктоп): меняем только рамку страницы, scale/offset и контент не трогаем.
-   * - recalcTransform=true (мобилка): пересчитываем трансформ, как в исходнике.  [3]
-   */
-  toggleRotation (recalcTransform = false) {
-    this.rotation = this.rotation === 0 ? 90 : 0
-    this._updatePageSize()
-    if (recalcTransform) this._updateTransform()
-    this._draw()
-  }
-
-  addImageOverlay (img, data = {}) {
-    if (!isDrawable(img)) return
-
-    this.onBeforeOverlayChange(this.overlays.map(cloneOverlay))
-
-    const id = data.id || `im_${Date.now()}_${Math.random().toString(36).slice(2)}`
-    const w = img.width || img.naturalWidth || 200
-    const h = img.height || img.naturalHeight || 100
-    const cx = this.docWidth / 2
-    const cy = this.docHeight / 2
-
-    const ov = {
-      id,
-      type: 'image',
-      cx,
-      cy,
-      w,
-      h,
-      scaleX: 1,
-      scaleY: 1,
-      angleRad: 0,
-      data: {
-        src: data.src || null,
-        image: img
-      }
-    }
-
-    this.overlays.push(ov)
-    this.activeId = id
-    this.onSelectionChange(cloneOverlay(ov))
-    this._draw()
-    this.onOverlayChange(cloneOverlay(ov))
-  }
-
-  addTextOverlay (text = 'Текст', opts = {}) {
-    this.onBeforeOverlayChange(this.overlays.map(cloneOverlay))
-
-    const id = opts.id || `tb_${Date.now()}_${Math.random().toString(36).slice(2)}`
-    const cx = this.docWidth / 2
-    const cy = this.docHeight / 2
-    const fontSize = opts.fontSize || 48
-    const fontFamily = opts.fontFamily || 'Arial'
-    const w = opts.width || 400
-    const h = opts.height || fontSize * 1.4
-
-    const ov = {
-      id,
-      type: 'text',
-      cx,
-      cy,
-      w,
-      h,
-      scaleX: 1,
-      scaleY: 1,
-      angleRad: 0,
-      data: {
-        text,
-        fontSize,
-        fontFamily,
-        fontWeight: opts.fontWeight || 'bold',
-        fontStyle: opts.fontStyle || 'normal',
-        fill: opts.fill || '#000000',
-        textAlign: opts.textAlign || 'center'
-      }
-    }
-
-    this.overlays.push(ov)
-    this.activeId = id
-    this.onSelectionChange(cloneOverlay(ov))
-    this._draw()
-    this.onOverlayChange(cloneOverlay(ov))
-  }
-
   // ---------- Геометрия и трансформ ----------
 
-  // [3] рамка страницы в документных координатах (центр совпадает с центром содержимого)
+  /**
+   * Размеры рамки страницы в документных координатах. [3]
+   * Портрет: совпадает с docWidth/docHeight.
+   * Альбом: высота остаётся docHeight, ширина = H^2 / W (перевёрнутое соотношение).
+   */
       _updatePageSize () {
     const W = this.docWidth
     const H = this.docHeight
     if (this.rotation === 0) {
-      // Портрет: рамка совпадает с содержимым
+      // Портрет: рамка совпадает с документом
       this.pageWidth = W
       this.pageHeight = H
     } else {
-      // Альбом: высота остаётся той же, а ширину считаем пропорционально
-      // исходному соотношению W:H, чтобы получить "перевёрнутый" аспект.
+      // Альбом (для всех режимов): высота = высота документа,
+      // ширина пропорционально растянута (не квадрат). [десктоп и мобилка одинаково]
       if (W > 0) {
         this.pageHeight = H
-        this.pageWidth = (H * H) / W  // H^2 / W  → ширина > высоты, как у A4 landscape
+        this.pageWidth = (H * H) / W
       } else {
-        // на всякий случай fallback
         this.pageHeight = H
         this.pageWidth = H
       }
@@ -266,9 +245,8 @@ export class CustomCanvasEngine {
   }
 
   /**
-   * [3] трансформ содержимого:
-   * - зависит от rotation ТОЛЬКО тем, какую ориентированную область экрана мы считаем
-   *   "под лист" (для мобилки мы будем его пересчитывать, для десктопа — нет).
+   * Масштабирование содержимого под размер viewport.
+   * rotation учитываем только если rotationAffectsTransform=true (мобилка). [2][3]
    */
   _updateTransform () {
     const W = this.docWidth
@@ -277,14 +255,14 @@ export class CustomCanvasEngine {
     const ch = this.viewHeight
 
     const margin = this.viewMargin || 0
-    const availW0 = Math.max(10, cw - margin)
+    const availW0 = cw
+    // как было изначально: один margin «съедаем» по высоте
     const availH0 = Math.max(10, ch - margin)
 
     let fitW = availW0
     let fitH = availH0
 
-    if (this.rotation === 90) {
-      // "повёрнутый" холст: ширина/высота местами
+    if (this.rotationAffectsTransform && this.rotation === 90) {
       ;[fitW, fitH] = [availH0, availW0]
     }
 
@@ -329,7 +307,7 @@ export class CustomCanvasEngine {
     ctx.clearRect(0, 0, this.canvas.width, this.canvas.height)
   }
 
-    _draw () {
+  _draw () {
     const ctx = this.ctx
     this._clear()
 
@@ -350,8 +328,7 @@ export class CustomCanvasEngine {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     ctx.transform(s, 0, 0, s, ox, oy)
 
-    // --- Рисуем белый фон СТРАНИЦЫ по размерам pageWidth/pageHeight --- [3]
-    // Центр страницы совмещаем с центром содержимого (docWidth/docHeight)
+    // фон страницы (pageWidth x pageHeight), центрированный относительно документа
     const docCx = W / 2
     const docCy = H / 2
     const halfPW = pageW / 2
@@ -362,12 +339,11 @@ export class CustomCanvasEngine {
     ctx.fillStyle = '#ffffff'
     ctx.fillRect(pageLeft, pageTop, pageW, pageH)
 
-    // --- Рисуем реальный контент (PDF/растр) как раньше, в области документа ---
+    // реальный контент (pdf/растр) в пределах docWidth/docHeight
     if (isDrawable(this.backgroundImage)) {
       ctx.drawImage(this.backgroundImage, 0, 0, W, H)
     }
 
-    // --- Оверлеи ---
     for (const ov of this.overlays) {
       this._drawOverlay(ov, false)
     }
@@ -703,7 +679,7 @@ export class CustomCanvasEngine {
 
     const baseW = start.w * (start.scaleX || 1)
     const baseH = start.h * (start.scaleY || 1)
-    const maxScaleW = (this.pageWidth - 4) / (baseW || 1)  // [3] ограничение по рамке страницы
+    const maxScaleW = (this.pageWidth - 4) / (baseW || 1)
     const maxScaleH = (this.pageHeight - 4) / (baseH || 1)
     const maxScale = Math.max(0.1, Math.min(maxScaleW, maxScaleH, 5))
 
@@ -725,9 +701,6 @@ export class CustomCanvasEngine {
     this._clampOverlay(ov)
   }
 
-  /**
-   * Ограничение объекта рамкой страницы (а не только физическим фоном). [3]
-   */
   _clampOverlay (ov) {
     const pageW = this.pageWidth || this.docWidth
     const pageH = this.pageHeight || this.docHeight
@@ -754,15 +727,14 @@ export class CustomCanvasEngine {
       if (p.y > maxY) maxY = p.y
     }
 
-    // рамка страницы в координатах документа — центрируем её относительно docWidth/docHeight
-    const cx = this.docWidth / 2
-    const cy = this.docHeight / 2
+    const docCx = this.docWidth / 2
+    const docCy = this.docHeight / 2
     const halfPW = pageW / 2
     const halfPH = pageH / 2
-    const minXAllowed = cx - halfPW
-    const maxXAllowed = cx + halfPW
-    const minYAllowed = cy - halfPH
-    const maxYAllowed = cy + halfPH
+    const minXAllowed = docCx - halfPW
+    const maxXAllowed = docCx + halfPW
+    const minYAllowed = docCy - halfPH
+    const maxYAllowed = docCy + halfPH
 
     let dx = 0
     let dy = 0
@@ -776,9 +748,6 @@ export class CustomCanvasEngine {
     ov.cy += dy
   }
 
-  /**
-   * Прямоугольник рамки страницы в экранных координатах (для delete‑кнопки и т.п.) [2,3]
-   */
   getDocumentScreenRect () {
     const s = this.scale
     const W = this.docWidth
@@ -802,15 +771,79 @@ export class CustomCanvasEngine {
     }
   }
 
-    // [3] Установка ориентации страницы без пересчёта трансформа содержимого (для десктопа)
-  // Если recalcTransform=true (мобилка) — дополнительно пересчитываем масштаб/смещение.
-  setPageRotation (rotation, recalcTransform = false) {
-    this.rotation = rotation === 90 ? 90 : 0
-    this._updatePageSize()
-    if (recalcTransform) {
-      this._updateTransform()
+  // ---------- Методы добавления оверлеев (для Editor.jsx) ----------
+
+  addImageOverlay (img, data = {}) {
+    if (!isDrawable(img)) return
+
+    this.onBeforeOverlayChange(this.overlays.map(cloneOverlay))
+
+    const id = data.id || `im_${Date.now()}_${Math.random().toString(36).slice(2)}`
+    const w = img.width || img.naturalWidth || 200
+    const h = img.height || img.naturalHeight || 100
+    const cx = this.docWidth / 2
+    const cy = this.docHeight / 2
+
+    const ov = {
+      id,
+      type: 'image',
+      cx,
+      cy,
+      w,
+      h,
+      scaleX: 1,
+      scaleY: 1,
+      angleRad: 0,
+      data: {
+        src: data.src || null,
+        image: img
+      }
     }
+
+    this.overlays.push(ov)
+    this.activeId = id
+    this.onSelectionChange(cloneOverlay(ov))
     this._draw()
+    this.onOverlayChange(cloneOverlay(ov))
+  }
+
+  addTextOverlay (text = 'Текст', opts = {}) {
+    this.onBeforeOverlayChange(this.overlays.map(cloneOverlay))
+
+    const id = opts.id || `tb_${Date.now()}_${Math.random().toString(36).slice(2)}`
+    const cx = this.docWidth / 2
+    const cy = this.docHeight / 2
+    const fontSize = opts.fontSize || 48
+    const fontFamily = opts.fontFamily || 'Arial'
+    const w = opts.width || 400
+    const h = opts.height || fontSize * 1.4
+
+    const ov = {
+      id,
+      type: 'text',
+      cx,
+      cy,
+      w,
+      h,
+      scaleX: 1,
+      scaleY: 1,
+      angleRad: 0,
+      data: {
+        text,
+        fontSize,
+        fontFamily,
+        fontWeight: opts.fontWeight || 'bold',
+        fontStyle: opts.fontStyle || 'normal',
+        fill: opts.fill || '#000000',
+        textAlign: opts.textAlign || 'center'
+      }
+    }
+
+    this.overlays.push(ov)
+    this.activeId = id
+    this.onSelectionChange(cloneOverlay(ov))
+    this._draw()
+    this.onOverlayChange(cloneOverlay(ov))
   }
 }
 
