@@ -1,17 +1,7 @@
 // frontend/src/utils/customCanvasEngine.js
-//
-// Кастомный движок редактирования поверх <canvas>.
-// - Документное пространство (docWidth x docHeight) — контент (PDF/растр).
-// - Рамка страницы (pageWidth x pageHeight) — ориентация/ограничения/кнопка delete.
-// - Поворот страницы 0/90:
-//     * На десктопе не меняет трансформ контента (масштаб/позиция),
-//       только ширину рамки страницы.
-//     * На мобилке дополнительно подгоняет масштаб/позицию под экран,
-//       но размер оверлеев компенсируем.
 
 import icDelete from '../assets/icons/x-close.svg'
 import icRotate from '../assets/icons/rotate-handle.svg'
-// ожидается, что ты положишь эту иконку по этому пути
 import icScale from '../assets/icons/scale-handle.svg'
 
 const deleteImg = new Image()
@@ -46,6 +36,15 @@ function isDrawable (img) {
   return false
 }
 
+function length (v) {
+  return Math.sqrt(v.x * v.x + v.y * v.y) || 0
+}
+
+function normalize (v) {
+  const l = length(v) || 1
+  return { x: v.x / l, y: v.y / l }
+}
+
 export class CustomCanvasEngine {
   /**
    * @param {HTMLCanvasElement} canvas
@@ -61,7 +60,7 @@ export class CustomCanvasEngine {
     this.onSelectionChange = opts.onSelectionChange || (() => {})
     this.onTextEditRequest = opts.onTextEditRequest || (() => {})
 
-    // Геометрия контента (pdf/растр)
+    // Геометрия фонового контента (pdf/растр)
     this.docWidth = 1000
     this.docHeight = 1414
     this.backgroundImage = null
@@ -82,7 +81,7 @@ export class CustomCanvasEngine {
     this.viewHeight = canvas.clientHeight || canvas.height || 1
     this.pixelRatio = window.devicePixelRatio || 1
 
-    // Вертикальный отступ (сверху/снизу) одинаковый для режимов
+    // Вертикальный отступ (суммарный сверху+снизу)
     this.viewMargin = typeof opts.viewMargin === 'number' ? Math.max(0, opts.viewMargin) : 24
 
     this.scale = 1
@@ -95,8 +94,10 @@ export class CustomCanvasEngine {
     this.dragState = null
     this.isPointerDown = false
     this._lastControlPositions = null
+    this._lastClick = null
+    this._cursor = 'default'
 
-    // UI‑контроллы
+    // UI‑контроллы (в экранных пикселях)
     this.handleRadius = 13
     this.hitRadius = 26
     this.borderColor = '#3C6FD8'
@@ -165,14 +166,21 @@ export class CustomCanvasEngine {
   }
 
   /**
-   * Установка ориентации страницы.
    * rotation: 0 | 90
    * recalcTransform:
    *   - десктоп: false → меняем только рамку страницы;
-   *   - мобилка: true  → rotation участвует в transform, компенсируем размер оверлеев.
+   *   - мобилка: true  → rotation учитывается в transform, пересчитываем масштаб
+   *                      и клампим оверлеи.
    */
   setPageRotation (rotation, recalcTransform = false) {
-    this.rotation = rotation === 90 ? 90 : 0
+    const newRot = rotation === 90 ? 90 : 0
+    if (this.rotation === newRot && !recalcTransform) {
+      return
+    }
+
+    this.onBeforeOverlayChange(this.overlays.map(cloneOverlay))
+
+    this.rotation = newRot
     if (recalcTransform) {
       this.rotationAffectsTransform = true
     }
@@ -192,6 +200,12 @@ export class CustomCanvasEngine {
       }
     }
 
+    // После смены ориентации клампим все оверлеи внутрь рамки
+    this.overlays.forEach(ov => {
+      this._clampOverlay(ov)
+      this.onOverlayChange(cloneOverlay(ov))
+    })
+
     this._draw()
   }
 
@@ -200,12 +214,18 @@ export class CustomCanvasEngine {
    */
   setMode (isMobile) {
     this.rotationAffectsTransform = !!isMobile
+    if (isMobile) {
+      this.handleRadius = 16
+      this.hitRadius = 34
+    } else {
+      this.handleRadius = 13
+      this.hitRadius = 26
+    }
     this._updateTransform()
     this._draw()
   }
 
   resize (width, height) {
-    // защищаемся от временных 0×0 при резком ресайзе
     const safeW = Math.max(1, Math.floor(width || 0))
     const safeH = Math.max(1, Math.floor(height || 0))
 
@@ -228,12 +248,6 @@ export class CustomCanvasEngine {
 
   // ---------- Геометрия и трансформ ----------
 
-  /**
-   * Размеры рамки страницы в документных координатах.
-   * Портрет: совпадает с docWidth/docHeight.
-   * Альбом: высота = docHeight, ширина увеличена пропорционально,
-   * чтобы не было квадрата.  (и для десктопа, и для мобилки)
-   */
   _updatePageSize () {
     const W = this.docWidth
     const H = this.docHeight
@@ -242,6 +256,7 @@ export class CustomCanvasEngine {
       this.pageWidth = W
       this.pageHeight = H
     } else {
+      // Для простоты и предсказуемости — формула как раньше (немного расширенная ширина)
       if (W > 0) {
         this.pageHeight = H
         this.pageWidth = (H * H) / W
@@ -252,10 +267,6 @@ export class CustomCanvasEngine {
     }
   }
 
-  /**
-   * Масштабирование содержимого под размер viewport.
-   * rotation учитываем только если rotationAffectsTransform=true (мобилка).
-   */
   _updateTransform () {
     const W = this.docWidth
     const H = this.docHeight
@@ -267,18 +278,19 @@ export class CustomCanvasEngine {
     const availW0 = cw
     const availH0 = Math.max(10, ch - margin)
 
-    let fitW = availW0
-    let fitH = availH0
+    let contentW = W
+    let contentH = H
 
     if (this.rotationAffectsTransform && this.rotation === 90) {
-      // мобильный поворот
-      ;[fitW, fitH] = [availH0, availW0]
+      // Размеры обрамляющего прямоугольника повернутого документа
+      contentW = H
+      contentH = W
     }
 
-    const scale = Math.min(fitW / W, fitH / H) || 1
+    const scale = Math.min(availW0 / contentW, availH0 / contentH) || 1
 
-    const actualW = W * scale
-    const actualH = H * scale
+    const actualW = contentW * scale
+    const actualH = contentH * scale
 
     this.scale = scale
     this.offsetX = (cw - actualW) / 2
@@ -289,6 +301,17 @@ export class CustomCanvasEngine {
     const s = this.scale
     const ox = this.offsetX
     const oy = this.offsetY
+
+    if (this.rotationAffectsTransform && this.rotation === 90) {
+      const H = this.docHeight
+      const xt = H - y
+      const yt = x
+      return {
+        x: ox + xt * s,
+        y: oy + yt * s
+      }
+    }
+
     return {
       x: ox + x * s,
       y: oy + y * s
@@ -299,6 +322,16 @@ export class CustomCanvasEngine {
     const s = this.scale
     const ox = this.offsetX
     const oy = this.offsetY
+
+    if (this.rotationAffectsTransform && this.rotation === 90) {
+      const H = this.docHeight
+      const xt = (sx - ox) / s
+      const yt = (sy - oy) / s
+      const x = yt
+      const y = H - xt
+      return { x, y }
+    }
+
     return {
       x: (sx - ox) / s,
       y: (sy - oy) / s
@@ -332,8 +365,16 @@ export class CustomCanvasEngine {
 
     ctx.save()
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-    ctx.transform(s, 0, 0, s, ox, oy)
+    ctx.translate(ox, oy)
+    ctx.scale(s, s)
 
+    // Для мобилки при rotation=90 визуально поворачиваем весь документ
+    if (this.rotationAffectsTransform && this.rotation === 90) {
+      ctx.translate(H, 0)
+      ctx.rotate(Math.PI / 2)
+    }
+
+    // Центр страницы в координатах документа
     const docCx = W / 2
     const docCy = H / 2
     const halfPW = pageW / 2
@@ -345,30 +386,44 @@ export class CustomCanvasEngine {
     ctx.fillStyle = '#ffffff'
     ctx.fillRect(pageLeft, pageTop, pageW, pageH)
 
-    // контент
+    // фон
     if (isDrawable(this.backgroundImage)) {
       ctx.drawImage(this.backgroundImage, 0, 0, W, H)
     }
 
     // оверлеи
     for (const ov of this.overlays) {
-      this._drawOverlay(ov, false)
+      this._drawOverlay(ov)
     }
 
     const active = this.overlays.find(o => o.id === this.activeId)
+    ctx.restore()
+
     if (active) {
-      this._drawOverlay(active, true)
-      ctx.restore()
       this._drawOverlayControls(active)
-    } else {
-      ctx.restore()
     }
   }
 
-  _drawOverlay (ov, isActive) {
+  _drawOverlay (ov) {
     const ctx = this.ctx
 
+    // работаем в координатах документа (transform уже выставлен выше)
+    const dpr = this.pixelRatio || 1
+    const s = this.scale
+    const ox = this.offsetX
+    const oy = this.offsetY
+    const W = this.docWidth
+    const H = this.docHeight
+
     ctx.save()
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    ctx.translate(ox, oy)
+    ctx.scale(s, s)
+    if (this.rotationAffectsTransform && this.rotation === 90) {
+      ctx.translate(H, 0)
+      ctx.rotate(Math.PI / 2)
+    }
+
     ctx.translate(ov.cx, ov.cy)
     ctx.rotate(ov.angleRad || 0)
     ctx.scale(ov.scaleX || 1, ov.scaleY || 1)
@@ -393,12 +448,6 @@ export class CustomCanvasEngine {
       ctx.textBaseline = 'middle'
       const text = d.text || ''
       ctx.fillText(text, 0, 0)
-    }
-
-    if (isActive) {
-      ctx.strokeStyle = 'rgba(60,111,216,0.9)'
-      ctx.lineWidth = 2 / (this.scale || 1)
-      ctx.strokeRect(-halfW, -halfH, w, h)
     }
 
     ctx.restore()
@@ -477,7 +526,6 @@ export class CustomCanvasEngine {
     const hr = this.handleRadius
 
     const drawIconHandle = (x, y, kind) => {
-      // круг
       ctx.beginPath()
       ctx.arc(x, y, hr, 0, Math.PI * 2)
       ctx.fillStyle = this.handleFill
@@ -486,7 +534,6 @@ export class CustomCanvasEngine {
       ctx.strokeStyle = this.handleStroke
       ctx.stroke()
 
-      // иконка
       let img = null
       if (kind === 'delete') img = deleteImg
       else if (kind === 'rotate') img = rotateImg
@@ -498,36 +545,51 @@ export class CustomCanvasEngine {
       }
     }
 
-    // scale — слева снизу, чуть ближе к рамке
-    const bottomLeft = {
-      x: p3s.x - 18,
-      y: p3s.y + 18
-    }
-    drawIconHandle(bottomLeft.x, bottomLeft.y, 'scale')
+    // векторы рёбер в экранных координатах
+    const topEdge = { x: p1s.x - p0s.x, y: p1s.y - p0s.y }
+    const rightEdge = { x: p2s.x - p1s.x, y: p2s.y - p1s.y }
+    const bottomEdge = { x: p2s.x - p3s.x, y: p2s.y - p3s.y }
+    const leftEdge = { x: p0s.x - p3s.x, y: p0s.y - p3s.y }
 
-    // rotate — над верхней гранью
-    const topMid = {
-      x: (p0s.x + p1s.x) / 2,
-      y: (p0s.y + p1s.y) / 2
-    }
+    // rotate — над серединой верхней стороны
+    const topMid = { x: (p0s.x + p1s.x) / 2, y: (p0s.y + p1s.y) / 2 }
+    const topNormal = normalize({ x: topEdge.y, y: -topEdge.x }) // наружу от рамки
+    const rotateOffset = 32
     const rotatePos = {
-      x: topMid.x,
-      y: topMid.y - 32
+      x: topMid.x + topNormal.x * rotateOffset,
+      y: topMid.y + topNormal.y * rotateOffset
     }
     drawIconHandle(rotatePos.x, rotatePos.y, 'rotate')
 
-    // delete — правый верхний
+    // delete — диагонально из правого верхнего угла
+    const diagTR = normalize({
+      x: (p1s.x - p0s.x) + (p1s.x - p2s.x),
+      y: (p1s.y - p0s.y) + (p1s.y - p2s.y)
+    })
+    const deleteOffset = 26
     const deletePos = {
-      x: p1s.x + 22,
-      y: p1s.y - 22
+      x: p1s.x + diagTR.x * deleteOffset,
+      y: p1s.y + diagTR.y * deleteOffset
     }
     drawIconHandle(deletePos.x, deletePos.y, 'delete')
+
+    // scale — диагонально из левого нижнего угла
+    const diagBL = normalize({
+      x: (p3s.x - p2s.x) + (p3s.x - p0s.x),
+      y: (p3s.y - p2s.y) + (p3s.y - p0s.y)
+    })
+    const scaleOffset = 22
+    const scalePos = {
+      x: p3s.x + diagBL.x * scaleOffset,
+      y: p3s.y + diagBL.y * scaleOffset
+    }
+    drawIconHandle(scalePos.x, scalePos.y, 'scale')
 
     ctx.restore()
 
     this._lastControlPositions = {
       overlayId: ov.id,
-      scale: bottomLeft,
+      scale: scalePos,
       rotate: rotatePos,
       delete: deletePos
     }
@@ -580,10 +642,15 @@ export class CustomCanvasEngine {
     return ux >= -halfW && ux <= halfW && uy >= -halfH && uy <= halfH
   }
 
+  _setCursor (cursor) {
+    if (this._cursor === cursor) return
+    this._cursor = cursor
+    this.canvas.style.cursor = cursor
+  }
+
   _onPointerDown (evt) {
     if (evt.button !== 0) return
     const { sx, sy } = this._getPointerPos(evt)
-    const isDouble = evt.detail >= 2
     this.isPointerDown = true
 
     const handle = this._hitHandle(sx, sy)
@@ -600,6 +667,7 @@ export class CustomCanvasEngine {
         this._draw()
         this.onOverlayDelete(id)
         this.isPointerDown = false
+        this._setCursor('default')
         return
       }
 
@@ -609,10 +677,43 @@ export class CustomCanvasEngine {
         startDoc: this._screenToDoc(sx, sy),
         startOverlay: cloneOverlay(active)
       }
+      this._setCursor(handle === 'rotate' ? 'crosshair' : 'grabbing')
       return
     }
 
     const ov = this._hitOverlay(sx, sy)
+
+    // Двойной клик по тому же оверлею
+    let isDouble = false
+    const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()
+    if (ov) {
+      const last = this._lastClick
+      if (last && last.id === ov.id) {
+        const dt = now - last.time
+        const dx = sx - last.sx
+        const dy = sy - last.sy
+        const dist2 = dx * dx + dy * dy
+        if (dt < 350 && dist2 < 64) {
+          isDouble = true
+        }
+      }
+      this._lastClick = { id: ov.id, time: now, sx, sy }
+    } else {
+      this._lastClick = null
+    }
+
+    // Повторный клик по уже выбранному тексту — сразу в режим редактирования
+    if (ov && ov.type === 'text' && this.activeId === ov.id) {
+      this.onSelectionChange(cloneOverlay(ov))
+      const bounds = this._getOverlayScreenBounds(ov)
+      this.onTextEditRequest(cloneOverlay(ov), bounds)
+      this.isPointerDown = false
+      this.activeHandle = null
+      this.dragState = null
+      this._setCursor('text')
+      return
+    }
+
     if (ov) {
       if (isDouble && ov.type === 'text') {
         this.activeId = ov.id
@@ -623,6 +724,7 @@ export class CustomCanvasEngine {
         this.isPointerDown = false
         this.activeHandle = null
         this.dragState = null
+        this._setCursor('text')
         return
       }
 
@@ -636,6 +738,7 @@ export class CustomCanvasEngine {
         startDoc: this._screenToDoc(sx, sy),
         startOverlay: cloneOverlay(ov)
       }
+      this._setCursor('grabbing')
       this._draw()
     } else {
       if (this.activeId) {
@@ -643,15 +746,30 @@ export class CustomCanvasEngine {
         this.onSelectionChange(null)
         this._draw()
       }
+      this._setCursor('default')
     }
   }
 
   _onPointerMove (evt) {
-    if (!this.isPointerDown || !this.activeHandle || !this.dragState) return
+    const { sx, sy } = this._getPointerPos(evt)
+
+    if (!this.isPointerDown || !this.activeHandle || !this.dragState) {
+      // Обновляем курсор при наведении
+      const handle = this._hitHandle(sx, sy)
+      if (handle === 'rotate') {
+        this._setCursor('crosshair')
+      } else if (handle === 'delete' || handle === 'scale') {
+        this._setCursor('grab')
+      } else if (this._hitOverlay(sx, sy)) {
+        this._setCursor('move')
+      } else {
+        this._setCursor('default')
+      }
+      return
+    }
+
     const active = this.overlays.find(o => o.id === this.activeId)
     if (!active) return
-
-    const { sx, sy } = this._getPointerPos(evt)
 
     if (this.activeHandle === 'move') {
       this._handleMove(active, sx, sy)
@@ -669,6 +787,7 @@ export class CustomCanvasEngine {
     this.isPointerDown = false
     this.activeHandle = null
     this.dragState = null
+    this._setCursor('default')
   }
 
   _handleMove (ov, sx, sy) {
@@ -771,28 +890,22 @@ export class CustomCanvasEngine {
 
   getDocumentScreenRect () {
     const s = this.scale
-    const W = this.docWidth
-    const H = this.docHeight
-    const pageW = this.pageWidth || W
-    const pageH = this.pageHeight || H
+    const pageW = this.pageWidth || this.docWidth
+    const pageH = this.pageHeight || this.docHeight
 
-    const docScreenW = W * s
-    const docScreenH = H * s
-    const centerX = this.offsetX + docScreenW / 2
-    const centerY = this.offsetY + docScreenH / 2
-
-    const width = pageW * s
-    const height = pageH * s
+    const centerDocX = this.docWidth / 2
+    const centerDocY = this.docHeight / 2
+    const centerScreen = this._docToScreen(centerDocX, centerDocY)
 
     return {
-      x: centerX - width / 2,
-      y: centerY - height / 2,
-      width,
-      height
+      x: centerScreen.x - (pageW * s) / 2,
+      y: centerScreen.y - (pageH * s) / 2,
+      width: pageW * s,
+      height: pageH * s
     }
   }
 
-  // ---------- Методы добавления оверлеев (для Editor.jsx) ----------
+  // ---------- Методы добавления оверлеев ----------
 
   addImageOverlay (img, data = {}) {
     if (!isDrawable(img)) return
@@ -823,6 +936,7 @@ export class CustomCanvasEngine {
 
     this.overlays.push(ov)
     this.activeId = id
+    this._clampOverlay(ov)
     this.onSelectionChange(cloneOverlay(ov))
     this._draw()
     this.onOverlayChange(cloneOverlay(ov))
@@ -862,6 +976,7 @@ export class CustomCanvasEngine {
 
     this.overlays.push(ov)
     this.activeId = id
+    this._clampOverlay(ov)
     this.onSelectionChange(cloneOverlay(ov))
     this._draw()
     this.onOverlayChange(cloneOverlay(ov))

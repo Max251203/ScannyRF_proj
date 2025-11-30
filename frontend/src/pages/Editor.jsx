@@ -139,7 +139,7 @@ function sliceCanvasToPages (canvas) {
     try { tctx.textBaseline = 'alphabetic' } catch {}
     tctx.fillStyle = '#fff'
     tctx.fillRect(0, 0, tmp.width, tmp.height)
-    tctx.drawImage(canvas, 0, y, canvas.width, sliceH, 0, 0, tmp.width, tmp.height)
+    tctx.drawImage(canvas, 0, 0, canvas.width, sliceH, 0, 0, tmp.width, tmp.height)
     out.push(tmp.toDataURL('image/png'))
   }
   return out
@@ -181,9 +181,9 @@ function renderPageOffscreen (page, scaleMul = 2) {
   ctx.setTransform(s, 0, 0, s, 0, 0)
 
   if (rot === 90) {
-    // Для экспорта можно физически повернуть страницу,
-    // но чтобы не ломать логику, пока оставляем портретный контент.
-    // (при необходимости можно добавить здесь transform)
+    // Поворачиваем логическое полотно на 90° по часовой для экспорта
+    ctx.translate(docH, 0)
+    ctx.rotate(Math.PI / 2)
   }
 
   if (isDrawableForExport(page.bgImage)) {
@@ -311,7 +311,7 @@ export default function Editor () {
 
   const [isMobile, setIsMobile] = useState(() => window.matchMedia('(max-width: 960px)').matches)
 
-  // Режим редактирования текста (двойной клик)
+  // Режим редактирования текста (двойной клик / повторный клик)
   const [textEdit, setTextEdit] = useState(null)
   const [textEditValue, setTextEditValue] = useState('')
 
@@ -414,7 +414,7 @@ export default function Editor () {
     return () => mq.removeEventListener('change', on)
   }, [])
 
-  // Billing + цены
+  // Billing + динамические цены
   useEffect(() => {
     const onUser = async () => {
       if (localStorage.getItem('access')) {
@@ -555,12 +555,13 @@ export default function Editor () {
   // При смене режима — обновляем режим движка (учёт rotation) и margin
   useEffect(() => {
     if (!engineRef.current) return
-    engineRef.current.setViewMargin(24)
+    const margin = isMobile ? 0 : 24
+    engineRef.current.setViewMargin(margin)
     engineRef.current.setMode(isMobile)
     setDocRect(engineRef.current.getDocumentScreenRect())
   }, [isMobile])
 
-  // При смене страницы / её данных — подаём её в движок
+  // При смене страницы / её данных — передаём её в движок
   useEffect(() => {
     const page = pages[cur]
     if (!page || !engineRef.current) {
@@ -581,6 +582,7 @@ export default function Editor () {
 
     if (onlyRotationChanged) {
       prevPageRef.current = page
+      engineRef.current.setPageRotation(page.rotation || 0, isMobile)
       setDocRect(engineRef.current.getDocumentScreenRect())
       return
     }
@@ -594,7 +596,13 @@ export default function Editor () {
     })
     setDocRect(engineRef.current.getDocumentScreenRect())
     prevPageRef.current = page
-  }, [pages, cur])
+  }, [pages, cur, isMobile])
+
+  // Отключаем pointer events по canvas во время редактирования текста
+  useEffect(() => {
+    if (!canvasRef.current) return
+    canvasRef.current.style.pointerEvents = textEdit ? 'none' : 'auto'
+  }, [textEdit])
 
   // Загрузка библиотеки подписей
   async function loadLibrary () {
@@ -692,6 +700,7 @@ export default function Editor () {
           }))
         }
       } else {
+        // Старый формат draft'а (через pdfjs/fabric)
         for (const pg of pagesData) {
           let img = null
           let bgSrc = null
@@ -701,6 +710,7 @@ export default function Editor () {
           if (pg.type === 'pdf' && pg.bytes_b64) {
             try {
               await ensurePDFJS()
+              // eslint-disable-next-line no-undef
               const bytes = b64ToU8(pg.bytes_b64)
               // eslint-disable-next-line no-undef
               const pdf = await pdfjsLib.getDocument({ data: bytes }).promise
@@ -1238,11 +1248,26 @@ export default function Editor () {
       const newW = relW * dstW
       const newH = relH * dstH
 
+      let cx = relCx * dstW
+      let cy = relCy * dstH
+
+      // Кламп центра по аналогии с движком (для вертикальных страниц rotation=0)
+      const halfW = newW / 2
+      const halfH = newH / 2
+      const minXAllowed = halfW
+      const maxXAllowed = dstW - halfW
+      const minYAllowed = halfH
+      const maxYAllowed = dstH - halfH
+      if (cx < minXAllowed) cx = minXAllowed
+      if (cx > maxXAllowed) cx = maxXAllowed
+      if (cy < minYAllowed) cy = minYAllowed
+      if (cy > maxYAllowed) cy = maxYAllowed
+
       const newOv = {
         ...src,
         id: `${src.type}_${Date.now()}_${Math.random().toString(36).slice(2)}`,
-        cx: relCx * dstW,
-        cy: relCy * dstH,
+        cx,
+        cy,
         w: newW,
         h: newH,
         scaleX: 1,
@@ -1291,7 +1316,7 @@ export default function Editor () {
     }
   }
 
-  // ---------- Экспорт ----------
+    // ---------- Экспорт ----------
 
   async function exportJPG () {
     try {
@@ -1427,6 +1452,7 @@ export default function Editor () {
     }
   }
 
+  // Удаление активного оверлея с клавиатуры
   useEffect(() => {
     const onKey = (e) => {
       const tag = String(e.target?.tagName || '').toLowerCase()
