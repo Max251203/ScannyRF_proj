@@ -86,6 +86,19 @@ function b64ToU8 (b64) {
   return u8
 }
 
+function measureTextWidthPx (text, fontFamily, fontSize, fontWeight, fontStyle) {
+  if (typeof document === 'undefined') return (fontSize || 48) * 2
+  const canvas = measureTextWidthPx._canvas || (measureTextWidthPx._canvas = document.createElement('canvas'))
+  const ctx = canvas.getContext('2d')
+  const size = fontSize || 48
+  const weight = fontWeight || 'normal'
+  const style = fontStyle || 'normal'
+  const family = fontFamily || 'Arial'
+  ctx.font = `${style} ${weight} ${size}px ${family}`
+  const metrics = ctx.measureText(text || '')
+  return metrics.width || size * 2
+}
+
 async function renderDOCXToCanvas (file) {
   await ensureMammothCDN(); await ensureHtml2Canvas()
   const ab = await file.arrayBuffer()
@@ -1498,7 +1511,7 @@ export default function Editor () {
     return !!id && (page.overlays || []).some(o => o.id === id)
   })()
 
-  function commitTextEdit () {
+    function commitTextEdit () {
     if (!textEdit) return
     const { overlayId } = textEdit
     const page = pagesRef.current[cur]
@@ -1511,16 +1524,32 @@ export default function Editor () {
       const copy = [...prev]
       const p = copy[cur]
       if (!p) return prev
+
       const ovs = (p.overlays || []).map(o => {
         if (o.id !== overlayId) return o
+        const d = o.data || {}
+        const fontSize = d.fontSize || 48
+        const fontFamily = d.fontFamily || 'Arial'
+        const fontWeight = d.fontWeight || 'bold'
+        const fontStyle = d.fontStyle || 'normal'
+        const newText = textEditValue
+
+        // ширина текста в doc‑координатах (пункты 5: ширина объекта меняется по тексту)
+        const textW = measureTextWidthPx(newText, fontFamily, fontSize, fontWeight, fontStyle)
+        const newW = Math.max(40, textW)
+        const newH = fontSize * 1.4
+
         return {
           ...o,
+          w: newW,
+          h: newH,
           data: {
-            ...o.data,
-            text: textEditValue
+            ...d,
+            text: newText
           }
         }
       })
+
       copy[cur] = { ...p, overlays: ovs }
       return copy
     })
@@ -1533,7 +1562,7 @@ export default function Editor () {
     setTextEdit(null)
   }
 
-  const textEditorStyle = textEdit && canvasWrapRef.current
+    const textEditorStyle = textEdit && canvasWrapRef.current
     ? {
         position: 'absolute',
         left: `${textEdit.rectCanvas.x}px`,
@@ -1552,7 +1581,10 @@ export default function Editor () {
         outline: 'none',
         background: 'rgba(255,255,255,0.95)',
         boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
-        zIndex: 200
+        zIndex: 200,
+        whiteSpace: 'nowrap',          // <‑ не переносим текст
+        overflow: 'hidden',            // <‑ убираем скролл
+        lineHeight: `${textEdit.fontSize * 1.2}px`
       }
     : null
 

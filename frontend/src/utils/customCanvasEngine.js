@@ -177,41 +177,65 @@ export class CustomCanvasEngine {
    *                      и клампим оверлеи.
    */
   setPageRotation (rotation, recalcTransform = false) {
-    const newRot = rotation === 90 ? 90 : 0
-    if (this.rotation === newRot && !recalcTransform) {
-      return
-    }
-
-    this.onBeforeOverlayChange(this.overlays.map(cloneOverlay))
-
-    this.rotation = newRot
-    if (recalcTransform) {
-      this.rotationAffectsTransform = true
-    }
-
-    this._updatePageSize()
-
-    if (recalcTransform) {
-      const prevScale = this.scale || 1
-      this._updateTransform()
-      const newScale = this.scale || 1
-      const k = newScale ? (prevScale / newScale) : 1
-      if (k && k !== 1) {
-        this.overlays.forEach(ov => {
-          ov.scaleX = (ov.scaleX || 1) * k
-          ov.scaleY = (ov.scaleY || 1) * k
-        })
-      }
-    }
-
-    // После смены ориентации клампим все оверлеи внутрь рамки
-    this.overlays.forEach(ov => {
-      this._clampOverlay(ov)
-      this.onOverlayChange(cloneOverlay(ov))
-    })
-
-    this._draw()
+  const newRot = rotation === 90 ? 90 : 0
+  if (this.rotation === newRot && !recalcTransform) {
+    return
   }
+
+  this.onBeforeOverlayChange(this.overlays.map(cloneOverlay))
+
+  const prevRotation = this.rotation
+  this.rotation = newRot
+  if (recalcTransform) {
+    this.rotationAffectsTransform = true
+  }
+
+  this._updatePageSize()
+
+  if (recalcTransform) {
+    const prevScale = this.scale || 1
+    this._updateTransform()
+    const newScale = this.scale || 1
+    const k = newScale ? (prevScale / newScale) : 1
+    if (k && k !== 1) {
+      this.overlays.forEach(ov => {
+        ov.scaleX = (ov.scaleX || 1) * k
+        ov.scaleY = (ov.scaleY || 1) * k
+      })
+    }
+  }
+
+  // НОВОЕ: если вернулись в вертикальное положение, поджимаем слишком большие объекты
+  if (prevRotation === 90 && this.rotation === 0) {
+    const maxW = (this.pageWidth || this.docWidth) - 4
+    const maxH = (this.pageHeight || this.docHeight) - 4
+
+    this.overlays.forEach(ov => {
+      const baseW = ov.w * (ov.scaleX || 1)
+      const baseH = ov.h * (ov.scaleY || 1)
+      if (baseW <= 0 || baseH <= 0) return
+
+      const factor = Math.min(
+        maxW / baseW,
+        maxH / baseH,
+        1
+      )
+
+      if (factor < 1) {
+        ov.scaleX = (ov.scaleX || 1) * factor
+        ov.scaleY = (ov.scaleY || 1) * factor
+      }
+    })
+  }
+
+  // как было: клампим внутрь рамки
+  this.overlays.forEach(ov => {
+    this._clampOverlay(ov)
+    this.onOverlayChange(cloneOverlay(ov))
+  })
+
+  this._draw()
+}
 
   /**
    * Смена режима (десктоп/мобилка).
