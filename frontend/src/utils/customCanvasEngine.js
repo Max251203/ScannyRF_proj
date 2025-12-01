@@ -3,6 +3,7 @@
 import icDelete from '../assets/icons/x-close.svg'
 import icRotate from '../assets/icons/rotate-handle.svg'
 import icScale from '../assets/icons/scale-handle.svg'
+import icEdit from '../assets/icons/edit-text.svg' // ИКОНКА ДЛЯ КНОПКИ РЕДАКТИРОВАНИЯ
 
 const deleteImg = new Image()
 deleteImg.src = icDelete
@@ -10,6 +11,8 @@ const rotateImg = new Image()
 rotateImg.src = icRotate
 const scaleImg = new Image()
 scaleImg.src = icScale
+const editImg = new Image()
+editImg.src = icEdit
 
 function rotatePoint (x, y, angleRad) {
   const c = Math.cos(angleRad)
@@ -46,10 +49,6 @@ function normalize (v) {
 }
 
 export class CustomCanvasEngine {
-  /**
-   * @param {HTMLCanvasElement} canvas
-   * @param {Object} opts
-   */
   constructor (canvas, opts = {}) {
     this.canvas = canvas
     this.ctx = canvas.getContext('2d')
@@ -73,12 +72,13 @@ export class CustomCanvasEngine {
     this.pageWidth = this.docWidth
     this.pageHeight = this.docHeight
 
-    // Инициализация режима (мобилка/десктоп) сразу (для восстановления черновика на мобилке)
+    // Определяем стартовый режим (мобилка/десктоп), чтобы восстановление черновика на мобилке
+    // сразу учитывало rotation
     const isMobileInitial = (typeof window !== 'undefined' &&
       typeof window.matchMedia === 'function' &&
       window.matchMedia('(max-width: 960px)').matches)
 
-    this.rotationAffectsTransform = isMobileInitial // <-- правка 1: сразу под мобильный режим
+    this.rotationAffectsTransform = isMobileInitial
 
     // Viewport (экран)
     this.viewWidth = canvas.clientWidth || canvas.width || 1
@@ -175,71 +175,64 @@ export class CustomCanvasEngine {
    *   - десктоп: false → меняем только рамку страницы;
    *   - мобилка: true  → rotation учитывается в transform, пересчитываем масштаб
    *                      и клампим оверлеи.
+   * + поджим объектов при возврате в вертикаль (см. prevRotation).
    */
   setPageRotation (rotation, recalcTransform = false) {
-  const newRot = rotation === 90 ? 90 : 0
-  if (this.rotation === newRot && !recalcTransform) {
-    return
-  }
+    const newRot = rotation === 90 ? 90 : 0
+    if (this.rotation === newRot && !recalcTransform) {
+      return
+    }
 
-  this.onBeforeOverlayChange(this.overlays.map(cloneOverlay))
+    this.onBeforeOverlayChange(this.overlays.map(cloneOverlay))
 
-  const prevRotation = this.rotation
-  this.rotation = newRot
-  if (recalcTransform) {
-    this.rotationAffectsTransform = true
-  }
+    const prevRotation = this.rotation
+    this.rotation = newRot
+    if (recalcTransform) {
+      this.rotationAffectsTransform = true
+    }
 
-  this._updatePageSize()
+    this._updatePageSize()
 
-  if (recalcTransform) {
-    const prevScale = this.scale || 1
-    this._updateTransform()
-    const newScale = this.scale || 1
-    const k = newScale ? (prevScale / newScale) : 1
-    if (k && k !== 1) {
+    if (recalcTransform) {
+      const prevScale = this.scale || 1
+      this._updateTransform()
+      const newScale = this.scale || 1
+      const k = newScale ? (prevScale / newScale) : 1
+      if (k && k !== 1) {
+        this.overlays.forEach(ov => {
+          ov.scaleX = (ov.scaleX || 1) * k
+          ov.scaleY = (ov.scaleY || 1) * k
+        })
+      }
+    }
+
+    // Если вернулись в вертикальное положение — вписываем слишком широкие объекты
+    if (prevRotation === 90 && this.rotation === 0) {
+      const maxW = (this.pageWidth || this.docWidth) - 4
+      const maxH = (this.pageHeight || this.docHeight) - 4
+
       this.overlays.forEach(ov => {
-        ov.scaleX = (ov.scaleX || 1) * k
-        ov.scaleY = (ov.scaleY || 1) * k
+        const baseW = ov.w * (ov.scaleX || 1)
+        const baseH = ov.h * (ov.scaleY || 1)
+        if (baseW <= 0 || baseH <= 0) return
+
+        const factor = Math.min(maxW / baseW, maxH / baseH, 1)
+        if (factor < 1) {
+          ov.scaleX = (ov.scaleX || 1) * factor
+          ov.scaleY = (ov.scaleY || 1) * factor
+        }
       })
     }
-  }
 
-  // НОВОЕ: если вернулись в вертикальное положение, поджимаем слишком большие объекты
-  if (prevRotation === 90 && this.rotation === 0) {
-    const maxW = (this.pageWidth || this.docWidth) - 4
-    const maxH = (this.pageHeight || this.docHeight) - 4
-
+    // Клампим внутрь рамки
     this.overlays.forEach(ov => {
-      const baseW = ov.w * (ov.scaleX || 1)
-      const baseH = ov.h * (ov.scaleY || 1)
-      if (baseW <= 0 || baseH <= 0) return
-
-      const factor = Math.min(
-        maxW / baseW,
-        maxH / baseH,
-        1
-      )
-
-      if (factor < 1) {
-        ov.scaleX = (ov.scaleX || 1) * factor
-        ov.scaleY = (ov.scaleY || 1) * factor
-      }
+      this._clampOverlay(ov)
+      this.onOverlayChange(cloneOverlay(ov))
     })
+
+    this._draw()
   }
 
-  // как было: клампим внутрь рамки
-  this.overlays.forEach(ov => {
-    this._clampOverlay(ov)
-    this.onOverlayChange(cloneOverlay(ov))
-  })
-
-  this._draw()
-}
-
-  /**
-   * Смена режима (десктоп/мобилка).
-   */
   setMode (isMobile) {
     this.rotationAffectsTransform = !!isMobile
     if (isMobile) {
@@ -294,7 +287,7 @@ export class CustomCanvasEngine {
     }
   }
 
-    _updateTransform () {
+  _updateTransform () {
     const W = this.docWidth
     const H = this.docHeight
     const cw = this.viewWidth
@@ -302,14 +295,12 @@ export class CustomCanvasEngine {
 
     const margin = this.viewMargin || 0
     const availW0 = cw
-    // как в исходной версии: один margin «съедаем» по высоте
     const availH0 = Math.max(10, ch - margin)
 
     let fitW = availW0
     let fitH = availH0
 
-    // На мобилке при rotation=90 меняем, какое измерение считаем лимитирующим
-    // (без поворота контента) — даёт «альбомное» ощущение
+    // На мобилке при rotation=90 меняем fitW/fitH (альбомное ощущение)
     if (this.rotationAffectsTransform && this.rotation === 90) {
       ;[fitW, fitH] = [availH0, availW0]
     }
@@ -488,10 +479,10 @@ export class CustomCanvasEngine {
     ].map(p => ({ x: p.x + ov.cx, y: p.y + ov.cy }))
 
     const [p0, p1, p2, p3] = cornersDoc
-    const p0s = this._docToScreen(p0.x, p0.y)
-    const p1s = this._docToScreen(p1.x, p1.y)
-    const p2s = this._docToScreen(p2.x, p2.y)
-    const p3s = this._docToScreen(p3.x, p3.y)
+    const p0s = this._docToScreen(p0.x, p0.y) // top-left
+    const p1s = this._docToScreen(p1.x, p1.y) // top-right
+    const p2s = this._docToScreen(p2.x, p2.y) // bottom-right
+    const p3s = this._docToScreen(p3.x, p3.y) // bottom-left
 
     ctx.save()
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
@@ -522,6 +513,7 @@ export class CustomCanvasEngine {
       if (kind === 'delete') img = deleteImg
       else if (kind === 'rotate') img = rotateImg
       else if (kind === 'scale') img = scaleImg
+      else if (kind === 'edit') img = editImg
 
       if (img && img.complete) {
         const size = hr * 1.3
@@ -529,23 +521,17 @@ export class CustomCanvasEngine {
       }
     }
 
-    // векторы рёбер в экранных координатах
-    const topEdge = { x: p1s.x - p0s.x, y: p1s.y - p0s.y }
-    const rightEdge = { x: p2s.x - p1s.x, y: p2s.y - p1s.y }
-    const bottomEdge = { x: p2s.x - p3s.x, y: p2s.y - p3s.y }
-    const leftEdge = { x: p0s.x - p3s.x, y: p0s.y - p3s.y }
-
     // rotate — над серединой верхней стороны
-    const topMid = { x: (p0s.x + p1s.x) / 2, y: (p0s.y + p1s.y) / 2 }
-    const topNormal = normalize({ x: topEdge.y, y: -topEdge.x }) // наружу от рамки
+    const topEdge = { x: p1s.x - p0s.x, y: p1s.y - p0s.y }
+    const topNormal = normalize({ x: topEdge.y, y: -topEdge.x }) // наружу
     const rotateOffset = 32
     const rotatePos = {
-      x: topMid.x + topNormal.x * rotateOffset,
-      y: topMid.y + topNormal.y * rotateOffset
+      x: (p0s.x + p1s.x) / 2 + topNormal.x * rotateOffset,
+      y: (p0s.y + p1s.y) / 2 + topNormal.y * rotateOffset
     }
     drawIconHandle(rotatePos.x, rotatePos.y, 'rotate')
 
-    // delete — диагонально из правого верхнего угла
+    // delete — диагонально из правого верхнего
     const diagTR = normalize({
       x: (p1s.x - p0s.x) + (p1s.x - p2s.x),
       y: (p1s.y - p0s.y) + (p1s.y - p2s.y)
@@ -557,7 +543,7 @@ export class CustomCanvasEngine {
     }
     drawIconHandle(deletePos.x, deletePos.y, 'delete')
 
-    // scale — диагонально из левого нижнего угла
+    // scale — диагонально из левого нижнего
     const diagBL = normalize({
       x: (p3s.x - p2s.x) + (p3s.x - p0s.x),
       y: (p3s.y - p2s.y) + (p3s.y - p0s.y)
@@ -569,13 +555,22 @@ export class CustomCanvasEngine {
     }
     drawIconHandle(scalePos.x, scalePos.y, 'scale')
 
+    // edit — над левым верхним углом
+    const editOffset = 26
+    const editPos = {
+      x: p0s.x - editOffset,
+      y: p0s.y - editOffset
+    }
+    drawIconHandle(editPos.x, editPos.y, 'edit')
+
     ctx.restore()
 
     this._lastControlPositions = {
       overlayId: ov.id,
       scale: scalePos,
       rotate: rotatePos,
-      delete: deletePos
+      delete: deletePos,
+      edit: editPos
     }
   }
 
@@ -600,6 +595,7 @@ export class CustomCanvasEngine {
     if (dist2(pos.delete) <= r2) return 'delete'
     if (dist2(pos.rotate) <= r2) return 'rotate'
     if (dist2(pos.scale) <= r2) return 'scale'
+    if (pos.edit && dist2(pos.edit) <= r2) return 'edit'
     return null
   }
 
@@ -643,7 +639,6 @@ export class CustomCanvasEngine {
     if (handle && active) {
       this.onBeforeOverlayChange(this.overlays.map(cloneOverlay))
 
-      // Вопрос при удалении (только по кнопке delete)
       if (handle === 'delete') {
         if (!window.confirm('Удалить объект со страницы?')) {
           this.isPointerDown = false
@@ -661,6 +656,21 @@ export class CustomCanvasEngine {
         return
       }
 
+      if (handle === 'edit') {
+        if (active.type === 'text') {
+          this.activeId = active.id
+          this.onSelectionChange(cloneOverlay(active))
+          this._draw()
+          const bounds = this._getOverlayScreenBounds(active)
+          this.onTextEditRequest(cloneOverlay(active), bounds)
+        }
+        this.isPointerDown = false
+        this.activeHandle = null
+        this.dragState = null
+        this._setCursor('text')
+        return
+      }
+
       this.activeHandle = handle
       this.dragState = {
         startScreen: { sx, sy },
@@ -673,51 +683,7 @@ export class CustomCanvasEngine {
 
     const ov = this._hitOverlay(sx, sy)
 
-    // Двойной клик по тому же оверлею
-    let isDouble = false
-    const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()
     if (ov) {
-      const last = this._lastClick
-      if (last && last.id === ov.id) {
-        const dt = now - last.time
-        const dx = sx - last.sx
-        const dy = sy - last.sy
-        const dist2 = dx * dx + dy * dy
-        if (dt < 350 && dist2 < 64) {
-          isDouble = true
-        }
-      }
-      this._lastClick = { id: ov.id, time: now, sx, sy }
-    } else {
-      this._lastClick = null
-    }
-
-    // Повторный клик по уже выбранному тексту — сразу в режим редактирования
-    if (ov && ov.type === 'text' && this.activeId === ov.id) {
-      this.onSelectionChange(cloneOverlay(ov))
-      const bounds = this._getOverlayScreenBounds(ov)
-      this.onTextEditRequest(cloneOverlay(ov), bounds)
-      this.isPointerDown = false
-      this.activeHandle = null
-      this.dragState = null
-      this._setCursor('text')
-      return
-    }
-
-    if (ov) {
-      if (isDouble && ov.type === 'text') {
-        this.activeId = ov.id
-        this.onSelectionChange(cloneOverlay(ov))
-        this._draw()
-        const bounds = this._getOverlayScreenBounds(ov)
-        this.onTextEditRequest(cloneOverlay(ov), bounds)
-        this.isPointerDown = false
-        this.activeHandle = null
-        this.dragState = null
-        this._setCursor('text')
-        return
-      }
-
       this.onBeforeOverlayChange(this.overlays.map(cloneOverlay))
 
       this.activeId = ov.id
@@ -744,11 +710,10 @@ export class CustomCanvasEngine {
     const { sx, sy } = this._getPointerPos(evt)
 
     if (!this.isPointerDown || !this.activeHandle || !this.dragState) {
-      // Обновляем курсор при наведении
       const handle = this._hitHandle(sx, sy)
       if (handle === 'rotate') {
         this._setCursor('crosshair')
-      } else if (handle === 'delete' || handle === 'scale') {
+      } else if (handle === 'delete' || handle === 'scale' || handle === 'edit') {
         this._setCursor('grab')
       } else if (this._hitOverlay(sx, sy)) {
         this._setCursor('move')

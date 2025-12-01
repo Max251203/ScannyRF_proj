@@ -86,6 +86,7 @@ function b64ToU8 (b64) {
   return u8
 }
 
+// измерение ширины текста для динамической рамки
 function measureTextWidthPx (text, fontFamily, fontSize, fontWeight, fontStyle) {
   if (typeof document === 'undefined') return (fontSize || 48) * 2
   const canvas = measureTextWidthPx._canvas || (measureTextWidthPx._canvas = document.createElement('canvas'))
@@ -324,9 +325,10 @@ export default function Editor () {
 
   const [isMobile, setIsMobile] = useState(() => window.matchMedia('(max-width: 960px)').matches)
 
-  // Режим редактирования текста (двойной клик / повторный клик)
+  // Режим редактирования текста (только по кнопке edit на рамке)
   const [textEdit, setTextEdit] = useState(null)
   const [textEditValue, setTextEditValue] = useState('')
+  const textAreaRef = useRef(null)
 
   const saveTimerRef = useRef(0)
 
@@ -513,16 +515,15 @@ export default function Editor () {
         scheduleSaveDraft()
       },
       onSelectionChange: (ov) => {
+        // панель форматирования теперь включаем только при редактировании,
+        // поэтому здесь panelOpen не трогаем
         if (ov && ov.type === 'text') {
-          setPanelOpen(true)
           const d = ov.data || {}
           setFont(d.fontFamily || 'Arial')
           setFontSize(d.fontSize || 42)
           setBold(d.fontWeight === 'bold' || d.fontWeight === 700)
           setItalic(d.fontStyle === 'italic')
           setColor(d.fill || '#000000')
-        } else {
-          setPanelOpen(false)
         }
       },
       onTextEditRequest: (ov, bounds) => {
@@ -537,6 +538,7 @@ export default function Editor () {
           fontStyle: d.fontStyle || 'normal',
           fill: d.fill || '#000000'
         })
+        setPanelOpen(true)
       }
     })
 
@@ -617,6 +619,17 @@ export default function Editor () {
     canvasRef.current.style.pointerEvents = textEdit ? 'none' : 'auto'
   }, [textEdit])
 
+  // Ставим курсор в конец текста при входе в режим редактирования
+  useEffect(() => {
+    if (!textEdit || !textAreaRef.current) return
+    const ta = textAreaRef.current
+    const len = (textEditValue || '').length
+    requestAnimationFrame(() => {
+      ta.focus()
+      ta.setSelectionRange(len, len)
+    })
+  }, [textEdit, textEditValue])
+
   // Загрузка библиотеки подписей
   async function loadLibrary () {
     if (!isAuthed) { setSignLib([]); return }
@@ -633,7 +646,7 @@ export default function Editor () {
     if (!hasDoc) setDocRect(null)
   }, [hasDoc])
 
-  // Восстановление черновика
+  // Восстановление черновика (без изменений логики, только формат)
   useEffect(() => {
     if (!isAuthed) return
 
@@ -1264,7 +1277,6 @@ export default function Editor () {
       let cx = relCx * dstW
       let cy = relCy * dstH
 
-      // Кламп центра по аналогии с движком (для вертикальных страниц rotation=0)
       const halfW = newW / 2
       const halfH = newH / 2
       const minXAllowed = halfW
@@ -1329,7 +1341,7 @@ export default function Editor () {
     }
   }
 
-    // ---------- Экспорт ----------
+  // ---------- Экспорт ----------
 
   async function exportJPG () {
     try {
@@ -1511,11 +1523,13 @@ export default function Editor () {
     return !!id && (page.overlays || []).some(o => o.id === id)
   })()
 
-    function commitTextEdit () {
+  // ---------- Редактирование текста ----------
+
+  function commitTextEdit () {
     if (!textEdit) return
     const { overlayId } = textEdit
     const page = pagesRef.current[cur]
-    if (!page) { setTextEdit(null); return }
+    if (!page) { setTextEdit(null); setPanelOpen(false); return }
 
     const snapshot = (page.overlays || []).map(o => ({ ...o, data: { ...o.data } }))
     setUndoStack(stk => [...stk, { type: 'page', pageIndex: cur, overlays: snapshot }])
@@ -1532,12 +1546,18 @@ export default function Editor () {
         const fontFamily = d.fontFamily || 'Arial'
         const fontWeight = d.fontWeight || 'bold'
         const fontStyle = d.fontStyle || 'normal'
-        const newText = textEditValue
+        const newText = textEditValue || ''
 
-        // ширина текста в doc‑координатах (пункты 5: ширина объекта меняется по тексту)
-        const textW = measureTextWidthPx(newText, fontFamily, fontSize, fontWeight, fontStyle)
-        const newW = Math.max(40, textW)
-        const newH = fontSize * 1.4
+        const lines = newText.split('\n')
+        const lineHeightPx = fontSize * 1.4
+        let maxLineW = 0
+        for (const line of lines) {
+          const w = measureTextWidthPx(line, fontFamily, fontSize, fontWeight, fontStyle)
+          if (w > maxLineW) maxLineW = w
+        }
+
+        const newW = Math.max(40, maxLineW)
+        const newH = Math.max(lineHeightPx, lines.length * lineHeightPx)
 
         return {
           ...o,
@@ -1555,14 +1575,54 @@ export default function Editor () {
     })
 
     setTextEdit(null)
+    setPanelOpen(false)
     scheduleSaveDraft()
   }
 
   function cancelTextEdit () {
     setTextEdit(null)
+    setPanelOpen(false)
   }
 
-    const textEditorStyle = textEdit && canvasWrapRef.current
+  // динамическое изменение рамки в процессе ввода
+  function handleTextChange (value) {
+    setTextEditValue(value)
+    const { overlayId } = textEdit || {}
+    if (!overlayId) return
+    setPages(prev => {
+      const copy = [...prev]
+      const p = copy[cur]
+      if (!p) return prev
+      const ovs = (p.overlays || []).map(o => {
+        if (o.id !== overlayId) return o
+        const d = o.data || {}
+        const fontSize = d.fontSize || 48
+        const fontFamily = d.fontFamily || 'Arial'
+        const fontWeight = d.fontWeight || 'bold'
+        const fontStyle = d.fontStyle || 'normal'
+        const text = value || ''
+        const lines = text.split('\n')
+        const lineHeightPx = fontSize * 1.4
+        let maxLineW = 0
+        for (const line of lines) {
+          const w = measureTextWidthPx(line, fontFamily, fontSize, fontWeight, fontStyle)
+          if (w > maxLineW) maxLineW = w
+        }
+        const newW = Math.max(40, maxLineW)
+        const newH = Math.max(lineHeightPx, lines.length * lineHeightPx)
+        return {
+          ...o,
+          w: newW,
+          h: newH,
+          data: { ...d, text }
+        }
+      })
+      copy[cur] = { ...p, overlays: ovs }
+      return copy
+    })
+  }
+
+  const textEditorStyle = textEdit && canvasWrapRef.current
     ? {
         position: 'absolute',
         left: `${textEdit.rectCanvas.x}px`,
@@ -1582,8 +1642,8 @@ export default function Editor () {
         background: 'rgba(255,255,255,0.95)',
         boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
         zIndex: 200,
-        whiteSpace: 'nowrap',          // <‑ не переносим текст
-        overflow: 'hidden',            // <‑ убираем скролл
+        whiteSpace: 'pre',
+        overflow: 'hidden',
         lineHeight: `${textEdit.fontSize * 1.2}px`
       }
     : null
@@ -1728,18 +1788,17 @@ export default function Editor () {
                 )}
                 {textEdit && textEditorStyle && (
                   <textarea
+                    ref={textAreaRef}
                     style={textEditorStyle}
                     value={textEditValue}
-                    onChange={e => setTextEditValue(e.target.value)}
+                    onChange={e => handleTextChange(e.target.value)}
                     onBlur={commitTextEdit}
                     onKeyDown={e => {
-                      if (e.key === 'Enter' && !e.shiftKey) {
-                        e.preventDefault()
-                        commitTextEdit()
-                      } else if (e.key === 'Escape') {
+                      if (e.key === 'Escape') {
                         e.preventDefault()
                         cancelTextEdit()
                       }
+                      // Enter даёт новую строку, не перехватываем
                     }}
                     autoFocus
                   />
