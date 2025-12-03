@@ -1,6 +1,3 @@
-// frontend/src/utils/scriptLoader.js
-// Загрузка внешних скриптов/стилей с кэшем и ожиданием готовности
-
 const cache = new Map();
 const styleCache = new Map();
 

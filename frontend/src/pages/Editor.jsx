@@ -312,6 +312,7 @@ export default function Editor () {
   const [textEdit, setTextEdit] = useState(null)
   const [textEditValue, setTextEditValue] = useState('')
   const textAreaRef = useRef(null)
+  const textEditRef = useRef(textEdit)
 
   const docFileRef = useRef(null)
   const bgFileRef = useRef(null)
@@ -327,6 +328,7 @@ export default function Editor () {
   useEffect(() => { curRef.current = cur }, [cur])
   useEffect(() => { docIdRef.current = docId }, [docId])
   useEffect(() => { fileNameRef.current = fileName }, [fileName])
+  useEffect(() => { textEditRef.current = textEdit }, [textEdit])
 
   function showBanner (text, timeout = 1800) {
     setBanner(text)
@@ -334,7 +336,7 @@ export default function Editor () {
     showBanner._t = window.setTimeout(() => setBanner(''), timeout)
   }
 
-  function scheduleSaveDraft () {
+  const scheduleSaveDraft = useCallback(() => {
     if (!isAuthed) return
     window.clearTimeout(saveTimerRef.current)
     saveTimerRef.current = window.setTimeout(async () => {
@@ -345,7 +347,8 @@ export default function Editor () {
         setDraftHint(true)
       } catch {}
     }, 400)
-  }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthed])
 
   function buildDraftSnapshot () {
     if (!pagesRef.current.length) return null
@@ -445,6 +448,7 @@ export default function Editor () {
     return () => window.removeEventListener('user:update', onUser)
   }, [])
 
+  // Инициализация движка
   useEffect(() => {
     if (!hasDoc || !canvasRef.current) return
     if (engineRef.current) return
@@ -469,6 +473,14 @@ export default function Editor () {
           copy[pageIndex] = { ...page, overlays: newOverlays }
           return copy
         })
+        // если редактируется этот текстовый объект — обновляем его экранные рамки
+        const te = textEditRef.current
+        if (te && te.overlayId === ov.id && engineRef.current) {
+          const bounds = engineRef.current.getOverlayScreenBoundsById(ov.id)
+          if (bounds) {
+            setTextEdit(prev => (prev && prev.overlayId === ov.id ? { ...prev, rectCanvas: bounds } : prev))
+          }
+        }
         scheduleSaveDraft()
       },
       onOverlayDelete: id => {
@@ -496,7 +508,17 @@ export default function Editor () {
         }
       },
       onTextEditRequest: (ov, bounds) => {
+        const current = textEditRef.current
         const d = ov.data || {}
+
+        // toggle: если уже редактируем этот объект — выходим из режима
+        if (current && current.overlayId === ov.id) {
+          if (engineRef.current) engineRef.current.setEditingOverlayId(null)
+          setTextEdit(null)
+          setPanelOpen(false)
+          return
+        }
+
         if (engineRef.current) engineRef.current.setEditingOverlayId(ov.id)
         setTextEditValue(d.text || '')
         setTextEdit({
@@ -506,9 +528,18 @@ export default function Editor () {
           fontSize: d.fontSize || 42,
           fontWeight: d.fontWeight || 'bold',
           fontStyle: d.fontStyle || 'normal',
-          fill: d.fill || '#000000'
+          fill: d.fill || '#000000',
+          textAlign: d.textAlign || 'center'
         })
         setPanelOpen(true)
+      },
+      onBlankClick: () => {
+        const current = textEditRef.current
+        if (!current) return
+        if (engineRef.current) engineRef.current.setEditingOverlayId(null)
+        setTextEdit(null)
+        setPanelOpen(false)
+        scheduleSaveDraft()
       }
     })
 
@@ -536,8 +567,9 @@ export default function Editor () {
       window.removeEventListener('orientationchange', handleResize)
       ro.disconnect()
     }
-  }, [hasDoc, isMobile])
+  }, [hasDoc, isMobile, scheduleSaveDraft])
 
+  // Подстановка текущей страницы в движок
   useEffect(() => {
     const page = pages[cur]
     if (!page || !engineRef.current) {
@@ -583,6 +615,7 @@ export default function Editor () {
   }
   useEffect(() => { if (isAuthed) loadLibrary() }, [isAuthed])
 
+  // Восстановление черновика
   useEffect(() => {
     if (!isAuthed) return
 
@@ -629,9 +662,8 @@ export default function Editor () {
           if (pg.type === 'pdf' && pg.bytes_b64) {
             try {
               await ensurePDFJS()
-              const bytes = b64ToU8(pg.bytes_b64)
               // eslint-disable-next-line no-undef
-              const pdf = await pdfjsLib.getDocument({ data: bytes }).promise
+              const pdf = await pdfjsLib.getDocument({ data: b64ToU8(pg.bytes_b64) }).promise
               const cv = await renderPDFPageToCanvas(pdf, (pg.index || 0) + 1, PDF_RENDER_SCALE)
               img = cv
               bgSrc = cv.toDataURL('image/png')
@@ -953,7 +985,7 @@ export default function Editor () {
       return copy
     })
     scheduleSaveDraft()
-  }, [cur, font, fontSize, bold, italic, color])
+  }, [cur, font, fontSize, bold, italic, color, scheduleSaveDraft])
 
   useEffect(() => {
     if (panelOpen) applyPanel()
@@ -1072,9 +1104,9 @@ export default function Editor () {
       }
     })
 
-    setPages(newPages)
-    scheduleSaveDraft()
-    toast('Объект добавлен на все страницы', 'success')
+  setPages(newPages)
+  scheduleSaveDraft()
+  toast('Объект добавлен на все страницы', 'success')
   }
 
   async function applyPromo () {
@@ -1262,7 +1294,7 @@ export default function Editor () {
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
-  }, [])
+  }, [scheduleSaveDraft])
 
   const onRenameChange = (e) => { setFileName(sanitizeName(e.target.value)) }
 
@@ -1282,15 +1314,22 @@ export default function Editor () {
     return !!id && (page.overlays || []).some(o => o.id === id)
   })()
 
+  // --- редактирование текста: динамическое изменение и ограничение по краям страницы ---
   function handleTextChange (value) {
+    const prevValue = textEditValue
     setTextEditValue(value)
-    const id = textEdit?.overlayId
-    if (!id) return
-    // обновляем локальное состояние страниц
-    const newPages = [...pagesRef.current]
-    const p = newPages[cur]
-    if (!p) return
-    const ovs = (p.overlays || []).map(o => {
+
+    const te = textEditRef.current
+    const id = te?.overlayId
+    if (!id || !engineRef.current) return
+
+    const pagesArr = pagesRef.current
+    const pageIndex = curRef.current
+    const page = pagesArr[pageIndex]
+    if (!page) return
+
+    const prevOverlays = page.overlays || []
+    const newOverlays = prevOverlays.map(o => {
       if (o.id !== id) return o
       const d = o.data || {}
       const fontSize = d.fontSize || 48
@@ -1314,89 +1353,72 @@ export default function Editor () {
         data: { ...d, text }
       }
     })
-    newPages[cur] = { ...p, overlays: ovs }
-    setPages(newPages)
-    pagesRef.current = newPages
 
-    // синхронизируем движок и прямоугольник textarea
-    if (engineRef.current) {
-      const page = pagesRef.current[cur]
-      internalUpdateRef.current = true
-      engineRef.current.setOverlays(page.overlays || [])
-      internalUpdateRef.current = false
-      const bounds = engineRef.current.getOverlayScreenBoundsById
-        ? engineRef.current.getOverlayScreenBoundsById(id)
-        : null
-      if (bounds) {
-        setTextEdit(prev => prev ? { ...prev, rectCanvas: bounds } : prev)
+    const eng = engineRef.current
+    eng.setOverlays(newOverlays)
+    const bounds = eng.getOverlayScreenBoundsById(id)
+
+    let overflow = false
+    if (bounds && docRect) {
+      const bb = bounds.bbox || { x: bounds.x, y: bounds.y, w: bounds.w, h: bounds.h }
+      const d = docRect
+      if (bb.x < d.x || bb.y < d.y || bb.x + bb.w > d.x + d.width || bb.y + bb.h > d.y + d.height) {
+        overflow = true
       }
     }
-  }
+    const isExpanding = (value || '').length > (prevValue || '').length
 
-  function commitTextEdit () {
-    if (!textEdit) return
-    const { overlayId } = textEdit
-    const value = textEditValue || ''
-    setPages(prev => {
-      const copy = [...prev]
-      const p = copy[cur]
-      if (!p) return prev
-      const ovs = (p.overlays || []).map(o => {
-        if (o.id !== overlayId) return o
-        const d = o.data || {}
-        const fontSize = d.fontSize || 48
-        const fontFamily = d.fontFamily || 'Arial'
-        const fontWeight = d.fontWeight || 'bold'
-        const fontStyle = d.fontStyle || 'normal'
-        const text = value
-        const lines = text.split('\n')
-        const lineHeightPx = fontSize * 1.4
-        let maxLineW = 0
-        for (const line of lines) {
-          const w = measureTextWidthPx(line, fontFamily, fontSize, fontWeight, fontStyle)
-          if (w > maxLineW) maxLineW = w
-        }
-        const newW = Math.max(40, maxLineW)
-        const newH = Math.max(lineHeightPx, lines.length * lineHeightPx)
-        return {
-          ...o,
-          w: newW,
-          h: newH,
-          data: { ...d, text }
-        }
-      })
-      copy[cur] = { ...p, overlays: ovs }
-      return copy
-    })
-    if (engineRef.current) engineRef.current.setEditingOverlayId(null)
-    setTextEdit(null)
-    setPanelOpen(false)
+    if (overflow && isExpanding) {
+      alert('Текстовый блок не может выходить за границы страницы. Уменьшите размер шрифта, сократите текст или перенесите часть текста на другую строку или страницу.')
+      // откатываем в предыдущее состояние
+      eng.setOverlays(prevOverlays)
+      setTextEditValue(prevValue)
+      return
+    }
+
+    const newPages = [...pagesArr]
+    newPages[pageIndex] = { ...page, overlays: newOverlays }
+    pagesRef.current = newPages
+    setPages(newPages)
+
+    if (bounds) {
+      setTextEdit(prev => (prev && prev.overlayId === id ? { ...prev, rectCanvas: bounds } : prev))
+    }
     scheduleSaveDraft()
   }
 
   const textEditorStyle = textEdit && canvasWrapRef.current
-    ? {
-        position: 'absolute',
-        left: `${textEdit.rectCanvas.x}px`,
-        top: `${textEdit.rectCanvas.y}px`,
-        width: `${Math.max(40, textEdit.rectCanvas.w)}px`,
-        height: `${Math.max(30, textEdit.rectCanvas.h)}px`,
-        fontFamily: textEdit.fontFamily,
-        fontSize: `${textEdit.rectCanvas.fontSize || textEdit.fontSize}px`,
-        fontWeight: textEdit.fontWeight,
-        fontStyle: textEdit.fontStyle,
-        color: textEdit.fill,
-        border: 'none',
-        padding: '0',
-        margin: '0',
-        resize: 'none',
-        outline: 'none',
-        background: 'transparent',
-        zIndex: 200,
-        whiteSpace: 'pre',
-        overflow: 'hidden',
-        lineHeight: `${(textEdit.rectCanvas.fontSize || textEdit.fontSize) * 1.2}px`
-      }
+    ? (() => {
+        const rc = textEdit.rectCanvas || {}
+        const w = Math.max(40, rc.w || 40)
+        const h = Math.max(30, rc.h || 30)
+        const angleDeg = (rc.angleRad || 0) * 180 / Math.PI
+        return {
+          position: 'absolute',
+          left: `${rc.cx}px`,
+          top: `${rc.cy}px`,
+          width: `${w}px`,
+          height: `${h}px`,
+          transform: `translate(-50%, -50%) rotate(${angleDeg}deg)`,
+          transformOrigin: 'center center',
+          fontFamily: textEdit.fontFamily,
+          fontSize: `${rc.fontSize || textEdit.fontSize}px`,
+          fontWeight: textEdit.fontWeight,
+          fontStyle: textEdit.fontStyle,
+          color: textEdit.fill,
+          textAlign: textEdit.textAlign || 'center',
+          border: 'none',
+          padding: '0',
+          margin: '0',
+          resize: 'none',
+          outline: 'none',
+          background: 'transparent',
+          zIndex: 200,
+          whiteSpace: 'pre',
+          overflow: 'hidden',
+          lineHeight: `${(rc.fontSize || textEdit.fontSize) * 1.2}px`
+        }
+      })()
     : null
 
   const onTopMenuClick = (e) => {
@@ -1464,7 +1486,7 @@ export default function Editor () {
         </div>
       )}
 
-      <div className="ed-body">
+            <div className="ed-body">
         <aside className="ed-left">
           <div className="ed-tools">
             <button className={`ed-tool ${pagesRef.current.length ? '' : 'disabled'}`} onClick={addText}>
@@ -1523,9 +1545,6 @@ export default function Editor () {
             ref={canvasWrapRef}
             onDragOver={(e) => e.preventDefault()}
             onDrop={onCanvasDrop}
-            onMouseDown={() => {
-              if (textEdit) commitTextEdit()
-            }}
             style={{ position: 'relative' }}
           >
             {hasDoc && (
@@ -1554,7 +1573,6 @@ export default function Editor () {
                     style={textEditorStyle}
                     value={textEditValue}
                     onChange={e => handleTextChange(e.target.value)}
-                    onBlur={commitTextEdit}
                   />
                 )}
               </>

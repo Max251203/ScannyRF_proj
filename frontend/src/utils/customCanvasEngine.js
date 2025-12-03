@@ -17,7 +17,7 @@ editImg.src = icEdit
 function rotateVec(x, y, c, s) {
   return {
     x: x * c - y * s,
-    y: x * s + y * c
+    y: x * s + y * c,
   }
 }
 
@@ -31,7 +31,7 @@ function cloneOverlay(ov) {
   if (!ov || typeof ov !== 'object') return ov
   return {
     ...ov,
-    data: ov.data ? { ...ov.data } : {}
+    data: ov.data ? { ...ov.data } : {},
   }
 }
 
@@ -53,6 +53,8 @@ export class CustomCanvasEngine {
     this.onOverlayDelete = opts.onOverlayDelete || (() => {})
     this.onSelectionChange = opts.onSelectionChange || (() => {})
     this.onTextEditRequest = opts.onTextEditRequest || (() => {})
+    // Новый колбэк: клик по "пустому месту" (ни по объекту, ни по хэндлам)
+    this.onBlankClick = opts.onBlankClick || (() => {})
 
     this.docWidth = 1000
     this.docHeight = 1414
@@ -61,12 +63,14 @@ export class CustomCanvasEngine {
 
     this.rotation = 0
     this.pageWidth = this.docWidth
-    this.pageHeight = this.docWidth
+    this.pageHeight = this.docHeight
 
-    const isMobileInitial = (typeof window !== 'undefined' &&
+    const isMobileInitial =
+      typeof window !== 'undefined' &&
       typeof window.matchMedia === 'function' &&
-      window.matchMedia('(max-width: 960px)').matches)
+      window.matchMedia('(max-width: 960px)').matches
 
+    // Если true — при повороте страницы меняем трансформацию вида (мобильный режим)
     this.rotationAffectsTransform = isMobileInitial
 
     this.viewWidth = canvas.clientWidth || canvas.width || 1
@@ -85,8 +89,8 @@ export class CustomCanvasEngine {
     this._lastControlPositions = null
     this._cursor = 'default'
 
-    // id текстового оверлея, для которого сейчас идет редактирование
-    // его текст не рисуем, но рамка и кнопки остаются
+    // id текстового оверлея, который редактируется через textarea:
+    // сам текст на canvas не рисуем, но рамку и кнопки оставляем
     this.editingId = null
 
     this.handleRadius = isMobileInitial ? 16 : 14
@@ -119,7 +123,7 @@ export class CustomCanvasEngine {
     window.removeEventListener('pointerup', this._onPointerUp)
   }
 
-  // --- Публичный API ---
+  // ===== Публичный API =====
 
   setDocument(doc) {
     const prevActive = this.activeId
@@ -160,7 +164,15 @@ export class CustomCanvasEngine {
     return this.overlays.map(cloneOverlay)
   }
 
-  // НОВОЕ: вернуть экранные границы оверлея (для textarea в редакторе)
+  /**
+   * Экранные границы оверлея.
+   * Возвращает:
+   *  - cx, cy  — центр прямоугольника в экранных координатах
+   *  - w, h    — ширина/высота прямоугольника (до поворота) в экранных координатах
+   *  - angleRad — угол поворота
+   *  - fontSize — размер шрифта в экранных пикселях
+   *  - bbox    — axis-aligned bounding box (для проверок выхода за страницу)
+   */
   getOverlayScreenBoundsById(id) {
     const ov = this.overlays.find(o => o.id === id)
     return ov ? this._getOverlayScreenBounds(ov) : null
@@ -182,7 +194,7 @@ export class CustomCanvasEngine {
       const prevScale = this.scale || 1
       this._updateTransform()
       const newScale = this.scale || 1
-      const k = newScale ? (prevScale / newScale) : 1
+      const k = newScale ? prevScale / newScale : 1
       if (k && k !== 1) {
         this.overlays.forEach(ov => {
           ov.scaleX = (ov.scaleX || 1) * k
@@ -191,6 +203,8 @@ export class CustomCanvasEngine {
       }
     }
 
+    // При возврате из ландшафта в портрет слегка уменьшаем огромные объекты,
+    // чтобы их bounding-box влез в страницу.
     if (prevRotation === 90 && this.rotation === 0) {
       const maxW = (this.pageWidth || this.docWidth) - 4
       const maxH = (this.pageHeight || this.docHeight) - 4
@@ -245,7 +259,7 @@ export class CustomCanvasEngine {
     this._draw()
   }
 
-  // --- Геометрия ---
+  // ===== Геометрия =====
 
   _updatePageSize() {
     const W = this.docWidth
@@ -254,6 +268,7 @@ export class CustomCanvasEngine {
       this.pageWidth = W
       this.pageHeight = H
     } else {
+      // Страница остаётся той же высоты, но "подрезаем" ширину под пропорции
       if (W > 0) {
         this.pageHeight = H
         this.pageWidth = (H * H) / W
@@ -296,7 +311,7 @@ export class CustomCanvasEngine {
     const s = this.scale
     return {
       x: this.offsetX + x * s,
-      y: this.offsetY + y * s
+      y: this.offsetY + y * s,
     }
   }
 
@@ -304,11 +319,11 @@ export class CustomCanvasEngine {
     const s = this.scale
     return {
       x: (sx - this.offsetX) / s,
-      y: (sy - this.offsetY) / s
+      y: (sy - this.offsetY) / s,
     }
   }
 
-  // --- Рендеринг ---
+  // ===== Рендеринг =====
 
   _clear() {
     const ctx = this.ctx
@@ -374,8 +389,8 @@ export class CustomCanvasEngine {
       }
     } else if (ov.type === 'text') {
       const d = ov.data || {}
-      // если этот объект сейчас редактируется — текст не рисуем,
-      // пусть его целиком "рисует" overlay-Textarea в React
+      // Если этот объект сейчас редактируется — текст не рисуем,
+      // его «поверх» рисует textarea в React.
       if (this.editingId === ov.id) {
         ctx.restore()
         return
@@ -477,7 +492,7 @@ export class CustomCanvasEngine {
       rotate: pRotate,
       delete: pDelete,
       scale: pScale,
-      edit: pEdit
+      edit: pEdit,
     }
   }
 
@@ -485,7 +500,7 @@ export class CustomCanvasEngine {
     const rect = this.canvas.getBoundingClientRect()
     return {
       sx: evt.clientX - rect.left,
-      sy: evt.clientY - rect.top
+      sy: evt.clientY - rect.top,
     }
   }
 
@@ -579,7 +594,7 @@ export class CustomCanvasEngine {
       this.dragState = {
         startScreen: { sx, sy },
         startDoc: this._screenToDoc(sx, sy),
-        startOverlay: cloneOverlay(active)
+        startOverlay: cloneOverlay(active),
       }
       this._setCursor(handle === 'rotate' ? 'crosshair' : 'grabbing')
       return
@@ -594,17 +609,21 @@ export class CustomCanvasEngine {
       this.dragState = {
         startScreen: { sx, sy },
         startDoc: this._screenToDoc(sx, sy),
-        startOverlay: cloneOverlay(ov)
+        startOverlay: cloneOverlay(ov),
       }
       this._setCursor('grabbing')
       this._draw()
     } else {
+      // Клик по пустой области канваса
       if (this.activeId) {
         this.activeId = null
         this.onSelectionChange(null)
         this._draw()
       }
       this._setCursor('default')
+      try {
+        this.onBlankClick()
+      } catch {}
     }
   }
 
@@ -658,10 +677,30 @@ export class CustomCanvasEngine {
     const center = { x: start.cx, y: start.cy }
     const startDoc = this.dragState.startDoc
     const curDoc = this._screenToDoc(sx, sy)
+
     const distStart = Math.hypot(startDoc.x - center.x, startDoc.y - center.y) || 1
     const distCur = Math.hypot(curDoc.x - center.x, curDoc.y - center.y) || 1
     let factor = distCur / distStart
+
+    // Базовое ограничение фактора
     factor = Math.max(0.1, Math.min(5, factor))
+
+    // ДОПОЛНИТЕЛЬНО: не позволяем увеличить объект так,
+    // чтобы его bounding-box стал больше страницы.
+    try {
+      const pageW = this.pageWidth || this.docWidth
+      const pageH = this.pageHeight || this.docHeight
+      const startBounds = this._getOverlayDocBounds(start)
+      const bw = Math.max(1e-6, startBounds.w)
+      const bh = Math.max(1e-6, startBounds.h)
+      const maxByW = pageW / bw
+      const maxByH = pageH / bh
+      const maxFactor = Math.max(0.1, Math.min(maxByW, maxByH))
+      factor = Math.min(factor, maxFactor)
+    } catch {
+      // fallback — оставляем factor как есть
+    }
+
     ov.scaleX = (start.scaleX || 1) * factor
     ov.scaleY = (start.scaleY || 1) * factor
     this._clampOverlay(ov)
@@ -707,7 +746,7 @@ export class CustomCanvasEngine {
       rotatePoint(-hw, -hh, ang),
       rotatePoint(hw, -hh, ang),
       rotatePoint(hw, hh, ang),
-      rotatePoint(-hw, hh, ang)
+      rotatePoint(-hw, hh, ang),
     ].map(p => ({ x: p.x + ov.cx, y: p.y + ov.cy }))
     let minX = corners[0].x
     let maxX = corners[0].x
@@ -722,17 +761,38 @@ export class CustomCanvasEngine {
     return { minX, maxX, minY, maxY, w: maxX - minX, h: maxY - minY }
   }
 
+  /**
+   * Геометрия оверлея в экранных координатах.
+   *  - cx, cy — центр (px)
+   *  - w, h   — размеры локального прямоугольника (до поворота) в px
+   *  - angleRad — угол поворота
+   *  - fontSize — размер шрифта в px
+   *  - bbox {x,y,w,h} — axis-aligned bounding box
+   */
   _getOverlayScreenBounds(ov) {
+    const s = this.scale
+    const center = this._docToScreen(ov.cx, ov.cy)
+
+    const wLocal = ov.w * (ov.scaleX || 1) * s
+    const hLocal = ov.h * (ov.scaleY || 1) * s
+
     const db = this._getOverlayDocBounds(ov)
     const p1 = this._docToScreen(db.minX, db.minY)
     const p2 = this._docToScreen(db.maxX, db.maxY)
+
     return {
-      x: p1.x,
-      y: p1.y,
-      w: p2.x - p1.x,
-      h: p2.y - p1.y,
+      cx: center.x,
+      cy: center.y,
+      w: wLocal,
+      h: hLocal,
       angleRad: ov.angleRad || 0,
-      fontSize: (ov.data?.fontSize || 48) * this.scale
+      fontSize: (ov.data?.fontSize || 48) * s,
+      bbox: {
+        x: p1.x,
+        y: p1.y,
+        w: p2.x - p1.x,
+        h: p2.y - p1.y,
+      },
     }
   }
 
@@ -747,7 +807,7 @@ export class CustomCanvasEngine {
       x: centerScreen.x - (pageW * s) / 2,
       y: centerScreen.y - (pageH * s) / 2,
       width: pageW * s,
-      height: pageH * s
+      height: pageH * s,
     }
   }
 
@@ -767,7 +827,7 @@ export class CustomCanvasEngine {
       scaleX: 1,
       scaleY: 1,
       angleRad: 0,
-      data: { src: data.src || null, image: img }
+      data: { src: data.src || null, image: img },
     }
     this.overlays.push(ov)
     this.activeId = id
@@ -798,8 +858,8 @@ export class CustomCanvasEngine {
         fontWeight: opts.fontWeight || 'bold',
         fontStyle: opts.fontStyle || 'normal',
         fill: opts.fill || '#000000',
-        textAlign: opts.textAlign || 'center'
-      }
+        textAlign: opts.textAlign || 'center',
+      },
     }
     this.overlays.push(ov)
     this.activeId = id

@@ -7134,6 +7134,21 @@
                     ├── LICENSE
                     ├── LICENSE.APACHE
                     └── LICENSE.BSD
+            ├── pdf2image
+                ├── __init__.py
+                ├── exceptions.py
+                ├── generators.py
+                ├── parsers.py
+                ├── pdf2image.py
+                └── py.typed
+            ├── pdf2image-1.17.0.dist-info
+                ├── INSTALLER
+                ├── LICENSE
+                ├── METADATA
+                ├── RECORD
+                ├── REQUESTED
+                ├── WHEEL
+                └── top_level.txt
             ├── pillow-11.3.0.dist-info
                 ├── INSTALLER
                 ├── METADATA
@@ -11376,6 +11391,7 @@
                 ├── dl-pdf-paid.png
                 ├── doc-add.svg
                 ├── download.png
+                ├── edit-text.svg
                 ├── edit.png
                 ├── eye-closed.png
                 ├── eye-open.png
@@ -11386,13 +11402,16 @@
                 ├── page-add.png
                 ├── plus.png
                 ├── prev.png
+                ├── rotate-handle.svg
                 ├── rotate.png
+                ├── scale-handle.svg
                 ├── sign-upload.png
                 ├── social-facebook.png
                 ├── social-google.png
                 ├── social-vk.png
                 ├── text.png
-                └── undo.png
+                ├── undo.png
+                └── x-close.svg
             ├── images
                 ├── avatar-default.png
                 ├── doc-1.png
@@ -11448,6 +11467,7 @@
         ├── main.jsx
         ├── pages
             ├── Calculators.jsx
+            ├── Editor copy.jsx
             ├── Editor.jsx
             ├── Help.jsx
             ├── Home.jsx
@@ -11462,6 +11482,7 @@
         ├── styles
             └── main.css
         └── utils
+            ├── customCanvasEngine.js
             ├── scriptLoader.js
             └── wsClient.js
     └── vite.config.js
