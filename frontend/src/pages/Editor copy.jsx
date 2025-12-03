@@ -1286,51 +1286,37 @@ export default function Editor () {
     setTextEditValue(value)
     const id = textEdit?.overlayId
     if (!id) return
-    // обновляем локальное состояние страниц
-    const newPages = [...pagesRef.current]
-    const p = newPages[cur]
-    if (!p) return
-    const ovs = (p.overlays || []).map(o => {
-      if (o.id !== id) return o
-      const d = o.data || {}
-      const fontSize = d.fontSize || 48
-      const fontFamily = d.fontFamily || 'Arial'
-      const fontWeight = d.fontWeight || 'bold'
-      const fontStyle = d.fontStyle || 'normal'
-      const text = value || ''
-      const lines = text.split('\n')
-      const lineHeightPx = fontSize * 1.4
-      let maxLineW = 0
-      for (const line of lines) {
-        const w = measureTextWidthPx(line, fontFamily, fontSize, fontWeight, fontStyle)
-        if (w > maxLineW) maxLineW = w
-      }
-      const newW = Math.max(40, maxLineW)
-      const newH = Math.max(lineHeightPx, lines.length * lineHeightPx)
-      return {
-        ...o,
-        w: newW,
-        h: newH,
-        data: { ...d, text }
-      }
+    setPages(prev => {
+      const copy = [...prev]
+      const p = copy[cur]
+      if (!p) return prev
+      const ovs = (p.overlays || []).map(o => {
+        if (o.id !== id) return o
+        const d = o.data || {}
+        const fontSize = d.fontSize || 48
+        const fontFamily = d.fontFamily || 'Arial'
+        const fontWeight = d.fontWeight || 'bold'
+        const fontStyle = d.fontStyle || 'normal'
+        const text = value || ''
+        const lines = text.split('\n')
+        const lineHeightPx = fontSize * 1.4
+        let maxLineW = 0
+        for (const line of lines) {
+          const w = measureTextWidthPx(line, fontFamily, fontSize, fontWeight, fontStyle)
+          if (w > maxLineW) maxLineW = w
+        }
+        const newW = Math.max(40, maxLineW)
+        const newH = Math.max(lineHeightPx, lines.length * lineHeightPx)
+        return {
+          ...o,
+          w: newW,
+          h: newH,
+          data: { ...d, text }
+        }
+      })
+      copy[cur] = { ...p, overlays: ovs }
+      return copy
     })
-    newPages[cur] = { ...p, overlays: ovs }
-    setPages(newPages)
-    pagesRef.current = newPages
-
-    // синхронизируем движок и прямоугольник textarea
-    if (engineRef.current) {
-      const page = pagesRef.current[cur]
-      internalUpdateRef.current = true
-      engineRef.current.setOverlays(page.overlays || [])
-      internalUpdateRef.current = false
-      const bounds = engineRef.current.getOverlayScreenBoundsById
-        ? engineRef.current.getOverlayScreenBoundsById(id)
-        : null
-      if (bounds) {
-        setTextEdit(prev => prev ? { ...prev, rectCanvas: bounds } : prev)
-      }
-    }
   }
 
   function commitTextEdit () {
@@ -1524,6 +1510,7 @@ export default function Editor () {
             onDragOver={(e) => e.preventDefault()}
             onDrop={onCanvasDrop}
             onMouseDown={() => {
+              // если редактируем текст и кликнули куда-то ещё — завершаем
               if (textEdit) commitTextEdit()
             }}
             style={{ position: 'relative' }}
