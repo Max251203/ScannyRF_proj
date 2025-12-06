@@ -222,14 +222,22 @@ function renderPageOffscreen (page, scaleMul = 2) {
       const fontSize = d.fontSize || 48
       const fontFamily = d.fontFamily || 'Arial'
       ctx.font = `${fontStyle} ${fontWeight} ${fontSize}px ${fontFamily}`
-      ctx.textAlign = d.textAlign || 'center'
-      ctx.textBaseline = 'middle'
+      
+      const align = d.textAlign || 'left'
+      ctx.textAlign = align
+      ctx.textBaseline = 'top'
+      
+      let xPos = 0
+      if (align === 'left') xPos = -halfW
+      else if (align === 'right') xPos = halfW
+      else if (align === 'center') xPos = 0
+
       const text = d.text || ''
       const lines = text.split('\n')
       const lh = fontSize * 1.2
-      let startY = -((lines.length - 1) * lh) / 2
+      let startY = -halfH
       for (const line of lines) {
-        ctx.fillText(line, 0, startY)
+        ctx.fillText(line, xPos, startY)
         startY += lh
       }
     }
@@ -267,8 +275,8 @@ export default function Editor () {
   const [signLib, setSignLib] = useState([])
   const [panelOpen, setPanelOpen] = useState(false)
   const [font, setFont] = useState('Arial')
-  const [fontSize, setFontSize] = useState(42)
-  const [bold, setBold] = useState(false)
+  const [fontSize, setFontSize] = useState(48)
+  const [bold, setBold] = useState(true)
   const [italic, setItalic] = useState(false)
   const [color, setColor] = useState('#000000')
 
@@ -385,7 +393,7 @@ export default function Editor () {
               fontWeight: d.fontWeight || 'bold',
               fontStyle: d.fontStyle || 'normal',
               fill: d.fill || '#000000',
-              textAlign: d.textAlign || 'center'
+              textAlign: d.textAlign || 'left'
             }
           }
         }
@@ -461,6 +469,17 @@ export default function Editor () {
       },
       onOverlayChange: ov => {
         if (internalUpdateRef.current) return
+
+        if (ov.id === engineRef.current?.activeId && ov.type === 'text') {
+          const d = ov.data || {}
+          // Обновляем визуальный размер шрифта, округляя его
+          setFontSize(Math.round(d.fontSize || 48))
+          setFont(d.fontFamily || 'Arial')
+          setBold(d.fontWeight === 'bold' || d.fontWeight === 700)
+          setItalic(d.fontStyle === 'italic')
+          setColor(d.fill || '#000000')
+        }
+
         setPages(prev => {
           const pageIndex = curRef.current
           const copy = [...prev]
@@ -473,12 +492,18 @@ export default function Editor () {
           copy[pageIndex] = { ...page, overlays: newOverlays }
           return copy
         })
-        // если редактируется этот текстовый объект — обновляем его экранные рамки
+        
         const te = textEditRef.current
         if (te && te.overlayId === ov.id && engineRef.current) {
           const bounds = engineRef.current.getOverlayScreenBoundsById(ov.id)
           if (bounds) {
-            setTextEdit(prev => (prev && prev.overlayId === ov.id ? { ...prev, rectCanvas: bounds } : prev))
+            setTextEdit(prev => (prev && prev.overlayId === ov.id ? { 
+              ...prev, 
+              rectCanvas: bounds,
+              docW: ov.w,
+              docH: ov.h,
+              fontSize: ov.data.fontSize
+            } : prev))
           }
         }
         scheduleSaveDraft()
@@ -501,48 +526,39 @@ export default function Editor () {
         if (ov && ov.type === 'text') {
           const d = ov.data || {}
           setFont(d.fontFamily || 'Arial')
-          setFontSize(d.fontSize || 42)
+          setFontSize(Math.round(d.fontSize || 48))
           setBold(d.fontWeight === 'bold' || d.fontWeight === 700)
           setItalic(d.fontStyle === 'italic')
           setColor(d.fill || '#000000')
         }
       },
-            onTextEditRequest: (ov, bounds) => {
+      onTextEditRequest: (ov, bounds) => {
         const current = textEditRef.current
         const d = ov.data || {}
 
         if (current && current.overlayId === ov.id) {
-          if (engineRef.current) engineRef.current.setEditingOverlayId(null)
-          setTextEdit(null)
-          setPanelOpen(false)
+          finishTextEditing()
           return
         }
 
         if (engineRef.current) engineRef.current.setEditingOverlayId(ov.id)
         setTextEditValue(d.text || '')
-        
-        // ВАЖНО: сохраняем docW и docH (размеры ov.w и ov.h)
         setTextEdit({
           overlayId: ov.id,
           rectCanvas: bounds,
-          docW: ov.w,       // Добавлено
-          docH: ov.h,       // Добавлено
+          docW: ov.w,
+          docH: ov.h,
           fontFamily: d.fontFamily || 'Arial',
-          fontSize: d.fontSize || 42,
+          fontSize: d.fontSize || 48,
           fontWeight: d.fontWeight || 'bold',
           fontStyle: d.fontStyle || 'normal',
           fill: d.fill || '#000000',
-          textAlign: d.textAlign || 'center'
+          textAlign: d.textAlign || 'left'
         })
         setPanelOpen(true)
       },
       onBlankClick: () => {
-        const current = textEditRef.current
-        if (!current) return
-        if (engineRef.current) engineRef.current.setEditingOverlayId(null)
-        setTextEdit(null)
-        setPanelOpen(false)
-        scheduleSaveDraft()
+        finishTextEditing()
       }
     })
 
@@ -572,7 +588,41 @@ export default function Editor () {
     }
   }, [hasDoc, isMobile, scheduleSaveDraft])
 
-  // Подстановка текущей страницы в движок
+  function finishTextEditing() {
+    const current = textEditRef.current
+    if (!current) return
+
+    // Убираем висячие переносы строк в конце и в начале, но оставляем переносы между словами
+    let val = (textEditValue || '').replace(/\s+$/, '')
+    
+    // Если после очистки строка пустая - удаляем объект
+    if (!val.trim()) {
+       if (engineRef.current) {
+         const pagesArr = pagesRef.current
+         const pIdx = curRef.current
+         const p = pagesArr[pIdx]
+         if (p) {
+           const newOvs = (p.overlays || []).filter(o => o.id !== current.overlayId)
+           engineRef.current.setOverlays(newOvs)
+           const newPages = [...pagesArr]
+           newPages[pIdx] = { ...p, overlays: newOvs }
+           setPages(newPages)
+           pagesRef.current = newPages
+         }
+       }
+    } else {
+       // Если есть текст, обновляем его, удалив лишние переносы
+       if (val !== textEditValue) {
+          handleTextChange(val, true) // true = force update without checks
+       }
+    }
+
+    if (engineRef.current) engineRef.current.setEditingOverlayId(null)
+    setTextEdit(null)
+    setPanelOpen(false)
+    scheduleSaveDraft()
+  }
+
   useEffect(() => {
     const page = pages[cur]
     if (!page || !engineRef.current) {
@@ -618,7 +668,6 @@ export default function Editor () {
   }
   useEffect(() => { if (isAuthed) loadLibrary() }, [isAuthed])
 
-  // Восстановление черновика
   useEffect(() => {
     if (!isAuthed) return
 
@@ -665,7 +714,6 @@ export default function Editor () {
           if (pg.type === 'pdf' && pg.bytes_b64) {
             try {
               await ensurePDFJS()
-              // eslint-disable-next-line no-undef
               const pdf = await pdfjsLib.getDocument({ data: b64ToU8(pg.bytes_b64) }).promise
               const cv = await renderPDFPageToCanvas(pdf, (pg.index || 0) + 1, PDF_RENDER_SCALE)
               img = cv
@@ -707,7 +755,7 @@ export default function Editor () {
               fontWeight: d.fontWeight || ov.fontWeight || 'bold',
               fontStyle: d.fontStyle || ov.fontStyle || 'normal',
               fill: d.fill || ov.fill || '#000000',
-              textAlign: d.textAlign || ov.textAlign || 'center'
+              textAlign: d.textAlign || ov.textAlign || 'left'
             }
           } else if (ov.type === 'image' || ov.t === 'im') {
             base.type = 'image'
@@ -774,7 +822,6 @@ export default function Editor () {
       else if (ext === 'pdf') {
         try {
           await ensurePDFJS()
-          // eslint-disable-next-line no-undef
           const pdf = await pdfjsLib.getDocument({ data: await f.arrayBuffer() }).promise
           total += pdf.numPages || 1
         } catch { total += 1 }
@@ -832,7 +879,6 @@ export default function Editor () {
           addedPages++; tick(1)
         } else if (ext === 'pdf') {
           await ensurePDFJS()
-          // eslint-disable-next-line no-undef
           const pdf = await pdfjsLib.getDocument({ data: await f.arrayBuffer() }).promise
           const num = pdf.numPages
           for (let i = 1; i <= num; i++) {
@@ -931,17 +977,24 @@ export default function Editor () {
     const page = pagesRef.current[cur]
     if (!page) { toast('Сначала добавьте страницу', 'error'); return }
     if (!engineRef.current) return
-    engineRef.current.addTextOverlay('Вставьте текст', {
+
+    const initText = 'Вставьте текст'
+    const fontSize = 48
+    const w = measureTextWidthPx(initText, 'Arial', fontSize, 'bold', 'normal')
+
+    engineRef.current.addTextOverlay(initText, {
       fontFamily: 'Arial',
-      fontSize: 48,
+      fontSize: fontSize,
       fontWeight: 'bold',
       fill: '#000000',
-      textAlign: 'center'
+      textAlign: 'left',
+      width: w + 4,
+      height: fontSize * 1.2
     })
     scheduleSaveDraft()
   }
 
-    const applyPanel = useCallback(() => {
+  const applyPanel = useCallback(() => {
     const pageIndex = curRef.current
     const page = pagesRef.current[pageIndex]
     if (!page || !engineRef.current) return
@@ -966,7 +1019,6 @@ export default function Editor () {
     const text = d.text || ''
     const lines = text.split('\n')
     
-    // Исправлено на 1.2, чтобы совпадало с движком и CSS
     const lineHeightPx = newFontSize * 1.2
 
     let maxLineW = 0
@@ -974,8 +1026,8 @@ export default function Editor () {
       const w = measureTextWidthPx(line, newFontFamily, newFontSize, newFontWeight, newFontStyle)
       if (w > maxLineW) maxLineW = w
     }
-    // Добавляем небольшой запас ширины (2px), чтобы курсор не прыгал
-    const newW = Math.max(40, maxLineW + 2)
+    
+    const newW = Math.max(20, maxLineW + 4)
     const newH = Math.max(lineHeightPx, lines.length * lineHeightPx)
 
     const newOv = {
@@ -1009,19 +1061,19 @@ export default function Editor () {
       return copy
     })
 
-    // Принудительно обновляем стейт textarea с новыми размерами документа
     if (textEditRef.current && textEditRef.current.overlayId === activeId) {
       setTextEdit({
         overlayId: activeId,
         rectCanvas: newBounds,
-        docW: newW,      // Обновляем реальную ширину
-        docH: newH,      // Обновляем реальную высоту
+        docW: newW,
+        docH: newH,
+        originalText: textEditRef.current.originalText,
         fontFamily: newFontFamily,
         fontSize: newFontSize,
         fontWeight: newFontWeight,
         fontStyle: newFontStyle,
         fill: newColor,
-        textAlign: d.textAlign || 'center'
+        textAlign: d.textAlign || 'left'
       })
     }
 
@@ -1204,7 +1256,6 @@ export default function Editor () {
       })
 
       await ensureJSZip()
-      // eslint-disable-next-line no-undef
       const zip = new JSZip()
 
       for (let i = 0; i < pagesRef.current.length; i++) {
@@ -1355,11 +1406,8 @@ export default function Editor () {
     return !!id && (page.overlays || []).some(o => o.id === id)
   })()
 
-  // --- редактирование текста: динамическое изменение и ограничение по краям страницы ---
-    function handleTextChange (value) {
+  function handleTextChange (value, force = false) {
     const prevValue = textEditValue
-    setTextEditValue(value)
-
     const te = textEditRef.current
     const id = te?.overlayId
     if (!id || !engineRef.current) return
@@ -1370,61 +1418,84 @@ export default function Editor () {
     if (!page) return
 
     const prevOverlays = page.overlays || []
-    const newOverlays = prevOverlays.map(o => {
-      if (o.id !== id) return o
-      const d = o.data || {}
-      const fontSize = d.fontSize || 48
-      const fontFamily = d.fontFamily || 'Arial'
-      const fontWeight = d.fontWeight || 'bold'
-      const fontStyle = d.fontStyle || 'normal'
-      const text = value || ''
-      const lines = text.split('\n')
-      
-      // Исправлено на 1.2
-      const lineHeightPx = fontSize * 1.2
-      
-      let maxLineW = 0
-      for (const line of lines) {
-        const w = measureTextWidthPx(line, fontFamily, fontSize, fontWeight, fontStyle)
-        if (w > maxLineW) maxLineW = w
-      }
-      const newW = Math.max(40, maxLineW + 2)
-      const newH = Math.max(lineHeightPx, lines.length * lineHeightPx)
-      
-      // Важно вернуть обновленные w/h
-      o.w = newW
-      o.h = newH
-      
-      return {
-        ...o,
-        w: newW,
-        h: newH,
-        data: { ...d, text }
-      }
-    })
+    const targetIndex = prevOverlays.findIndex(o => o.id === id)
+    if (targetIndex < 0) return
+    
+    // Создаем копию для проверки
+    const targetOv = { ...prevOverlays[targetIndex], data: { ...prevOverlays[targetIndex].data } }
 
-    const eng = engineRef.current
-    eng.setOverlays(newOverlays)
-    const bounds = eng.getOverlayScreenBoundsById(id)
+    const d = targetOv.data
+    const fontSize = d.fontSize || 48
+    const fontFamily = d.fontFamily || 'Arial'
+    const fontWeight = d.fontWeight || 'bold'
+    const fontStyle = d.fontStyle || 'normal'
+    const text = value || ''
+    const lines = text.split('\n')
+    const lineHeightPx = fontSize * 1.2
 
-
-    let overflow = false
-    if (bounds && docRect) {
-      const bb = bounds.bbox || { x: bounds.x, y: bounds.y, w: bounds.w, h: bounds.h }
-      const d = docRect
-      if (bb.x < d.x || bb.y < d.y || bb.x + bb.w > d.x + d.width || bb.y + bb.h > d.y + d.height) {
-        overflow = true
-      }
+    let maxLineW = 0
+    for (const line of lines) {
+      const w = measureTextWidthPx(line, fontFamily, fontSize, fontWeight, fontStyle)
+      if (w > maxLineW) maxLineW = w
     }
-    const isExpanding = (value || '').length > (prevValue || '').length
+    
+    const newW = Math.max(20, maxLineW + 4)
+    const newH = Math.max(lineHeightPx, lines.length * lineHeightPx)
 
-    if (overflow && isExpanding) {
-      alert('Текстовый блок не может выходить за границы страницы. Уменьшите размер шрифта, сократите текст или перенесите часть текста на другую строку или страницу.')
-      // откатываем в предыдущее состояние
-      eng.setOverlays(prevOverlays)
-      setTextEditValue(prevValue)
-      return
+    targetOv.w = newW
+    targetOv.h = newH
+
+    const docW = page.docWidth || 1000
+    const docH = page.docHeight || 1414
+    
+    // Проверка границ
+    function checkBounds(ov) {
+       const ang = ov.angleRad || 0
+       const hw = ov.w / 2
+       const hh = ov.h / 2
+       const cx = ov.cx
+       const cy = ov.cy
+       const cos = Math.cos(ang)
+       const sin = Math.sin(ang)
+       const corners = [
+         {x: -hw, y: -hh}, {x: hw, y: -hh}, {x: hw, y: hh}, {x: -hw, y: hh}
+       ]
+       for (const p of corners) {
+          const fx = cx + (p.x * cos - p.y * sin)
+          const fy = cy + (p.x * sin + p.y * cos)
+          if (fx < 0 || fx > docW || fy < 0 || fy > docH) return false
+       }
+       return true
     }
+
+    const isExpanding = text.length > (textEditValue || '').length
+
+    // Если не force и расширяется за границы - пытаемся сдвинуть или блокируем
+    if (!force && isExpanding && !checkBounds(targetOv)) {
+       // Пробуем сдвинуть вверх, если упираемся вниз
+       const oldCy = targetOv.cy
+       targetOv.cy -= 20
+       if (checkBounds(targetOv)) {
+          // Сдвиг помог - применяем
+       } else {
+          // Вернули обратно и попробовали влево
+          targetOv.cy = oldCy
+          targetOv.cx -= 20
+          if (!checkBounds(targetOv)) {
+             toast('Текст выходит за границы документа', 'error')
+             return
+          }
+       }
+    }
+
+    setTextEditValue(value)
+
+    const newOverlays = [...prevOverlays]
+    targetOv.data.text = text
+    newOverlays[targetIndex] = targetOv
+
+    engineRef.current.setOverlays(newOverlays)
+    const bounds = engineRef.current.getOverlayScreenBoundsById(id)
 
     const newPages = [...pagesArr]
     newPages[pageIndex] = { ...page, overlays: newOverlays }
@@ -1432,8 +1503,6 @@ export default function Editor () {
     setPages(newPages)
 
     if (bounds) {
-      // Обновляем стейт, включая новые реальные размеры
-      const targetOv = newOverlays.find(o => o.id === id)
       setTextEdit(prev => (prev && prev.overlayId === id ? { 
         ...prev, 
         rectCanvas: bounds,
@@ -1444,40 +1513,35 @@ export default function Editor () {
     scheduleSaveDraft()
   }
 
-     const textEditorStyle = textEdit && canvasWrapRef.current
+  const textEditorStyle = textEdit && canvasWrapRef.current
     ? (() => {
         const rc = textEdit.rectCanvas || {}
-        // Используем реальные размеры документа, сохраненные в стейте
         const docW = textEdit.docW || 40
         const docH = textEdit.docH || 30
         
-        // Вычисляем масштаб: отношение ширины на экране к реальной ширине
-        // Если ширина 0, масштаб 1
         const currentScale = (rc.w && docW) ? (rc.w / docW) : 1
-        
         const angleDeg = (rc.angleRad || 0) * 180 / Math.PI
         
         return {
           position: 'absolute',
           left: `${rc.cx}px`,
           top: `${rc.cy}px`,
-          // Задаем реальные размеры
           width: `${docW}px`,
           height: `${docH}px`,
-          // Масштабируем блок целиком
+          
           transform: `translate(-50%, -50%) rotate(${angleDeg}deg) scale(${currentScale})`,
           transformOrigin: 'center center',
           
           fontFamily: textEdit.fontFamily,
-          fontSize: `${textEdit.fontSize}px`, // Реальный размер шрифта
+          fontSize: `${textEdit.fontSize}px`,
           fontWeight: textEdit.fontWeight,
           fontStyle: textEdit.fontStyle,
           color: textEdit.fill,
-          textAlign: textEdit.textAlign || 'center',
           
-          // Убираем бордеры и фон, чтобы выглядело нативно, или делаем прозрачный фон
+          textAlign: textEdit.textAlign || 'left',
+          caretColor: '#E26D5C', // Акцентный курсор
+          
           border: 'none',
-          padding: '0',
           margin: '0',
           resize: 'none',
           outline: 'none',
@@ -1485,8 +1549,9 @@ export default function Editor () {
           zIndex: 200,
           whiteSpace: 'pre',
           overflow: 'hidden',
-          // Синхронизируем line-height с движком (там 1.2)
-          lineHeight: '1.2' 
+          
+          lineHeight: '1.2',
+          padding: '0'
         }
       })()
     : null
@@ -1643,6 +1708,10 @@ export default function Editor () {
                     style={textEditorStyle}
                     value={textEditValue}
                     onChange={e => handleTextChange(e.target.value)}
+                    onPointerDown={(e) => engineRef.current?.handleExternalPointerDown(e)}
+                    spellCheck={false}
+                    autoCorrect="off"
+                    autoCapitalize="off"
                   />
                 )}
               </>
