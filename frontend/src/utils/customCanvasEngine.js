@@ -3,7 +3,7 @@
 import icDelete from '../assets/icons/x-close.svg'
 import icRotate from '../assets/icons/rotate-handle.svg'
 import icScale from '../assets/icons/scale-handle.svg'
-import icEdit from '../assets/icons/edit-text.svg'
+import icEdit from '../assets/icons/edit-text.svg' // оставлен для совместимости, сейчас не используется
 
 const deleteImg = new Image()
 deleteImg.src = icDelete
@@ -84,6 +84,7 @@ export class CustomCanvasEngine {
     this.activeHandle = null
     this.dragState = null
     this.isPointerDown = false
+    this.pointerId = null
     this._lastControlPositions = null
     this._cursor = 'default'
 
@@ -98,6 +99,7 @@ export class CustomCanvasEngine {
     this._onPointerDown = this._onPointerDown.bind(this)
     this._onPointerMove = this._onPointerMove.bind(this)
     this._onPointerUp = this._onPointerUp.bind(this)
+    this._onPointerCancel = this._onPointerCancel.bind(this)
 
     this._attachEvents()
     this.resize(this.viewWidth, this.viewHeight)
@@ -111,12 +113,14 @@ export class CustomCanvasEngine {
     this.canvas.addEventListener('pointerdown', this._onPointerDown)
     window.addEventListener('pointermove', this._onPointerMove)
     window.addEventListener('pointerup', this._onPointerUp)
+    window.addEventListener('pointercancel', this._onPointerCancel)
   }
 
   _detachEvents() {
     this.canvas.removeEventListener('pointerdown', this._onPointerDown)
     window.removeEventListener('pointermove', this._onPointerMove)
     window.removeEventListener('pointerup', this._onPointerUp)
+    window.removeEventListener('pointercancel', this._onPointerCancel)
   }
 
   setDocument(doc) {
@@ -265,8 +269,13 @@ export class CustomCanvasEngine {
     const ch = this.viewHeight
     const margin = this.viewMargin || 0
 
+    const isMobileLandscape = this.rotationAffectsTransform && this.rotation === 90
+
+    // Небольшой вертикальный запас на мобилке в landscape,
+    // чтобы лист не "прилипал" к краям и не выглядел слишком высоким.
+    const extraVerticalMargin = isMobileLandscape ? ch * 0.12 : 0
     const availW0 = cw
-    const availH0 = Math.max(10, ch - margin)
+    const availH0 = Math.max(10, ch - margin - extraVerticalMargin)
 
     let fitW = availW0
     let fitH = availH0
@@ -277,9 +286,16 @@ export class CustomCanvasEngine {
       fitH = tmp
     }
 
-    const scale = Math.min(fitW / W, fitH / H) || 1
-    const actualW = W * scale
-    const actualH = H * scale
+    let scale = Math.min(fitW / W, fitH / H) || 1
+    let actualW = W * scale
+    let actualH = H * scale
+
+    // Явно не даём листу стать шире области просмотра
+    if (actualW > cw) {
+      scale = cw / W
+      actualW = cw
+      actualH = H * scale
+    }
 
     this.scale = scale
     this.offsetX = (cw - actualW) / 2
@@ -376,26 +392,23 @@ export class CustomCanvasEngine {
       const sz = d.fontSize || 48
       const fam = d.fontFamily || 'Arial'
       ctx.font = `${fs} ${fw} ${sz}px ${fam}`
-      
+
       const align = d.textAlign || 'left'
       ctx.textAlign = align
-      
-      // MIDDLE для точного центрирования
-      ctx.textBaseline = 'middle'
-      
+      ctx.textBaseline = 'top' // чтобы совпадать с textarea
+
       let xPos = 0
       if (align === 'left') xPos = -halfW
       else if (align === 'right') xPos = halfW
       else if (align === 'center') xPos = 0
-      
+
       const text = String(d.text || '')
       const lines = text.split('\n')
       const lh = sz * 1.2
-      
-      // Центрируем по вертикали
+
       const totalH = lines.length * lh
-      let startY = -totalH / 2 + lh / 2
-      
+      let startY = -totalH / 2 // центрируем блок по высоте
+
       for (let line of lines) {
         ctx.fillText(line, xPos, startY)
         startY += lh
@@ -451,7 +464,6 @@ export class CustomCanvasEngine {
       if (kind === 'delete') img = deleteImg
       else if (kind === 'rotate') img = rotateImg
       else if (kind === 'scale') img = scaleImg
-      else if (kind === 'edit') img = editImg
 
       if (img && img.complete) {
         const sz = hr * 1.2
@@ -470,18 +482,11 @@ export class CustomCanvasEngine {
     const pScale = toGlobal(-halfW - offset, halfH + offset)
     drawBtn(pScale, 'scale')
 
-    let pEdit = null
-    if (ov.type === 'text') {
-      const editOff = 22
-      pEdit = toGlobal(-halfW - editOff, -halfH - editOff)
-      drawBtn(pEdit, 'edit')
-    }
-
     this._lastControlPositions = {
       rotate: pRotate,
       delete: pDelete,
       scale: pScale,
-      edit: pEdit,
+      edit: null,
     }
   }
 
@@ -508,7 +513,6 @@ export class CustomCanvasEngine {
     if (check(pos.rotate)) return 'rotate'
     if (check(pos.delete)) return 'delete'
     if (check(pos.scale)) return 'scale'
-    if (check(pos.edit)) return 'edit'
     return null
   }
 
@@ -542,10 +546,12 @@ export class CustomCanvasEngine {
   handleExternalPointerDown(evt) {
     const active = this.overlays.find(o => o.id === this.activeId)
     if (!active) return
+    evt.preventDefault()
     const { sx, sy } = this._getPointerPos(evt)
-    
+
     this.onBeforeOverlayChange(this.overlays.map(cloneOverlay))
     this.isPointerDown = true
+    this.pointerId = typeof evt.pointerId === 'number' ? evt.pointerId : null
     this.activeHandle = 'move'
     this.dragState = {
       startScreen: { sx, sy },
@@ -559,8 +565,13 @@ export class CustomCanvasEngine {
     if (evt.target === this.canvas) evt.preventDefault()
     if (evt.button !== 0) return
 
+    if (this.isPointerDown && this.pointerId != null && evt.pointerId !== this.pointerId) {
+      return
+    }
+
     const { sx, sy } = this._getPointerPos(evt)
     this.isPointerDown = true
+    this.pointerId = typeof evt.pointerId === 'number' ? evt.pointerId : null
 
     const handle = this._hitHandle(sx, sy)
     const active = this.overlays.find(o => o.id === this.activeId)
@@ -578,20 +589,8 @@ export class CustomCanvasEngine {
           this.onOverlayDelete(id)
         }
         this.isPointerDown = false
+        this.pointerId = null
         this._setCursor('default')
-        return
-      }
-
-      if (handle === 'edit') {
-        if (active.type === 'text') {
-          this.activeId = active.id
-          this.onSelectionChange(cloneOverlay(active))
-          this._draw()
-          const bounds = this._getOverlayScreenBounds(active)
-          this.onTextEditRequest(cloneOverlay(active), bounds)
-        }
-        this.isPointerDown = false
-        this._setCursor('text')
         return
       }
 
@@ -618,6 +617,13 @@ export class CustomCanvasEngine {
       }
       this._setCursor('grabbing')
       this._draw()
+
+      if (ov.type === 'text') {
+        try {
+          const bounds = this._getOverlayScreenBounds(ov)
+          this.onTextEditRequest(cloneOverlay(ov), bounds)
+        } catch {}
+      }
     } else {
       if (this.activeId) {
         this.activeId = null
@@ -632,6 +638,10 @@ export class CustomCanvasEngine {
   }
 
   _onPointerMove(evt) {
+    if (this.pointerId != null && evt.pointerId !== this.pointerId) {
+      return
+    }
+
     if (this.isPointerDown && this.activeHandle) {
       evt.preventDefault()
     }
@@ -641,7 +651,7 @@ export class CustomCanvasEngine {
     if (!this.isPointerDown || !this.activeHandle || !this.dragState) {
       const handle = this._hitHandle(sx, sy)
       if (handle === 'rotate') this._setCursor('crosshair')
-      else if (['delete', 'scale', 'edit'].includes(handle)) this._setCursor('pointer')
+      else if (['delete', 'scale'].includes(handle)) this._setCursor('pointer')
       else if (this._hitOverlay(sx, sy)) this._setCursor('move')
       else this._setCursor('default')
       return
@@ -658,11 +668,28 @@ export class CustomCanvasEngine {
     this.onOverlayChange(cloneOverlay(active))
   }
 
-  _onPointerUp() {
+  _onPointerUp(evt) {
+    if (this.pointerId != null && evt.pointerId !== this.pointerId) {
+      return
+    }
     if (this.isPointerDown) {
       this.isPointerDown = false
       this.activeHandle = null
       this.dragState = null
+      this.pointerId = null
+      this._setCursor('default')
+    }
+  }
+
+  _onPointerCancel(evt) {
+    if (this.pointerId != null && evt.pointerId !== this.pointerId) {
+      return
+    }
+    if (this.isPointerDown) {
+      this.isPointerDown = false
+      this.activeHandle = null
+      this.dragState = null
+      this.pointerId = null
       this._setCursor('default')
     }
   }
@@ -703,9 +730,9 @@ export class CustomCanvasEngine {
     if (ov.type === 'text') {
       const oldFs = start.data?.fontSize || 48
       let newFs = oldFs * factor
-      
-      newFs = Math.max(12, Math.min(1000, newFs))
-      
+
+      newFs = Math.max(6, newFs)
+
       const realFactor = newFs / oldFs
 
       ov.data.fontSize = newFs
@@ -726,9 +753,9 @@ export class CustomCanvasEngine {
     const dx = x - ov.cx
     const dy = y - ov.cy
     const newAngle = Math.atan2(dy, dx) + Math.PI / 2
-    
+
     ov.angleRad = newAngle
-    
+
     this._clampOverlay(ov)
   }
 
@@ -876,6 +903,12 @@ export class CustomCanvasEngine {
     this.onSelectionChange(cloneOverlay(ov))
     this._draw()
     this.onOverlayChange(cloneOverlay(ov))
+
+    // Сразу включаем режим редактирования для нового текстового объекта
+    try {
+      const bounds = this._getOverlayScreenBounds(ov)
+      this.onTextEditRequest(cloneOverlay(ov), bounds)
+    } catch {}
   }
 }
 

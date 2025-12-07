@@ -42,7 +42,11 @@ const PDF_RENDER_SCALE = 3.0
 const RASTER_RENDER_SCALE = 3.0
 
 function randDocId () { return String(Math.floor(1e15 + Math.random() * 9e15)) }
-function genDefaultName () { const a = Math.floor(Math.random() * 1e6), b = Math.floor(Math.random() * 1e6); return `${a}-${b}` }
+function genDefaultName () {
+  const a = Math.floor(Math.random() * 1e6)
+  const b = Math.floor(Math.random() * 1e6)
+  return `${a}-${b}`
+}
 function sanitizeName (s) {
   s = (s || '').normalize('NFKC')
   s = s.replace(/[^\p{L}\p{N}._-]+/gu, '-').replace(/-+/g, '-').replace(/^[-_.]+|[-_.]+$/g, '')
@@ -222,11 +226,11 @@ function renderPageOffscreen (page, scaleMul = 2) {
       const fontSize = d.fontSize || 48
       const fontFamily = d.fontFamily || 'Arial'
       ctx.font = `${fontStyle} ${fontWeight} ${fontSize}px ${fontFamily}`
-      
+
       const align = d.textAlign || 'left'
       ctx.textAlign = align
       ctx.textBaseline = 'top'
-      
+
       let xPos = 0
       if (align === 'left') xPos = -halfW
       else if (align === 'right') xPos = halfW
@@ -235,7 +239,8 @@ function renderPageOffscreen (page, scaleMul = 2) {
       const text = d.text || ''
       const lines = text.split('\n')
       const lh = fontSize * 1.2
-      let startY = -halfH
+      const totalH = lines.length * lh
+      let startY = -totalH / 2
       for (const line of lines) {
         ctx.fillText(line, xPos, startY)
         startY += lh
@@ -321,6 +326,8 @@ export default function Editor () {
   const [textEditValue, setTextEditValue] = useState('')
   const textAreaRef = useRef(null)
   const textEditRef = useRef(textEdit)
+  const lastGoodTextRef = useRef('')
+  const limitErrorAtRef = useRef(0)
 
   const docFileRef = useRef(null)
   const bgFileRef = useRef(null)
@@ -342,6 +349,13 @@ export default function Editor () {
     setBanner(text)
     window.clearTimeout(showBanner._t)
     showBanner._t = window.setTimeout(() => setBanner(''), timeout)
+  }
+
+  function showLimitWarning () {
+    const now = Date.now()
+    if (now - limitErrorAtRef.current < 1200) return
+    limitErrorAtRef.current = now
+    toast('Текст выходит за границы документа', 'error')
   }
 
   const scheduleSaveDraft = useCallback(() => {
@@ -456,7 +470,14 @@ export default function Editor () {
     return () => window.removeEventListener('user:update', onUser)
   }, [])
 
-  // Инициализация движка
+  useEffect(() => {
+    const current = textEditRef.current
+    if (current) {
+      finishTextEditing()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isMobile])
+
   useEffect(() => {
     if (!hasDoc || !canvasRef.current) return
     if (engineRef.current) return
@@ -472,7 +493,6 @@ export default function Editor () {
 
         if (ov.id === engineRef.current?.activeId && ov.type === 'text') {
           const d = ov.data || {}
-          // Обновляем визуальный размер шрифта, округляя его
           setFontSize(Math.round(d.fontSize || 48))
           setFont(d.fontFamily || 'Arial')
           setBold(d.fontWeight === 'bold' || d.fontWeight === 700)
@@ -492,13 +512,13 @@ export default function Editor () {
           copy[pageIndex] = { ...page, overlays: newOverlays }
           return copy
         })
-        
+
         const te = textEditRef.current
         if (te && te.overlayId === ov.id && engineRef.current) {
           const bounds = engineRef.current.getOverlayScreenBoundsById(ov.id)
           if (bounds) {
-            setTextEdit(prev => (prev && prev.overlayId === ov.id ? { 
-              ...prev, 
+            setTextEdit(prev => (prev && prev.overlayId === ov.id ? {
+              ...prev,
               rectCanvas: bounds,
               docW: ov.w,
               docH: ov.h,
@@ -523,6 +543,11 @@ export default function Editor () {
         scheduleSaveDraft()
       },
       onSelectionChange: ov => {
+        const current = textEditRef.current
+        if (current && (!ov || ov.id !== current.overlayId)) {
+          finishTextEditing()
+        }
+
         if (ov && ov.type === 'text') {
           const d = ov.data || {}
           setFont(d.fontFamily || 'Arial')
@@ -537,12 +562,19 @@ export default function Editor () {
         const d = ov.data || {}
 
         if (current && current.overlayId === ov.id) {
-          finishTextEditing()
           return
+        }
+        if (current && current.overlayId !== ov.id) {
+          finishTextEditing()
         }
 
         if (engineRef.current) engineRef.current.setEditingOverlayId(ov.id)
-        setTextEditValue(d.text || '')
+
+        const initialText = d.text || ''
+        lastGoodTextRef.current = initialText
+        limitErrorAtRef.current = 0
+        setTextEditValue(initialText)
+
         setTextEdit({
           overlayId: ov.id,
           rectCanvas: bounds,
@@ -588,39 +620,41 @@ export default function Editor () {
     }
   }, [hasDoc, isMobile, scheduleSaveDraft])
 
-  function finishTextEditing() {
+  function finishTextEditing () {
     const current = textEditRef.current
-    if (!current) return
+    if (!current || !engineRef.current) {
+      setTextEdit(null)
+      setPanelOpen(false)
+      return
+    }
 
-    // Убираем висячие переносы строк в конце и в начале, но оставляем переносы между словами
-    let val = (textEditValue || '').replace(/\s+$/, '')
-    
-    // Если после очистки строка пустая - удаляем объект
-    if (!val.trim()) {
-       if (engineRef.current) {
-         const pagesArr = pagesRef.current
-         const pIdx = curRef.current
-         const p = pagesArr[pIdx]
-         if (p) {
-           const newOvs = (p.overlays || []).filter(o => o.id !== current.overlayId)
-           engineRef.current.setOverlays(newOvs)
-           const newPages = [...pagesArr]
-           newPages[pIdx] = { ...p, overlays: newOvs }
-           setPages(newPages)
-           pagesRef.current = newPages
-         }
-       }
-    } else {
-       // Если есть текст, обновляем его, удалив лишние переносы
-       if (val !== textEditValue) {
-          handleTextChange(val, true) // true = force update without checks
-       }
+    const pagesArr = pagesRef.current
+    const pIdx = curRef.current
+    const page = pagesArr[pIdx]
+    if (!page) {
+      setTextEdit(null)
+      setPanelOpen(false)
+      return
+    }
+
+    const overlays = page.overlays || []
+    const idx = overlays.findIndex(o => o.id === current.overlayId)
+    if (idx >= 0) {
+      const ov = overlays[idx]
+      const txt = (ov.data?.text || '').trim()
+      if (!txt) {
+        const newOvs = overlays.filter(o => o.id !== current.overlayId)
+        engineRef.current.setOverlays(newOvs)
+        const newPages = [...pagesArr]
+        newPages[pIdx] = { ...page, overlays: newOvs }
+        setPages(newPages)
+        pagesRef.current = newPages
+      }
     }
 
     if (engineRef.current) engineRef.current.setEditingOverlayId(null)
     setTextEdit(null)
     setPanelOpen(false)
-    scheduleSaveDraft()
   }
 
   useEffect(() => {
@@ -979,46 +1013,49 @@ export default function Editor () {
     if (!engineRef.current) return
 
     const initText = 'Вставьте текст'
-    const fontSize = 48
-    const w = measureTextWidthPx(initText, 'Arial', fontSize, 'bold', 'normal')
+    const fontSizeLocal = 48
+    const w = measureTextWidthPx(initText, 'Arial', fontSizeLocal, 'bold', 'normal')
 
     engineRef.current.addTextOverlay(initText, {
       fontFamily: 'Arial',
-      fontSize: fontSize,
+      fontSize: fontSizeLocal,
       fontWeight: 'bold',
       fill: '#000000',
       textAlign: 'left',
       width: w + 4,
-      height: fontSize * 1.2
+      height: fontSizeLocal * 1.2
     })
     scheduleSaveDraft()
   }
 
-  const applyPanel = useCallback(() => {
+  const applyPanel = useCallback((overrides = {}) => {
     const pageIndex = curRef.current
     const page = pagesRef.current[pageIndex]
-    if (!page || !engineRef.current) return
+    if (!page || !engineRef.current) return false
 
     const activeId = engineRef.current.activeId
-    if (!activeId) return
+    if (!activeId) return false
 
     const overlays = page.overlays || []
     const idx = overlays.findIndex(o => o.id === activeId)
-    if (idx < 0) return
+    if (idx < 0) return false
 
     const oldOv = overlays[idx]
-    if (oldOv.type !== 'text') return
+    if (oldOv.type !== 'text') return false
 
-    const newFontFamily = font
-    const newFontSize = fontSize
-    const newFontWeight = bold ? 'bold' : 'normal'
-    const newFontStyle = italic ? 'italic' : 'normal'
-    const newColor = color
+    const newFontFamily = overrides.font ?? font
+    const rawSize = overrides.fontSize ?? fontSize
+    const newFontSize = Math.max(6, rawSize)
+    const useBold = overrides.bold ?? bold
+    const useItalic = overrides.italic ?? italic
+    const newColor = overrides.color ?? color
+
+    const newFontWeight = useBold ? 'bold' : 'normal'
+    const newFontStyle = useItalic ? 'italic' : 'normal'
 
     const d = oldOv.data || {}
     const text = d.text || ''
     const lines = text.split('\n')
-    
     const lineHeightPx = newFontSize * 1.2
 
     let maxLineW = 0
@@ -1026,7 +1063,7 @@ export default function Editor () {
       const w = measureTextWidthPx(line, newFontFamily, newFontSize, newFontWeight, newFontStyle)
       if (w > maxLineW) maxLineW = w
     }
-    
+
     const newW = Math.max(20, maxLineW + 4)
     const newH = Math.max(lineHeightPx, lines.length * lineHeightPx)
 
@@ -1043,6 +1080,87 @@ export default function Editor () {
         fill: newColor
       }
     }
+
+    const sim = { ...newOv, data: { ...newOv.data } }
+
+    function getBounds (ov) {
+      const w = ov.w * (ov.scaleX || 1)
+      const h = ov.h * (ov.scaleY || 1)
+      const ang = ov.angleRad || 0
+      const hw = w / 2
+      const hh = h / 2
+      const cs = Math.cos(ang)
+      const sn = Math.sin(ang)
+      const pts = [
+        { x: -hw, y: -hh },
+        { x: hw, y: -hh },
+        { x: hw, y: hh },
+        { x: -hw, y: hh }
+      ].map(p => ({
+        x: ov.cx + (p.x * cs - p.y * sn),
+        y: ov.cy + (p.x * sn + p.y * cs)
+      }))
+      let minX = pts[0].x
+      let maxX = pts[0].x
+      let minY = pts[0].y
+      let maxY = pts[0].y
+      for (const p of pts) {
+        if (p.x < minX) minX = p.x
+        if (p.x > maxX) maxX = p.x
+        if (p.y < minY) minY = p.y
+        if (p.y > maxY) maxY = p.y
+      }
+      return { minX, maxX, minY, maxY }
+    }
+
+    const docW = page.docWidth || 1000
+    const docH = page.docHeight || 1414
+    const rotation = page.rotation || 0
+
+    let pageW, pageH
+    if (rotation === 0) {
+      pageW = docW
+      pageH = docH
+    } else {
+      if (docW > 0) {
+        pageH = docH
+        pageW = (docH * docH) / docW
+      } else {
+        pageH = docH
+        pageW = docH
+      }
+    }
+    const docCx = docW / 2
+    const docCy = docH / 2
+    const pLeft = docCx - pageW / 2
+    const pRight = docCx + pageW / 2
+    const pTop = docCy - pageH / 2
+    const pBottom = docCy + pageH / 2
+
+    const b0 = getBounds(sim)
+    let dx = 0
+    let dy = 0
+    if (b0.minX < pLeft) dx = pLeft - b0.minX
+    if (b0.maxX > pRight) dx = pRight - b0.maxX
+    if (b0.minY < pTop) dy = pTop - b0.minY
+    if (b0.maxY > pBottom) dy = pBottom - b0.maxY
+    sim.cx += dx
+    sim.cy += dy
+    const b1 = getBounds(sim)
+
+    const eps = 0.5
+    if (
+      b1.minX < pLeft - eps ||
+      b1.maxX > pRight + eps ||
+      b1.minY < pTop - eps ||
+      b1.maxY > pBottom + eps
+    ) {
+      showLimitWarning()
+      return false
+    }
+
+    newOv.cx = sim.cx
+    newOv.cy = sim.cy
 
     const newOverlaysList = [...overlays]
     newOverlaysList[idx] = newOv
@@ -1062,27 +1180,26 @@ export default function Editor () {
     })
 
     if (textEditRef.current && textEditRef.current.overlayId === activeId) {
-      setTextEdit({
-        overlayId: activeId,
-        rectCanvas: newBounds,
-        docW: newW,
-        docH: newH,
-        originalText: textEditRef.current.originalText,
-        fontFamily: newFontFamily,
-        fontSize: newFontSize,
-        fontWeight: newFontWeight,
-        fontStyle: newFontStyle,
-        fill: newColor,
-        textAlign: d.textAlign || 'left'
+      setTextEdit(prev => {
+        if (!prev || prev.overlayId !== activeId) return prev
+        return {
+          ...prev,
+          rectCanvas: newBounds,
+          docW: newW,
+          docH: newH,
+          fontFamily: newFontFamily,
+          fontSize: newFontSize,
+          fontWeight: newFontWeight,
+          fontStyle: newFontStyle,
+          fill: newColor,
+          textAlign: d.textAlign || 'left'
+        }
       })
     }
 
     scheduleSaveDraft()
-  }, [cur, font, fontSize, bold, italic, color, scheduleSaveDraft])
-
-  useEffect(() => {
-    if (panelOpen) applyPanel()
-  }, [panelOpen, applyPanel])
+    return true
+  }, [font, fontSize, bold, italic, color, scheduleSaveDraft])
 
   async function rotatePage () {
     const page = pagesRef.current[cur]
@@ -1197,9 +1314,9 @@ export default function Editor () {
       }
     })
 
-  setPages(newPages)
-  scheduleSaveDraft()
-  toast('Объект добавлен на все страницы', 'success')
+    setPages(newPages)
+    scheduleSaveDraft()
+    toast('Объект добавлен на все страницы', 'success')
   }
 
   async function applyPromo () {
@@ -1407,108 +1524,154 @@ export default function Editor () {
   })()
 
   function handleTextChange (value, force = false) {
-    const prevValue = textEditValue
     const te = textEditRef.current
     const id = te?.overlayId
-    if (!id || !engineRef.current) return
+    if (!id || !engineRef.current) {
+      setTextEditValue(value)
+      return
+    }
 
-    const pagesArr = pagesRef.current
+    const pagesSnap = pagesRef.current
     const pageIndex = curRef.current
-    const page = pagesArr[pageIndex]
-    if (!page) return
+    const page = pagesSnap[pageIndex]
+    if (!page) {
+      setTextEditValue(value)
+      return
+    }
 
     const prevOverlays = page.overlays || []
     const targetIndex = prevOverlays.findIndex(o => o.id === id)
-    if (targetIndex < 0) return
-    
-    // Создаем копию для проверки
+    if (targetIndex < 0) {
+      setTextEditValue(value)
+      return
+    }
+
     const targetOv = { ...prevOverlays[targetIndex], data: { ...prevOverlays[targetIndex].data } }
 
     const d = targetOv.data
-    const fontSize = d.fontSize || 48
+    const fontSizeLocal = d.fontSize || 48
     const fontFamily = d.fontFamily || 'Arial'
     const fontWeight = d.fontWeight || 'bold'
     const fontStyle = d.fontStyle || 'normal'
     const text = value || ''
     const lines = text.split('\n')
-    const lineHeightPx = fontSize * 1.2
+    const lineHeightPx = fontSizeLocal * 1.2
 
     let maxLineW = 0
     for (const line of lines) {
-      const w = measureTextWidthPx(line, fontFamily, fontSize, fontWeight, fontStyle)
+      const w = measureTextWidthPx(line, fontFamily, fontSizeLocal, fontWeight, fontStyle)
       if (w > maxLineW) maxLineW = w
     }
-    
+
     const newW = Math.max(20, maxLineW + 4)
     const newH = Math.max(lineHeightPx, lines.length * lineHeightPx)
 
     targetOv.w = newW
     targetOv.h = newH
+    targetOv.data.text = text
 
-    const docW = page.docWidth || 1000
-    const docH = page.docHeight || 1414
-    
-    // Проверка границ
-    function checkBounds(ov) {
-       const ang = ov.angleRad || 0
-       const hw = ov.w / 2
-       const hh = ov.h / 2
-       const cx = ov.cx
-       const cy = ov.cy
-       const cos = Math.cos(ang)
-       const sin = Math.sin(ang)
-       const corners = [
-         {x: -hw, y: -hh}, {x: hw, y: -hh}, {x: hw, y: hh}, {x: -hw, y: hh}
-       ]
-       for (const p of corners) {
-          const fx = cx + (p.x * cos - p.y * sin)
-          const fy = cy + (p.x * sin + p.y * cos)
-          if (fx < 0 || fx > docW || fy < 0 || fy > docH) return false
-       }
-       return true
+    if (!force) {
+      const sim = { ...targetOv, data: { ...targetOv.data } }
+
+      function getBounds (ov) {
+        const w = ov.w * (ov.scaleX || 1)
+        const h = ov.h * (ov.scaleY || 1)
+        const ang = ov.angleRad || 0
+        const hw = w / 2
+        const hh = h / 2
+        const cs = Math.cos(ang)
+        const sn = Math.sin(ang)
+        const pts = [
+          { x: -hw, y: -hh },
+          { x: hw, y: -hh },
+          { x: hw, y: hh },
+          { x: -hw, y: hh }
+        ].map(p => ({
+          x: ov.cx + (p.x * cs - p.y * sn),
+          y: ov.cy + (p.x * sn + p.y * cs)
+        }))
+        let minX = pts[0].x
+        let maxX = pts[0].x
+        let minY = pts[0].y
+        let maxY = pts[0].y
+        for (const p of pts) {
+          if (p.x < minX) minX = p.x
+          if (p.x > maxX) maxX = p.x
+          if (p.y < minY) minY = p.y
+          if (p.y > maxY) maxY = p.y
+        }
+        return { minX, maxX, minY, maxY }
+      }
+
+      const docW = page.docWidth || 1000
+      const docH = page.docHeight || 1414
+      const rotation = page.rotation || 0
+
+      let pageW, pageH
+      if (rotation === 0) {
+        pageW = docW
+        pageH = docH
+      } else {
+        if (docW > 0) {
+          pageH = docH
+          pageW = (docH * docH) / docW
+        } else {
+          pageH = docH
+          pageW = docH
+        }
+      }
+      const docCx = docW / 2
+      const docCy = docH / 2
+      const pLeft = docCx - pageW / 2
+      const pRight = docCx + pageW / 2
+      const pTop = docCy - pageH / 2
+      const pBottom = docCy + pageH / 2
+
+      const b0 = getBounds(sim)
+      let dx = 0
+      let dy = 0
+      if (b0.minX < pLeft) dx = pLeft - b0.minX
+      if (b0.maxX > pRight) dx = pRight - b0.maxX
+      if (b0.minY < pTop) dy = pTop - b0.minY
+      if (b0.maxY > pBottom) dy = pBottom - b0.maxY
+      sim.cx += dx
+      sim.cy += dy
+      const b1 = getBounds(sim)
+
+      const eps = 0.5
+      if (
+        b1.minX < pLeft - eps ||
+        b1.maxX > pRight + eps ||
+        b1.minY < pTop - eps ||
+        b1.maxY > pBottom + eps
+      ) {
+        showLimitWarning()
+        setTextEditValue(lastGoodTextRef.current)
+        return
+      }
+
+      targetOv.cx = sim.cx
+      targetOv.cy = sim.cy
     }
 
-    const isExpanding = text.length > (textEditValue || '').length
-
-    // Если не force и расширяется за границы - пытаемся сдвинуть или блокируем
-    if (!force && isExpanding && !checkBounds(targetOv)) {
-       // Пробуем сдвинуть вверх, если упираемся вниз
-       const oldCy = targetOv.cy
-       targetOv.cy -= 20
-       if (checkBounds(targetOv)) {
-          // Сдвиг помог - применяем
-       } else {
-          // Вернули обратно и попробовали влево
-          targetOv.cy = oldCy
-          targetOv.cx -= 20
-          if (!checkBounds(targetOv)) {
-             toast('Текст выходит за границы документа', 'error')
-             return
-          }
-       }
-    }
-
-    setTextEditValue(value)
+    lastGoodTextRef.current = text
+    setTextEditValue(text)
 
     const newOverlays = [...prevOverlays]
-    targetOv.data.text = text
     newOverlays[targetIndex] = targetOv
 
     engineRef.current.setOverlays(newOverlays)
     const bounds = engineRef.current.getOverlayScreenBoundsById(id)
 
-    const newPages = [...pagesArr]
+    const newPages = [...pagesSnap]
     newPages[pageIndex] = { ...page, overlays: newOverlays }
     pagesRef.current = newPages
     setPages(newPages)
 
     if (bounds) {
-      setTextEdit(prev => (prev && prev.overlayId === id ? { 
-        ...prev, 
-        rectCanvas: bounds,
-        docW: targetOv.w, 
-        docH: targetOv.h 
-      } : prev))
+      setTextEdit(prev => (prev && prev.overlayId === id
+        ? { ...prev, rectCanvas: bounds, docW: targetOv.w, docH: targetOv.h }
+        : prev))
     }
     scheduleSaveDraft()
   }
@@ -1518,29 +1681,29 @@ export default function Editor () {
         const rc = textEdit.rectCanvas || {}
         const docW = textEdit.docW || 40
         const docH = textEdit.docH || 30
-        
+
         const currentScale = (rc.w && docW) ? (rc.w / docW) : 1
         const angleDeg = (rc.angleRad || 0) * 180 / Math.PI
-        
+
         return {
           position: 'absolute',
           left: `${rc.cx}px`,
           top: `${rc.cy}px`,
           width: `${docW}px`,
           height: `${docH}px`,
-          
+
           transform: `translate(-50%, -50%) rotate(${angleDeg}deg) scale(${currentScale})`,
           transformOrigin: 'center center',
-          
+
           fontFamily: textEdit.fontFamily,
           fontSize: `${textEdit.fontSize}px`,
           fontWeight: textEdit.fontWeight,
           fontStyle: textEdit.fontStyle,
           color: textEdit.fill,
-          
+
           textAlign: textEdit.textAlign || 'left',
-          caretColor: '#E26D5C', // Акцентный курсор
-          
+          caretColor: '#E26D5C',
+
           border: 'none',
           margin: '0',
           resize: 'none',
@@ -1549,9 +1712,11 @@ export default function Editor () {
           zIndex: 200,
           whiteSpace: 'pre',
           overflow: 'hidden',
-          
+
           lineHeight: '1.2',
-          padding: '0'
+          padding: '0',
+
+          touchAction: 'none'
         }
       })()
     : null
@@ -1566,9 +1731,10 @@ export default function Editor () {
     <div className="doc-editor page" style={{ paddingTop: 0 }}>
       <ProgressOverlay
         open={progress.active}
-        label={progress.max ? `${progress.label} ${progress.val}/${progress.max} стр.` : progress.label}
-        percent={progress.max ? (progress.val / progress.max) * 100 : 0}
-        indeterminate={!progress.max}
+        label={progress.label}
+        val={progress.val}
+        max={progress.max}
+        suffix={progress.suffix}
       />
 
       {(menuActionsOpen || menuAddOpen || menuDownloadOpen) && (
@@ -1606,22 +1772,78 @@ export default function Editor () {
       ) : (
         <div className="ed-top">
           <div className="ed-toolbar" style={{ margin: '0 auto' }}>
-            <select value={font} onChange={e => setFont(e.target.value)}>
+            <select
+              value={font}
+              onChange={e => {
+                const v = e.target.value
+                if (applyPanel({ font: v })) {
+                  setFont(v)
+                }
+              }}
+            >
               {FONTS.map(f => <option key={f} value={f}>{f}</option>)}
             </select>
             <div className="sep" />
-            <button onClick={() => setFontSize(s => Math.max(6, s - 2))}>−</button>
+            <button
+              onClick={() => {
+                setFontSize(s => {
+                  const nf = Math.max(6, s - 2)
+                  return applyPanel({ fontSize: nf }) ? nf : s
+                })
+              }}
+            >
+              −
+            </button>
             <span className="val">{fontSize}</span>
-            <button onClick={() => setFontSize(s => Math.min(300, s + 2))}>+</button>
+            <button
+              onClick={() => {
+                setFontSize(s => {
+                  const nf = s + 2
+                  return applyPanel({ fontSize: nf }) ? nf : s
+                })
+              }}
+            >
+              +
+            </button>
             <div className="sep" />
-            <input type="color" value={color} onChange={e => setColor(e.target.value)} title="Цвет текста" />
-            <button className={bold ? 'toggled' : ''} onClick={() => setBold(b => !b)}><b>B</b></button>
-            <button className={italic ? 'toggled' : ''} onClick={() => setItalic(i => !i)}><i>I</i></button>
+            <input
+              type="color"
+              value={color}
+              onChange={e => {
+                const v = e.target.value
+                if (applyPanel({ color: v })) {
+                  setColor(v)
+                }
+              }}
+              title="Цвет текста"
+            />
+            <button
+              className={bold ? 'toggled' : ''}
+              onClick={() => {
+                setBold(b => {
+                  const nv = !b
+                  return applyPanel({ bold: nv }) ? nv : b
+                })
+              }}
+            >
+              <b>B</b>
+            </button>
+            <button
+              className={italic ? 'toggled' : ''}
+              onClick={() => {
+                setItalic(i => {
+                  const nv = !i
+                  return applyPanel({ italic: nv }) ? nv : i
+                })
+              }}
+            >
+              <i>I</i>
+            </button>
           </div>
         </div>
       )}
 
-            <div className="ed-body">
+      <div className="ed-body">
         <aside className="ed-left">
           <div className="ed-tools">
             <button className={`ed-tool ${pagesRef.current.length ? '' : 'disabled'}`} onClick={addText}>
@@ -1680,7 +1902,7 @@ export default function Editor () {
             ref={canvasWrapRef}
             onDragOver={(e) => e.preventDefault()}
             onDrop={onCanvasDrop}
-            style={{ position: 'relative' }}
+            style={{ position: 'relative', touchAction: 'none' }}
           >
             {hasDoc && (
               <>
@@ -1708,7 +1930,9 @@ export default function Editor () {
                     style={textEditorStyle}
                     value={textEditValue}
                     onChange={e => handleTextChange(e.target.value)}
-                    onPointerDown={(e) => engineRef.current?.handleExternalPointerDown(e)}
+                    onPointerDown={(e) => {
+                      engineRef.current?.handleExternalPointerDown(e)
+                    }}
                     spellCheck={false}
                     autoCorrect="off"
                     autoCapitalize="off"
@@ -1857,16 +2081,54 @@ export default function Editor () {
 
       {menuDownloadOpen && (
         <div className="ed-sheet bottom-right" ref={sheetDownloadRef} style={{ padding: 6 }}>
-          <button className={`btn ${pagesRef.current.length ? '' : 'disabled'}`} style={{ padding: '10px 14px' }} onClick={() => { if (pagesRef.current.length) { setMenuDownloadOpen(false); setPlan('single'); setPayOpen(true) } }}>
+          <button
+            className={`btn ${pagesRef.current.length ? '' : 'disabled'}`}
+            style={{ padding: '10px 14px' }}
+            onClick={() => {
+              if (pagesRef.current.length) {
+                setMenuDownloadOpen(false)
+                setPlan('single')
+                setPayOpen(true)
+              }
+            }}
+          >
             <img src={icJpgPaid} alt="" style={{ width: 18, height: 18, marginRight: 10 }} />Купить JPG
           </button>
-          <button className={`btn ${pagesRef.current.length ? '' : 'disabled'}`} style={{ padding: '10px 14px' }} onClick={() => { if (pagesRef.current.length) { setMenuDownloadOpen(false); setPlan('single'); setPayOpen(true) } }}>
+          <button
+            className={`btn ${pagesRef.current.length ? '' : 'disabled'}`}
+            style={{ padding: '10px 14px' }}
+            onClick={() => {
+              if (pagesRef.current.length) {
+                setMenuDownloadOpen(false)
+                setPlan('single')
+                setPayOpen(true)
+              }
+            }}
+          >
             <img src={icPdfPaid} alt="" style={{ width: 18, height: 18, marginRight: 10 }} />Купить PDF
           </button>
-          <button className={`btn btn-lite ${pagesRef.current.length ? '' : 'disabled'}`} style={{ padding: '10px 14px' }} onClick={() => { if (pagesRef.current.length) { setMenuDownloadOpen(false); exportJPG() } }}>
+          <button
+            className={`btn btn-lite ${pagesRef.current.length ? '' : 'disabled'}`}
+            style={{ padding: '10px 14px' }}
+            onClick={() => {
+              if (pagesRef.current.length) {
+                setMenuDownloadOpen(false)
+                exportJPG()
+              }
+            }}
+          >
             <img src={icJpgFree} alt="" style={{ width: 18, height: 18, marginRight: 10 }} />Скачать бесплатно JPG
           </button>
-          <button className={`btn btn-lite ${pagesRef.current.length ? '' : 'disabled'}`} style={{ padding: '10px 14px' }} onClick={() => { if (pagesRef.current.length) { setMenuDownloadOpen(false); exportPDF() } }}>
+          <button
+            className={`btn btn-lite ${pagesRef.current.length ? '' : 'disabled'}`}
+            style={{ padding: '10px 14px' }}
+            onClick={() => {
+              if (pagesRef.current.length) {
+                setMenuDownloadOpen(false)
+                exportPDF()
+              }
+            }}
+          >
             <img src={icPdfFree} alt="" style={{ width: 18, height: 18, marginRight: 10 }} />Скачать бесплатно PDF
           </button>
         </div>
@@ -1965,7 +2227,12 @@ export default function Editor () {
           e.target.value = ''
           if (!f) return
           const reader = new FileReader()
-          reader.onload = () => { setCropSrc(String(reader.result || '')); setCropKind('signature'); setCropThresh(40); setCropOpen(true) }
+          reader.onload = () => {
+            setCropSrc(String(reader.result || ''))
+            setCropKind('signature')
+            setCropThresh(40)
+            setCropOpen(true)
+          }
           reader.readAsDataURL(f)
         }}
       />
