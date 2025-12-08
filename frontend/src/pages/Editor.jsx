@@ -1,4 +1,3 @@
-// frontend/src/pages/Editor.jsx
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { toast } from '../components/Toast.jsx'
 import { AuthAPI } from '../api'
