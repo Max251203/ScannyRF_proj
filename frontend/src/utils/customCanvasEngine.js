@@ -3,7 +3,7 @@
 import icDelete from '../assets/icons/x-close.svg'
 import icRotate from '../assets/icons/rotate-handle.svg'
 import icScale from '../assets/icons/scale-handle.svg'
-import icEdit from '../assets/icons/edit-text.svg' // оставлен для совместимости, сейчас не используется
+import icEdit from '../assets/icons/edit-text.svg'
 
 const deleteImg = new Image()
 deleteImg.src = icDelete
@@ -262,6 +262,8 @@ export class CustomCanvasEngine {
     }
   }
 
+  // Восстанавливаем старую логику: учитываем поворот на мобилке,
+  // но жёстко ограничиваем ширину, чтобы холст не вылазил за экран.
   _updateTransform() {
     const W = this.docWidth
     const H = this.docHeight
@@ -271,10 +273,8 @@ export class CustomCanvasEngine {
 
     const isMobileLandscape = this.rotationAffectsTransform && this.rotation === 90
 
-    // Небольшой вертикальный запас на мобилке в landscape,
-    // чтобы лист не "прилипал" к краям и не выглядел слишком высоким.
     const extraVerticalMargin = isMobileLandscape ? ch * 0.12 : 0
-    const availW0 = cw
+    const availW0 = Math.max(10, cw - margin * 2)
     const availH0 = Math.max(10, ch - margin - extraVerticalMargin)
 
     let fitW = availW0
@@ -290,10 +290,10 @@ export class CustomCanvasEngine {
     let actualW = W * scale
     let actualH = H * scale
 
-    // Явно не даём листу стать шире области просмотра
-    if (actualW > cw) {
-      scale = cw / W
-      actualW = cw
+    const maxW = cw - margin * 2
+    if (actualW > maxW) {
+      scale = maxW / W
+      actualW = W * scale
       actualH = H * scale
     }
 
@@ -395,7 +395,7 @@ export class CustomCanvasEngine {
 
       const align = d.textAlign || 'left'
       ctx.textAlign = align
-      ctx.textBaseline = 'top' // чтобы совпадать с textarea
+      ctx.textBaseline = 'top'
 
       let xPos = 0
       if (align === 'left') xPos = -halfW
@@ -405,9 +405,8 @@ export class CustomCanvasEngine {
       const text = String(d.text || '')
       const lines = text.split('\n')
       const lh = sz * 1.2
-
       const totalH = lines.length * lh
-      let startY = -totalH / 2 // центрируем блок по высоте
+      let startY = -totalH / 2
 
       for (let line of lines) {
         ctx.fillText(line, xPos, startY)
@@ -877,13 +876,17 @@ export class CustomCanvasEngine {
     this.onBeforeOverlayChange(this.overlays.map(cloneOverlay))
     const id = opts.id || `tb_${Date.now()}_${Math.random().toString(36).slice(2)}`
     const fontSize = opts.fontSize || 48
+    const lh = fontSize * 1.2
+    const totalH = lh
+    const padDoc = fontSize * 0.25
+    const h = totalH + padDoc * 2
     const ov = {
       id,
       type: 'text',
       cx: this.docWidth / 2,
       cy: this.docHeight / 2,
       w: opts.width || 400,
-      h: opts.height || fontSize * 1.4,
+      h: opts.height || h,
       scaleX: 1,
       scaleY: 1,
       angleRad: 0,
@@ -904,7 +907,6 @@ export class CustomCanvasEngine {
     this._draw()
     this.onOverlayChange(cloneOverlay(ov))
 
-    // Сразу включаем режим редактирования для нового текстового объекта
     try {
       const bounds = this._getOverlayScreenBounds(ov)
       this.onTextEditRequest(cloneOverlay(ov), bounds)

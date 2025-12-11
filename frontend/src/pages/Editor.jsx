@@ -338,6 +338,8 @@ export default function Editor () {
   const [isMobile, setIsMobile] = useState(() => window.matchMedia('(max-width: 960px)').matches)
   const saveTimerRef = useRef(0)
 
+  const dragFromTextareaRef = useRef({ active: false, started: false, pointerId: null, startX: 0, startY: 0 })
+
   useEffect(() => { pagesRef.current = pages }, [pages])
   useEffect(() => { curRef.current = cur }, [cur])
   useEffect(() => { docIdRef.current = docId }, [docId])
@@ -470,12 +472,14 @@ export default function Editor () {
   }, [])
 
   useEffect(() => {
-    const current = textEditRef.current
-    if (current) {
-      finishTextEditing()
-    }
+    if (textEditRef.current) finishTextEditing()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isMobile])
+
+  useEffect(() => {
+    if (textEditRef.current) finishTextEditing()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cur])
 
   useEffect(() => {
     if (!hasDoc || !canvasRef.current) return
@@ -681,6 +685,7 @@ export default function Editor () {
     }
   }, [isMobile])
 
+  // фокус при входе в режим
   useEffect(() => {
     if (textEdit && textAreaRef.current) {
       const ta = textAreaRef.current
@@ -690,7 +695,7 @@ export default function Editor () {
         ta.setSelectionRange(len, len)
       })
     }
-  }, [textEdit, textEditValue])
+  }, [textEdit])
 
   async function loadLibrary () {
     if (!isAuthed) { setSignLib([]); return }
@@ -900,6 +905,8 @@ export default function Editor () {
         if (['jpg', 'jpeg', 'png'].includes(ext)) {
           const url = await readAsDataURL(f)
           const img = await loadImageEl(url)
+          const lh = 48 * 1.2
+          const padDoc = 48 * 0.25
           newPages.push({
             id: `p_${Date.now()}_${Math.random().toString(36).slice(2)}`,
             docWidth: img.width || img.naturalWidth,
@@ -1013,6 +1020,10 @@ export default function Editor () {
 
     const initText = 'Вставьте текст'
     const fontSizeLocal = 48
+    const lineHeightLocal = fontSizeLocal * 1.2
+    const totalH = lineHeightLocal
+    const padDoc = fontSizeLocal * 0.25
+    const newH = totalH + padDoc * 2
     const w = measureTextWidthPx(initText, 'Arial', fontSizeLocal, 'bold', 'normal')
 
     engineRef.current.addTextOverlay(initText, {
@@ -1022,7 +1033,7 @@ export default function Editor () {
       fill: '#000000',
       textAlign: 'left',
       width: w + 4,
-      height: fontSizeLocal * 1.2
+      height: newH
     })
     scheduleSaveDraft()
   }
@@ -1063,8 +1074,10 @@ export default function Editor () {
       if (w > maxLineW) maxLineW = w
     }
 
+    const totalH = lines.length * lineHeightPx
+    const padDoc = newFontSize * 0.25
     const newW = Math.max(20, maxLineW + 4)
-    const newH = Math.max(lineHeightPx, lines.length * lineHeightPx)
+    const newH = Math.max(lineHeightPx + padDoc * 2, totalH + padDoc * 2)
 
     const newOv = {
       ...oldOv,
@@ -1562,8 +1575,10 @@ export default function Editor () {
       if (w > maxLineW) maxLineW = w
     }
 
+    const totalH = lines.length * lineHeightPx
+    const padDoc = fontSizeLocal * 0.25
     const newW = Math.max(20, maxLineW + 4)
-    const newH = Math.max(lineHeightPx, lines.length * lineHeightPx)
+    const newH = Math.max(lineHeightPx + padDoc * 2, totalH + padDoc * 2)
 
     targetOv.w = newW
     targetOv.h = newH
@@ -1675,33 +1690,98 @@ export default function Editor () {
     scheduleSaveDraft()
   }
 
+  // drag для textarea: клик — курсор, движение — перетаскивание
+  useEffect(() => {
+    const ta = textAreaRef.current
+    if (!ta || !textEdit) return
+
+    const drag = dragFromTextareaRef.current
+    const THRESH2 = 4 * 4
+
+    const onDown = (e) => {
+      drag.active = true
+      drag.started = false
+      drag.pointerId = e.pointerId
+      drag.startX = e.clientX
+      drag.startY = e.clientY
+    }
+
+    const onMove = (e) => {
+      if (!drag.active || e.pointerId !== drag.pointerId) return
+      const dx = e.clientX - drag.startX
+      const dy = e.clientY - drag.startY
+      const d2 = dx * dx + dy * dy
+      if (!drag.started && d2 > THRESH2) {
+        drag.started = true
+        if (engineRef.current) {
+          const fakeDown = {
+            clientX: drag.startX,
+            clientY: drag.startY,
+            pointerId: drag.pointerId,
+            button: 0,
+            preventDefault () {}
+          }
+          engineRef.current.handleExternalPointerDown(fakeDown)
+        }
+      }
+      if (drag.started) {
+        e.preventDefault()
+      }
+    }
+
+    const onUp = (e) => {
+      if (e.pointerId !== drag.pointerId) return
+      drag.active = false
+      drag.started = false
+      drag.pointerId = null
+    }
+
+    ta.addEventListener('pointerdown', onDown)
+    ta.addEventListener('pointermove', onMove)
+    ta.addEventListener('pointerup', onUp)
+    ta.addEventListener('pointercancel', onUp)
+
+    return () => {
+      ta.removeEventListener('pointerdown', onDown)
+      ta.removeEventListener('pointermove', onMove)
+      ta.removeEventListener('pointerup', onUp)
+      ta.removeEventListener('pointercancel', onUp)
+    }
+  }, [textEdit])
+
   const textEditorStyle = textEdit && canvasWrapRef.current
     ? (() => {
         const rc = textEdit.rectCanvas || {}
-        const docW = textEdit.docW || 40
-        const docH = textEdit.docH || 30
+        const screenW = rc.w || textEdit.docW || 40
+        const screenH = rc.h || textEdit.docH || 30
+        const screenFontSize = rc.fontSize || textEdit.fontSize || 48
 
-        const currentScale = (rc.w && docW) ? (rc.w / docW) : 1
         const angleDeg = (rc.angleRad || 0) * 180 / Math.PI
+
+        const lineHeightPx = screenFontSize * 1.2
+        const text = textEditValue || ''
+        const linesCount = Math.max(1, text.split('\n').length)
+        const totalTextHeight = linesCount * lineHeightPx
+        const pad = Math.max(0, (screenH - totalTextHeight) / 2)
 
         return {
           position: 'absolute',
           left: `${rc.cx}px`,
           top: `${rc.cy}px`,
-          width: `${docW}px`,
-          height: `${docH}px`,
+          width: `${screenW}px`,
+          height: `${screenH}px`,
 
-          transform: `translate(-50%, -50%) rotate(${angleDeg}deg) scale(${currentScale})`,
+          transform: `translate(-50%, -50%) rotate(${angleDeg}deg)`,
           transformOrigin: 'center center',
 
           fontFamily: textEdit.fontFamily,
-          fontSize: `${textEdit.fontSize}px`,
+          fontSize: `${screenFontSize}px`,
           fontWeight: textEdit.fontWeight,
           fontStyle: textEdit.fontStyle,
           color: textEdit.fill,
 
           textAlign: textEdit.textAlign || 'left',
-          caretColor: '#E26D5C',
+          caretColor: '#ff1744',
 
           border: 'none',
           margin: '0',
@@ -1712,10 +1792,13 @@ export default function Editor () {
           whiteSpace: 'pre',
           overflow: 'hidden',
 
-          lineHeight: '1.2',
-          padding: '0',
+          lineHeight: `${lineHeightPx}px`,
+          padding: 0,
+          paddingTop: `${pad}px`,
+          paddingBottom: `${pad}px`,
 
-          touchAction: 'none'
+          touchAction: 'none',
+          userSelect: 'none'
         }
       })()
     : null
@@ -1929,9 +2012,6 @@ export default function Editor () {
                     style={textEditorStyle}
                     value={textEditValue}
                     onChange={e => handleTextChange(e.target.value)}
-                    onPointerDown={(e) => {
-                      engineRef.current?.handleExternalPointerDown(e)
-                    }}
                     spellCheck={false}
                     autoCorrect="off"
                     autoCapitalize="off"
