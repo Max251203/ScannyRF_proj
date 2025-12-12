@@ -1,5 +1,3 @@
-// frontend/src/utils/customCanvasEngine.js
-
 import icDelete from '../assets/icons/x-close.svg'
 import icRotate from '../assets/icons/rotate-handle.svg'
 import icScale from '../assets/icons/scale-handle.svg'
@@ -54,6 +52,7 @@ export class CustomCanvasEngine {
     this.onSelectionChange = opts.onSelectionChange || (() => {})
     this.onTextEditRequest = opts.onTextEditRequest || (() => {})
     this.onBlankClick = opts.onBlankClick || (() => {})
+    this.onInteractionEnd = opts.onInteractionEnd || (() => {})
 
     this.docWidth = 1000
     this.docHeight = 1414
@@ -212,6 +211,7 @@ export class CustomCanvasEngine {
     })
 
     this._draw()
+    this.onInteractionEnd(this.overlays.map(cloneOverlay))
   }
 
   setMode(isMobile) {
@@ -262,8 +262,8 @@ export class CustomCanvasEngine {
     }
   }
 
-  // Восстанавливаем старую логику: учитываем поворот на мобилке,
-  // но жёстко ограничиваем ширину, чтобы холст не вылазил за экран.
+  // старое поведение + фикс: ограничиваем именно ширину страницы (pageWidth * scale),
+  // чтобы на мобилке в landscape она гарантированно влезала в экран
   _updateTransform() {
     const W = this.docWidth
     const H = this.docHeight
@@ -290,9 +290,11 @@ export class CustomCanvasEngine {
     let actualW = W * scale
     let actualH = H * scale
 
-    const maxW = cw - margin * 2
-    if (actualW > maxW) {
-      scale = maxW / W
+    // Ограничиваем видимую ширину листа (pageWidth), а не только docWidth
+    const pageW = this.pageWidth || W
+    const maxPageW = cw - margin * 2
+    if (pageW * scale > maxPageW) {
+      scale = maxPageW / pageW
       actualW = W * scale
       actualH = H * scale
     }
@@ -586,6 +588,7 @@ export class CustomCanvasEngine {
           this.onSelectionChange(null)
           this._draw()
           this.onOverlayDelete(id)
+          this.onInteractionEnd(this.overlays.map(cloneOverlay))
         }
         this.isPointerDown = false
         this.pointerId = null
@@ -673,10 +676,18 @@ export class CustomCanvasEngine {
     }
     if (this.isPointerDown) {
       this.isPointerDown = false
+      const wasActive = this.activeHandle
       this.activeHandle = null
       this.dragState = null
       this.pointerId = null
       this._setCursor('default')
+
+      if (wasActive) {
+        const active = this.overlays.find(o => o.id === this.activeId)
+        if (active) {
+          this.onInteractionEnd(this.overlays.map(cloneOverlay))
+        }
+      }
     }
   }
 
@@ -870,6 +881,7 @@ export class CustomCanvasEngine {
     this.onSelectionChange(cloneOverlay(ov))
     this._draw()
     this.onOverlayChange(cloneOverlay(ov))
+    this.onInteractionEnd(this.overlays.map(cloneOverlay))
   }
 
   addTextOverlay(text = 'Текст', opts = {}) {
@@ -878,8 +890,7 @@ export class CustomCanvasEngine {
     const fontSize = opts.fontSize || 48
     const lh = fontSize * 1.2
     const totalH = lh
-    const padDoc = fontSize * 0.25
-    const h = totalH + padDoc * 2
+    const h = totalH
     const ov = {
       id,
       type: 'text',
@@ -906,6 +917,7 @@ export class CustomCanvasEngine {
     this.onSelectionChange(cloneOverlay(ov))
     this._draw()
     this.onOverlayChange(cloneOverlay(ov))
+    this.onInteractionEnd(this.overlays.map(cloneOverlay))
 
     try {
       const bounds = this._getOverlayScreenBounds(ov)

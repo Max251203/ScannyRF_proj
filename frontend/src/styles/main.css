@@ -17,13 +17,12 @@
   --ed-bottom-h-mobile:clamp(52px,7vh,68px);
 }
 
+/* === ФОНТЫ === */
 @font-face {
   font-family:"Chicoree Em";
   src:
-    url("/static/assets/fonts/chicoree.woff2") format("woff2"),
-    url("/static/assets/fonts/Chicoree-Em.ttf") format("truetype"),
-    url("../assets/fonts/chicoree.woff2") format("woff2"),
-    url("../assets/fonts/ofont.ru_Chicoree.otf") format("truetype");
+    url("../assets/fonts/ofont.ru_Chicoree.otf") format("opentype"),
+    url("../assets/fonts/ofont.ru_Chicoree.ttf") format("truetype");
   font-weight:400;
   font-style:normal;
   font-display:swap;
@@ -738,7 +737,6 @@ main { flex:1; }
   background:transparent;
   z-index:105;
 }
-
 .ed-sheet{
   position:fixed;left:12px;top:110px;
   background:#fff;border:1px solid #eee;border-radius:12px;

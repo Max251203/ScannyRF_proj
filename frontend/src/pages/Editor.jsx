@@ -529,6 +529,8 @@ export default function Editor () {
             } : prev))
           }
         }
+      },
+      onInteractionEnd: snapshot => {
         scheduleSaveDraft()
       },
       onOverlayDelete: id => {
@@ -661,12 +663,17 @@ export default function Editor () {
   }
 
   useEffect(() => {
+    if (internalUpdateRef.current) {
+      internalUpdateRef.current = false
+      return
+    }
+
     const page = pages[cur]
     if (!page || !engineRef.current) {
       setDocRect(null)
       return
     }
-    internalUpdateRef.current = true
+
     engineRef.current.setDocument({
       docWidth: page.docWidth,
       docHeight: page.docHeight,
@@ -675,7 +682,6 @@ export default function Editor () {
       rotation: page.rotation || 0
     })
     setDocRect(engineRef.current.getDocumentScreenRect())
-    internalUpdateRef.current = false
   }, [pages, cur, isMobile])
 
   useEffect(() => {
@@ -685,7 +691,6 @@ export default function Editor () {
     }
   }, [isMobile])
 
-  // фокус при входе в режим
   useEffect(() => {
     if (textEdit && textAreaRef.current) {
       const ta = textAreaRef.current
@@ -905,8 +910,6 @@ export default function Editor () {
         if (['jpg', 'jpeg', 'png'].includes(ext)) {
           const url = await readAsDataURL(f)
           const img = await loadImageEl(url)
-          const lh = 48 * 1.2
-          const padDoc = 48 * 0.25
           newPages.push({
             id: `p_${Date.now()}_${Math.random().toString(36).slice(2)}`,
             docWidth: img.width || img.naturalWidth,
@@ -1022,8 +1025,7 @@ export default function Editor () {
     const fontSizeLocal = 48
     const lineHeightLocal = fontSizeLocal * 1.2
     const totalH = lineHeightLocal
-    const padDoc = fontSizeLocal * 0.25
-    const newH = totalH + padDoc * 2
+    const newH = totalH
     const w = measureTextWidthPx(initText, 'Arial', fontSizeLocal, 'bold', 'normal')
 
     engineRef.current.addTextOverlay(initText, {
@@ -1075,9 +1077,8 @@ export default function Editor () {
     }
 
     const totalH = lines.length * lineHeightPx
-    const padDoc = newFontSize * 0.25
     const newW = Math.max(20, maxLineW + 4)
-    const newH = Math.max(lineHeightPx + padDoc * 2, totalH + padDoc * 2)
+    const newH = Math.max(lineHeightPx, totalH)
 
     const newOv = {
       ...oldOv,
@@ -1180,6 +1181,7 @@ export default function Editor () {
 
     const newBounds = engineRef.current.getOverlayScreenBoundsById(activeId)
 
+    internalUpdateRef.current = true
     setPages(prev => {
       const copy = [...prev]
       const p = copy[pageIndex]
@@ -1217,6 +1219,8 @@ export default function Editor () {
     const page = pagesRef.current[cur]
     if (!page || !engineRef.current) return
     const newRot = page.rotation === 90 ? 0 : 90
+    
+    internalUpdateRef.current = true
     setPages(prev => {
       const copy = [...prev]
       const p = copy[cur]
@@ -1224,6 +1228,7 @@ export default function Editor () {
       copy[cur] = { ...p, rotation: newRot }
       return copy
     })
+    
     engineRef.current.setPageRotation(newRot, isMobile)
     setDocRect(engineRef.current.getDocumentScreenRect())
     scheduleSaveDraft()
@@ -1262,6 +1267,8 @@ export default function Editor () {
     if (!undoStack.length) return
     const last = undoStack[undoStack.length - 1]
     setUndoStack(stk => stk.slice(0, -1))
+    
+    internalUpdateRef.current = true
     setPages(prev => {
       const copy = [...prev]
       if (last.type === 'page') {
@@ -1326,6 +1333,7 @@ export default function Editor () {
       }
     })
 
+    internalUpdateRef.current = true
     setPages(newPages)
     scheduleSaveDraft()
     toast('Объект добавлен на все страницы', 'success')
@@ -1503,6 +1511,8 @@ export default function Editor () {
         e.preventDefault()
         const snapshot = (page.overlays || []).map(o => ({ ...o, data: { ...o.data } }))
         setUndoStack(stk => [...stk, { type: 'page', pageIndex: curRef.current, overlays: snapshot }])
+        
+        internalUpdateRef.current = true
         setPages(prev => {
           const copy = [...prev]
           const p = copy[curRef.current]
@@ -1576,9 +1586,8 @@ export default function Editor () {
     }
 
     const totalH = lines.length * lineHeightPx
-    const padDoc = fontSizeLocal * 0.25
     const newW = Math.max(20, maxLineW + 4)
-    const newH = Math.max(lineHeightPx + padDoc * 2, totalH + padDoc * 2)
+    const newH = Math.max(lineHeightPx, totalH)
 
     targetOv.w = newW
     targetOv.h = newH
@@ -1677,6 +1686,7 @@ export default function Editor () {
     engineRef.current.setOverlays(newOverlays)
     const bounds = engineRef.current.getOverlayScreenBoundsById(id)
 
+    internalUpdateRef.current = true
     const newPages = [...pagesSnap]
     newPages[pageIndex] = { ...page, overlays: newOverlays }
     pagesRef.current = newPages
@@ -1690,7 +1700,6 @@ export default function Editor () {
     scheduleSaveDraft()
   }
 
-  // drag для textarea: клик — курсор, движение — перетаскивание
   useEffect(() => {
     const ta = textAreaRef.current
     if (!ta || !textEdit) return
@@ -1749,25 +1758,31 @@ export default function Editor () {
     }
   }, [textEdit])
 
-  const textEditorStyle = textEdit && canvasWrapRef.current
+    const textEditorStyle = textEdit && canvasWrapRef.current
     ? (() => {
         const rc = textEdit.rectCanvas || {}
+
+        // Учитываем смещение самого canvas внутри враппера
+        const canvasEl = canvasRef.current
+        let offX = 0
+        let offY = 0
+        if (canvasEl) {
+          offX = canvasEl.offsetLeft
+          offY = canvasEl.offsetTop
+        }
+
         const screenW = rc.w || textEdit.docW || 40
         const screenH = rc.h || textEdit.docH || 30
         const screenFontSize = rc.fontSize || textEdit.fontSize || 48
 
         const angleDeg = (rc.angleRad || 0) * 180 / Math.PI
-
         const lineHeightPx = screenFontSize * 1.2
-        const text = textEditValue || ''
-        const linesCount = Math.max(1, text.split('\n').length)
-        const totalTextHeight = linesCount * lineHeightPx
-        const pad = Math.max(0, (screenH - totalTextHeight) / 2)
 
         return {
           position: 'absolute',
-          left: `${rc.cx}px`,
-          top: `${rc.cy}px`,
+          // координаты центра textarea = центр оверлея + смещение canvas
+          left: `${rc.cx + offX}px`,
+          top: `${rc.cy + offY}px`,
           width: `${screenW}px`,
           height: `${screenH}px`,
 
@@ -1793,9 +1808,8 @@ export default function Editor () {
           overflow: 'hidden',
 
           lineHeight: `${lineHeightPx}px`,
-          padding: 0,
-          paddingTop: `${pad}px`,
-          paddingBottom: `${pad}px`,
+          padding: 0,              // без отступов вообще
+          boxSizing: 'border-box',
 
           touchAction: 'none',
           userSelect: 'none'
