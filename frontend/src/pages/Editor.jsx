@@ -180,12 +180,24 @@ function renderPageOffscreen (page, scaleMul = 2) {
   const docW = page.docWidth || 1000
   const docH = page.docHeight || 1414
 
-  const outW = rot === 90 ? docH : docW
-  const outH = rot === 90 ? docW : docH
+  // размеры "страницы" такие же, как в движке (_updatePageSize)
+  let pageW, pageH
+  if (rot === 0) {
+    pageW = docW
+    pageH = docH
+  } else {
+    if (docW > 0) {
+      pageH = docH
+      pageW = (docH * docH) / docW
+    } else {
+      pageH = docH
+      pageW = docH
+    }
+  }
 
   const canvas = document.createElement('canvas')
-  canvas.width = Math.round(outW * scaleMul)
-  canvas.height = Math.round(outH * scaleMul)
+  canvas.width = Math.round(pageW * scaleMul)
+  canvas.height = Math.round(pageH * scaleMul)
   const ctx = canvas.getContext('2d')
 
   ctx.fillStyle = '#fff'
@@ -193,10 +205,12 @@ function renderPageOffscreen (page, scaleMul = 2) {
 
   ctx.scale(scaleMul, scaleMul)
 
-  if (rot === 90) {
-    ctx.translate(docH, 0)
-    ctx.rotate(Math.PI / 2)
-  }
+  // Сдвигаем так, чтобы "лист" занимал весь offscreen
+  const docCx = docW / 2
+  const docCy = docH / 2
+  const pLeft = docCx - pageW / 2
+  const pTop = docCy - pageH / 2
+  ctx.translate(-pLeft, -pTop)
 
   if (isDrawableForExport(page.bgImage)) {
     ctx.imageSmoothingEnabled = true
@@ -239,7 +253,8 @@ function renderPageOffscreen (page, scaleMul = 2) {
       const lines = text.split('\n')
       const lh = fontSize * 1.2
       const totalH = lines.length * lh
-      let startY = -totalH / 2
+      let startY = -totalH / 2 + (lh - fontSize) / 2
+
       for (const line of lines) {
         ctx.fillText(line, xPos, startY)
         startY += lh

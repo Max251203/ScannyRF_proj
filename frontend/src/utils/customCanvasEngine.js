@@ -262,8 +262,7 @@ export class CustomCanvasEngine {
     }
   }
 
-  // старое поведение + фикс: ограничиваем именно ширину страницы (pageWidth * scale),
-  // чтобы на мобилке в landscape она гарантированно влезала в экран
+  // старое поведение + ограничение ширины страницы (pageWidth * scale)
   _updateTransform() {
     const W = this.docWidth
     const H = this.docHeight
@@ -290,7 +289,6 @@ export class CustomCanvasEngine {
     let actualW = W * scale
     let actualH = H * scale
 
-    // Ограничиваем видимую ширину листа (pageWidth), а не только docWidth
     const pageW = this.pageWidth || W
     const maxPageW = cw - margin * 2
     if (pageW * scale > maxPageW) {
@@ -408,7 +406,9 @@ export class CustomCanvasEngine {
       const lines = text.split('\n')
       const lh = sz * 1.2
       const totalH = lines.length * lh
-      let startY = -totalH / 2
+
+      // смещение такое же, как в textarea (line-height > font-size)
+      let startY = -totalH / 2 + (lh - sz) / 2
 
       for (let line of lines) {
         ctx.fillText(line, xPos, startY)
@@ -819,12 +819,17 @@ export class CustomCanvasEngine {
     const s = this.scale
     const center = this._docToScreen(ov.cx, ov.cy)
 
-    const wLocal = ov.w * (ov.scaleX || 1) * s
-    const hLocal = ov.h * (ov.scaleY || 1) * s
+    const sx = ov.scaleX || 1
+    const sy = ov.scaleY || 1
+
+    const wLocal = ov.w * sx * s
+    const hLocal = ov.h * sy * s
 
     const db = this._getOverlayDocBounds(ov)
     const p1 = this._docToScreen(db.minX, db.minY)
     const p2 = this._docToScreen(db.maxX, db.maxY)
+
+    const effFontScale = s * sy
 
     return {
       cx: center.x,
@@ -832,7 +837,7 @@ export class CustomCanvasEngine {
       w: wLocal,
       h: hLocal,
       angleRad: ov.angleRad || 0,
-      fontSize: (ov.data?.fontSize || 48) * s,
+      fontSize: (ov.data?.fontSize || 48) * effFontScale,
       bbox: {
         x: p1.x,
         y: p1.y,
