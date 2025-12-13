@@ -1247,6 +1247,25 @@ export default function Editor () {
     engineRef.current.setPageRotation(newRot, isMobile)
     setDocRect(engineRef.current.getDocumentScreenRect())
     scheduleSaveDraft()
+        // Обновляем границы активного текстового редактора после поворота
+    const te = textEditRef.current
+    if (te && engineRef.current) {
+      const pagesArr = pagesRef.current
+      const pageNow = pagesArr[cur]
+      const ov = pageNow?.overlays?.find(o => o.id === te.overlayId)
+      const bounds = engineRef.current.getOverlayScreenBoundsById(te.overlayId)
+      if (ov && bounds) {
+        setTextEdit(prev => (prev && prev.overlayId === te.overlayId
+          ? {
+              ...prev,
+              rectCanvas: bounds,
+              docW: ov.w,
+              docH: ov.h,
+              fontSize: ov.data.fontSize
+            }
+          : prev))
+      }
+    }
   }
 
   function placeFromLib (url) {
