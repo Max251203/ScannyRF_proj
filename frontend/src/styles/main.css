@@ -1,3 +1,4 @@
+/* frontend/src/styles/main.css (часть 1/2) */
 :root {
   --sage:#C9CBA3;
   --beige:#FFE1A8;
@@ -732,16 +733,17 @@ main { flex:1; }
 .doc-editor .ed-menu-btn img{width:18px;height:18px;display:block;margin:0 auto}
 .doc-editor .ed-docid{font-weight:700;opacity:.85}
 
+/* FIX (п.4): слои меню должны быть выше слоя редактора текста */
 .ed-dim{
   position:fixed;inset:0;
   background:transparent;
-  z-index:105;
+  z-index:205;
 }
 .ed-sheet{
   position:fixed;left:12px;top:110px;
   background:#fff;border:1px solid #eee;border-radius:12px;
   box-shadow:0 12px 28px rgba(0,0,0,.12);
-  padding:8px;z-index:110;
+  padding:8px;z-index:210;
   display:flex;flex-direction:column;
   min-width:240px;max-width:96vw;
   max-height:calc(100vh - var(--hdr-h) - 120px);
@@ -896,7 +898,8 @@ main { flex:1; }
   display:flex;align-items:center;justify-content:center;
   gap:12px;border-top:1px solid #eee;
   background:#fff;padding:8px 12px;
-  height:var(--ed-bottom-h-desktop);z-index:20;
+  height:var(--ed-bottom-h-desktop);
+  z-index:200;
 }
 .doc-editor .ed-bottom .fab{
   flex-shrink:0;flex:0 0 44px;
@@ -932,6 +935,8 @@ main { flex:1; }
 .doc-editor .ed-bottom .ed-pager .pg-total{
   font-weight:800;font-size:18px;opacity:.9;white-space:nowrap;
 }
+
+/* frontend/src/styles/main.css (часть 2/2) */
 
 .disabled,.btn.disabled,.ed-action.disabled,.ed-tool.disabled,.fab.disabled,.ed-menu>button.disabled{
   opacity:.45;filter:saturate(0);cursor:default;pointer-events:none;
@@ -1079,6 +1084,7 @@ main { flex:1; }
 
   .doc-editor .ed-body{grid-template-columns:1fr;padding:0}
   .doc-editor .ed-left,.doc-editor .ed-right{display:none}
+
   .doc-editor .ed-canvas-wrap{
     border-radius:0;border:none;background:#f0f4f3;
     padding:0;
@@ -1086,20 +1092,26 @@ main { flex:1; }
     display:flex;align-items:center;justify-content:center;
     height:100%;overflow:hidden;
   }
+
   .doc-editor .ed-bottom{
     position:fixed;left:0;right:0;bottom:0;
-    z-index:100;height:var(--ed-bottom-h-mobile);
+    z-index:220; /* FIX (п.4): нижняя панель выше textarea и выше dim/sheet */
+    height:var(--ed-bottom-h-mobile);
     padding:10px 12px calc(10px + env(safe-area-inset-bottom,0px));
     border-top:1px solid #eee;background:#fff;
   }
+
   .ed-sheet{
+    z-index:230; /* FIX (п.4): меню/шиты всегда сверху */
     max-height:calc(100vh - var(--hdr-h) - var(--ed-bottom-h-mobile) - 24px);
     overflow:auto;
   }
+
   .ed-sheet.bottom-left,.ed-sheet.bottom-right{
     left:12px;right:12px;top:auto!important;
     bottom:calc(var(--ed-bottom-h-mobile) + 12px);
   }
+
   .doc-editor .ed-toolbar{
     flex-wrap:nowrap;gap:4px;padding:4px;max-width:100%;
   }

@@ -1,3 +1,5 @@
+// frontend/src/pages/Editor.jsx (часть 1/3)
+
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { toast } from '../components/Toast.jsx'
 import { AuthAPI } from '../api'
@@ -180,7 +182,6 @@ function renderPageOffscreen (page, scaleMul = 2) {
   const docW = page.docWidth || 1000
   const docH = page.docHeight || 1414
 
-  // размеры "страницы" такие же, как в движке (_updatePageSize)
   let pageW, pageH
   if (rot === 0) {
     pageW = docW
@@ -205,7 +206,6 @@ function renderPageOffscreen (page, scaleMul = 2) {
 
   ctx.scale(scaleMul, scaleMul)
 
-  // Сдвигаем так, чтобы "лист" занимал весь offscreen
   const docCx = docW / 2
   const docCy = docH / 2
   const pLeft = docCx - pageW / 2
@@ -223,7 +223,11 @@ function renderPageOffscreen (page, scaleMul = 2) {
     ctx.save()
     ctx.translate(ov.cx, ov.cy)
     ctx.rotate(ov.angleRad || 0)
-    ctx.scale(ov.scaleX || 1, ov.scaleY || 1)
+
+    const sx = ov.type === 'text' ? 1 : (ov.scaleX || 1)
+    const sy = ov.type === 'text' ? 1 : (ov.scaleY || 1)
+    ctx.scale(sx, sy)
+
     const w = ov.w
     const h = ov.h
     const halfW = w / 2
@@ -236,7 +240,7 @@ function renderPageOffscreen (page, scaleMul = 2) {
       ctx.fillStyle = d.fill || '#000000'
       const fontWeight = d.fontWeight || 'bold'
       const fontStyle = d.fontStyle || 'normal'
-      const fontSize = d.fontSize || 48
+      const fontSize = Math.max(6, Math.round(d.fontSize || 48))
       const fontFamily = d.fontFamily || 'Arial'
       ctx.font = `${fontStyle} ${fontWeight} ${fontSize}px ${fontFamily}`
 
@@ -289,6 +293,9 @@ export default function Editor () {
   const canNext = hasDoc && cur < pages.length - 1
 
   const engineRef = useRef(null)
+
+  // internalUpdateRef=true — мы уже обновили engine визуально и синхронизируем state,
+  // чтобы эффект setDocument не перерисовал его повторно.
   const internalUpdateRef = useRef(false)
 
   const [signLib, setSignLib] = useState([])
@@ -299,9 +306,8 @@ export default function Editor () {
   const [italic, setItalic] = useState(false)
   const [color, setColor] = useState('#000000')
 
-  const [menuActionsOpen, setMenuActionsOpen] = useState(false)
-  const [menuAddOpen, setMenuAddOpen] = useState(false)
-  const [menuDownloadOpen, setMenuDownloadOpen] = useState(false)
+  // FIX (п.6): единый стейт открытого меню
+  const [menuOpen, setMenuOpen] = useState(null) // null | 'actions' | 'add' | 'download'
   const [menuPos, setMenuPos] = useState({ top: 0, left: 0 })
 
   const [payOpen, setPayOpen] = useState(false)
@@ -361,6 +367,11 @@ export default function Editor () {
   useEffect(() => { fileNameRef.current = fileName }, [fileName])
   useEffect(() => { textEditRef.current = textEdit }, [textEdit])
 
+  const setPagesSync = useCallback((nextPages) => {
+    pagesRef.current = nextPages
+    setPages(nextPages)
+  }, [])
+
   function showBanner (text, timeout = 1800) {
     setBanner(text)
     window.clearTimeout(showBanner._t)
@@ -373,6 +384,11 @@ export default function Editor () {
     limitErrorAtRef.current = now
     toast('Текст выходит за границы документа', 'error')
   }
+
+  const closeMenus = useCallback(() => setMenuOpen(null), [])
+  const toggleMenu = useCallback((name) => {
+    setMenuOpen(prev => (prev === name ? null : name))
+  }, [])
 
   const scheduleSaveDraft = useCallback(() => {
     if (!isAuthed) return
@@ -406,8 +422,8 @@ export default function Editor () {
           cy: ov.cy,
           w: ov.w,
           h: ov.h,
-          scaleX: ov.scaleX || 1,
-          scaleY: ov.scaleY || 1,
+          scaleX: ov.type === 'text' ? 1 : (ov.scaleX || 1),
+          scaleY: ov.type === 'text' ? 1 : (ov.scaleY || 1),
           angleRad: ov.angleRad || 0
         }
         if (ov.type === 'image') {
@@ -418,7 +434,7 @@ export default function Editor () {
             ...base,
             data: {
               text: d.text || '',
-              fontSize: d.fontSize || 48,
+              fontSize: Math.max(6, Math.round(d.fontSize || 48)),
               fontFamily: d.fontFamily || 'Arial',
               fontWeight: d.fontWeight || 'bold',
               fontStyle: d.fontStyle || 'normal',
@@ -486,10 +502,64 @@ export default function Editor () {
     return () => window.removeEventListener('user:update', onUser)
   }, [])
 
+  // --- FIX (п.2, п.4): жёсткая синхронизация layout -> engine (двойной rAF, с ретраями) ---
+  const forceLayoutSync = useCallback(() => {
+    const engine = engineRef.current
+    const wrap = canvasWrapRef.current
+    if (!engine || !wrap) return
+
+    let tries = 0
+    const run = () => {
+      tries += 1
+      const rect = wrap.getBoundingClientRect()
+      if (rect.width < 10 || rect.height < 10) {
+        if (tries < 8) requestAnimationFrame(run)
+        return
+      }
+
+      engine.resize(rect.width, rect.height)
+
+      const page = pagesRef.current[curRef.current]
+      if (page) {
+        engine.setDocument({
+          docWidth: page.docWidth,
+          docHeight: page.docHeight,
+          backgroundImage: page.bgImage,
+          overlays: page.overlays || [],
+          rotation: page.rotation || 0
+        })
+        setDocRect(engine.getDocumentScreenRect())
+
+        // если идёт редактирование текста — обновим bounds (боремся с “тонким caret” и рассинхроном)
+        const te = textEditRef.current
+        if (te?.overlayId) {
+          const b = engine.getOverlayScreenBoundsById(te.overlayId)
+          const ov = (page.overlays || []).find(o => o.id === te.overlayId)
+          if (b && ov) {
+            setTextEdit(prev => (prev && prev.overlayId === te.overlayId
+              ? {
+                  ...prev,
+                  rectCanvas: b,
+                  docW: ov.w,
+                  docH: ov.h,
+                  fontSize: ov.data?.fontSize
+                }
+              : prev))
+          }
+        }
+      } else {
+        setDocRect(engine.getDocumentScreenRect())
+      }
+    }
+
+    requestAnimationFrame(() => requestAnimationFrame(run))
+  }, [])
+
   useEffect(() => {
-    if (textEditRef.current) finishTextEditing()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isMobile])
+    // при резкой смене десктоп/мобайл — закрываем меню и форсим sync
+    closeMenus()
+    forceLayoutSync()
+  }, [isMobile, closeMenus, forceLayoutSync])
 
   useEffect(() => {
     if (textEditRef.current) finishTextEditing()
@@ -502,22 +572,26 @@ export default function Editor () {
 
     const engine = new CustomCanvasEngine(canvasRef.current, {
       viewMargin: isMobile ? 0 : 24,
-      onBeforeOverlayChange: snapshot => {
+
+      onBeforeOverlayChange: (snapshot) => {
         const pageIndex = curRef.current
-        setUndoStack(stk => [...stk, { type: 'page', pageIndex, overlays: snapshot }])
+        const snapSafe = (snapshot || []).map(o => ({ ...o, data: { ...(o.data || {}) } }))
+        setUndoStack(stk => [...stk, { type: 'page', pageIndex, overlays: snapSafe }])
       },
-      onOverlayChange: ov => {
-        if (internalUpdateRef.current) return
+
+      onOverlayChange: (ov) => {
+        if (!ov) return
 
         if (ov.id === engineRef.current?.activeId && ov.type === 'text') {
           const d = ov.data || {}
-          setFontSize(Math.round(d.fontSize || 48))
+          setFontSize(Math.max(6, Math.round(d.fontSize || 48)))
           setFont(d.fontFamily || 'Arial')
           setBold(d.fontWeight === 'bold' || d.fontWeight === 700)
           setItalic(d.fontStyle === 'italic')
           setColor(d.fill || '#000000')
         }
 
+        internalUpdateRef.current = true
         setPages(prev => {
           const pageIndex = curRef.current
           const copy = [...prev]
@@ -528,6 +602,7 @@ export default function Editor () {
           if (idx >= 0) newOverlays[idx] = ov
           else newOverlays.push(ov)
           copy[pageIndex] = { ...page, overlays: newOverlays }
+          pagesRef.current = copy
           return copy
         })
 
@@ -540,15 +615,18 @@ export default function Editor () {
               rectCanvas: bounds,
               docW: ov.w,
               docH: ov.h,
-              fontSize: ov.data.fontSize
+              fontSize: ov.data?.fontSize
             } : prev))
           }
         }
       },
-      onInteractionEnd: snapshot => {
+
+      onInteractionEnd: () => {
         scheduleSaveDraft()
       },
-      onOverlayDelete: id => {
+
+      onOverlayDelete: (id) => {
+        internalUpdateRef.current = true
         setPages(prev => {
           const pageIndex = curRef.current
           const copy = [...prev]
@@ -558,11 +636,13 @@ export default function Editor () {
             ...page,
             overlays: (page.overlays || []).filter(o => o.id !== id)
           }
+          pagesRef.current = copy
           return copy
         })
         scheduleSaveDraft()
       },
-      onSelectionChange: ov => {
+
+      onSelectionChange: (ov) => {
         const current = textEditRef.current
         if (current && (!ov || ov.id !== current.overlayId)) {
           finishTextEditing()
@@ -571,22 +651,19 @@ export default function Editor () {
         if (ov && ov.type === 'text') {
           const d = ov.data || {}
           setFont(d.fontFamily || 'Arial')
-          setFontSize(Math.round(d.fontSize || 48))
+          setFontSize(Math.max(6, Math.round(d.fontSize || 48)))
           setBold(d.fontWeight === 'bold' || d.fontWeight === 700)
           setItalic(d.fontStyle === 'italic')
           setColor(d.fill || '#000000')
         }
       },
+
       onTextEditRequest: (ov, bounds) => {
         const current = textEditRef.current
         const d = ov.data || {}
 
-        if (current && current.overlayId === ov.id) {
-          return
-        }
-        if (current && current.overlayId !== ov.id) {
-          finishTextEditing()
-        }
+        if (current && current.overlayId === ov.id) return
+        if (current && current.overlayId !== ov.id) finishTextEditing()
 
         if (engineRef.current) engineRef.current.setEditingOverlayId(ov.id)
 
@@ -609,6 +686,7 @@ export default function Editor () {
         })
         setPanelOpen(true)
       },
+
       onBlankClick: () => {
         finishTextEditing()
       }
@@ -618,11 +696,7 @@ export default function Editor () {
     engineRef.current = engine
 
     const handleResize = () => {
-      if (!canvasWrapRef.current || !engineRef.current) return
-      const rect = canvasWrapRef.current.getBoundingClientRect()
-      if (rect.width < 10 || rect.height < 10) return
-      engineRef.current.resize(rect.width, rect.height)
-      setDocRect(engineRef.current.getDocumentScreenRect())
+      forceLayoutSync()
     }
 
     handleResize()
@@ -638,7 +712,7 @@ export default function Editor () {
       window.removeEventListener('orientationchange', handleResize)
       ro.disconnect()
     }
-  }, [hasDoc, isMobile, scheduleSaveDraft])
+  }, [hasDoc, isMobile, scheduleSaveDraft, forceLayoutSync])
 
   function finishTextEditing () {
     const current = textEditRef.current
@@ -665,10 +739,11 @@ export default function Editor () {
       if (!txt) {
         const newOvs = overlays.filter(o => o.id !== current.overlayId)
         engineRef.current.setOverlays(newOvs)
+
+        internalUpdateRef.current = true
         const newPages = [...pagesArr]
         newPages[pIdx] = { ...page, overlays: newOvs }
-        setPages(newPages)
-        pagesRef.current = newPages
+        setPagesSync(newPages)
       }
     }
 
@@ -677,34 +752,63 @@ export default function Editor () {
     setPanelOpen(false)
   }
 
+// frontend/src/pages/Editor.jsx (часть 2/3)
+
+  // Синхронизация: React(state) -> Canvas(engine)
+  const prevCurForSyncRef = useRef(0)
   useEffect(() => {
-    if (internalUpdateRef.current) {
+    const curChanged = prevCurForSyncRef.current !== cur
+    prevCurForSyncRef.current = cur
+
+    if (internalUpdateRef.current && !curChanged) {
       internalUpdateRef.current = false
       return
     }
+    internalUpdateRef.current = false
 
     const page = pages[cur]
-    if (!page || !engineRef.current) {
+    const engine = engineRef.current
+    if (!page || !engine) {
       setDocRect(null)
       return
     }
 
-    engineRef.current.setDocument({
+    engine.setDocument({
       docWidth: page.docWidth,
       docHeight: page.docHeight,
       backgroundImage: page.bgImage,
       overlays: page.overlays || [],
       rotation: page.rotation || 0
     })
-    setDocRect(engineRef.current.getDocumentScreenRect())
-  }, [pages, cur, isMobile])
+    setDocRect(engine.getDocumentScreenRect())
+
+    // FIX (п.4): после синхронизации обновляем bounds textarea, если редактируем
+    const te = textEditRef.current
+    if (te?.overlayId) {
+      const b = engine.getOverlayScreenBoundsById(te.overlayId)
+      const ov = (page.overlays || []).find(o => o.id === te.overlayId)
+      if (b && ov) {
+        setTextEdit(prev => (prev && prev.overlayId === te.overlayId
+          ? {
+              ...prev,
+              rectCanvas: b,
+              docW: ov.w,
+              docH: ov.h,
+              fontSize: ov.data?.fontSize
+            }
+          : prev))
+      }
+    }
+  }, [pages, cur])
 
   useEffect(() => {
-    if (engineRef.current) {
-      engineRef.current.setMode(isMobile)
-      engineRef.current.setViewMargin(isMobile ? 0 : 24)
-    }
-  }, [isMobile])
+    const engine = engineRef.current
+    if (!engine) return
+    engine.setMode(isMobile)
+    engine.setViewMargin(isMobile ? 0 : 24)
+    // важный форс после смены режима — лечит белый экран в некоторых кейсах
+    forceLayoutSync()
+  }, [isMobile, forceLayoutSync])
 
   useEffect(() => {
     if (textEdit && textAreaRef.current) {
@@ -712,10 +816,10 @@ export default function Editor () {
       const len = (textEditValue || '').length
       requestAnimationFrame(() => {
         ta.focus()
-        ta.setSelectionRange(len, len)
+        try { ta.setSelectionRange(len, len) } catch {}
       })
     }
-  }, [textEdit])
+  }, [textEdit, textEditValue])
 
   async function loadLibrary () {
     if (!isAuthed) { setSignLib([]); return }
@@ -726,6 +830,7 @@ export default function Editor () {
   }
   useEffect(() => { if (isAuthed) loadLibrary() }, [isAuthed])
 
+  // --- восстановление черновика ---
   useEffect(() => {
     if (!isAuthed) return
 
@@ -772,6 +877,7 @@ export default function Editor () {
           if (pg.type === 'pdf' && pg.bytes_b64) {
             try {
               await ensurePDFJS()
+              // eslint-disable-next-line no-undef
               const pdf = await pdfjsLib.getDocument({ data: b64ToU8(pg.bytes_b64) }).promise
               const cv = await renderPDFPageToCanvas(pdf, (pg.index || 0) + 1, PDF_RENDER_SCALE)
               img = cv
@@ -798,17 +904,20 @@ export default function Editor () {
             cy: ov.cy ?? 0,
             w: ov.w || 200,
             h: ov.h || 100,
-            scaleX: ov.scaleX ?? 1,
-            scaleY: ov.scaleY ?? 1,
+            scaleX: ov.type === 'text' ? 1 : (ov.scaleX ?? 1),
+            scaleY: ov.type === 'text' ? 1 : (ov.scaleY ?? 1),
             angleRad: ov.angleRad ?? 0,
             data: {}
           }
+
           if (ov.type === 'text' || ov.t === 'tb') {
             base.type = 'text'
             const d = ov.data || {}
+            base.scaleX = 1
+            base.scaleY = 1
             base.data = {
               text: d.text || ov.text || '',
-              fontSize: d.fontSize || ov.fontSize || 48,
+              fontSize: Math.max(6, Math.round(d.fontSize || ov.fontSize || 48)),
               fontFamily: d.fontFamily || ov.fontFamily || 'Arial',
               fontWeight: d.fontWeight || ov.fontWeight || 'bold',
               fontStyle: d.fontStyle || ov.fontStyle || 'normal',
@@ -823,6 +932,7 @@ export default function Editor () {
               try { base.data.image = await loadImageEl(src) } catch {}
             }
           }
+
           overlays.push(base)
         }
 
@@ -835,11 +945,12 @@ export default function Editor () {
           overlays,
           rotation
         })
+
         idx++
         setProgress(p => ({ ...p, val: idx }))
       }
 
-      setPages(restored)
+      setPagesSync(restored)
       if (restored.length) setCur(0)
       setDraftHint(true)
       setDocId(data.client_id || randDocId())
@@ -847,7 +958,11 @@ export default function Editor () {
 
       setProgress(p => ({ ...p, active: false }))
       showBanner('Восстановлен последний документ')
+
+      // форсим sync движка после восстановления
+      forceLayoutSync()
     })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthed])
 
   useEffect(() => {
@@ -880,6 +995,7 @@ export default function Editor () {
       else if (ext === 'pdf') {
         try {
           await ensurePDFJS()
+          // eslint-disable-next-line no-undef
           const pdf = await pdfjsLib.getDocument({ data: await f.arrayBuffer() }).promise
           total += pdf.numPages || 1
         } catch { total += 1 }
@@ -937,6 +1053,7 @@ export default function Editor () {
           addedPages++; tick(1)
         } else if (ext === 'pdf') {
           await ensurePDFJS()
+          // eslint-disable-next-line no-undef
           const pdf = await pdfjsLib.getDocument({ data: await f.arrayBuffer() }).promise
           const num = pdf.numPages
           for (let i = 1; i <= num; i++) {
@@ -993,7 +1110,7 @@ export default function Editor () {
         }
       }
 
-      setPages(newPages)
+      setPagesSync(newPages)
       if (!hasDoc && newPages.length) setCur(0)
       scheduleSaveDraft()
 
@@ -1005,6 +1122,7 @@ export default function Editor () {
       }
 
       toast('Страницы добавлены', 'success')
+      forceLayoutSync()
     } catch (e) {
       console.error(e)
       toast(e.message || 'Ошибка загрузки файлов', 'error')
@@ -1017,7 +1135,10 @@ export default function Editor () {
     if (!pagesRef.current.length) return
     if (pagesRef.current.length <= 1) {
       if (!window.confirm('Удалить весь документ?')) return
-      setPages([]); setCur(0); setFileName(''); setUndoStack([])
+      setPagesSync([])
+      setCur(0)
+      setFileName('')
+      setUndoStack([])
       try { if (docIdRef.current) await AuthAPI.deleteUploadsByClient(docIdRef.current) } catch {}
       try { await AuthAPI.clearDraft() } catch {}
       setDraftHint(false)
@@ -1025,10 +1146,14 @@ export default function Editor () {
       return
     }
     if (!window.confirm('Удалить текущую страницу?')) return
-    setPages(prev => prev.filter((_, i) => i !== idx))
+    if (textEditRef.current) finishTextEditing()
+
+    const nextPages = pagesRef.current.filter((_, i) => i !== idx)
+    setPagesSync(nextPages)
     setCur(i => Math.max(0, idx - 1))
     scheduleSaveDraft()
     toast('Страница удалена', 'success')
+    forceLayoutSync()
   }
 
   async function addText () {
@@ -1055,6 +1180,44 @@ export default function Editor () {
     scheduleSaveDraft()
   }
 
+  // helper: авто-ужатие overlay под страницу (п.3)
+  const fitOverlayToPage = useCallback((ov, page) => {
+    const engine = engineRef.current
+    if (!engine || !ov || !page) return ov
+
+    const maxW = (engine.computePageSize(page.docWidth || 1000, page.docHeight || 1414, page.rotation || 0).pageW || (page.docWidth || 1000)) - 4
+    const maxH = (engine.computePageSize(page.docWidth || 1000, page.docHeight || 1414, page.rotation || 0).pageH || (page.docHeight || 1414)) - 4
+
+    const bounds = engine.getOverlayDocBoundsForPage(ov, page.docWidth || 1000, page.docHeight || 1414, page.rotation || 0)
+    const bw = Math.max(1e-6, bounds.w)
+    const bh = Math.max(1e-6, bounds.h)
+    const factor = Math.min(maxW / bw, maxH / bh, 1)
+
+    if (factor >= 1) return ov
+
+    if (ov.type === 'text') {
+      const d = { ...(ov.data || {}) }
+      const fs0 = Number(d.fontSize || 48)
+      const fs1 = Math.max(6, Math.round(fs0 * factor))
+      const real = fs0 ? (fs1 / fs0) : factor
+      return {
+        ...ov,
+        w: Math.max(1, Number(ov.w || 1) * real),
+        h: Math.max(1, Number(ov.h || 1) * real),
+        scaleX: 1,
+        scaleY: 1,
+        data: { ...d, fontSize: fs1 }
+      }
+    }
+
+    return {
+      ...ov,
+      scaleX: (ov.scaleX || 1) * factor,
+      scaleY: (ov.scaleY || 1) * factor
+    }
+  }, [])
+
+  // Панель форматирования текста (шаг 1)
   const applyPanel = useCallback((overrides = {}) => {
     const pageIndex = curRef.current
     const page = pagesRef.current[pageIndex]
@@ -1072,7 +1235,7 @@ export default function Editor () {
 
     const newFontFamily = overrides.font ?? font
     const rawSize = overrides.fontSize ?? fontSize
-    const newFontSize = Math.max(6, rawSize)
+    const newFontSize = Math.max(6, Math.round(rawSize))
     const useBold = overrides.bold ?? bold
     const useItalic = overrides.italic ?? italic
     const newColor = overrides.color ?? color
@@ -1099,6 +1262,8 @@ export default function Editor () {
       ...oldOv,
       w: newW,
       h: newH,
+      scaleX: 1,
+      scaleY: 1,
       data: {
         ...d,
         fontFamily: newFontFamily,
@@ -1109,91 +1274,14 @@ export default function Editor () {
       }
     }
 
-    const sim = { ...newOv, data: { ...newOv.data } }
-
-    function getBounds (ov) {
-      const w = ov.w * (ov.scaleX || 1)
-      const h = ov.h * (ov.scaleY || 1)
-      const ang = ov.angleRad || 0
-      const hw = w / 2
-      const hh = h / 2
-      const cs = Math.cos(ang)
-      const sn = Math.sin(ang)
-      const pts = [
-        { x: -hw, y: -hh },
-        { x: hw, y: -hh },
-        { x: hw, y: hh },
-        { x: -hw, y: hh }
-      ].map(p => ({
-        x: ov.cx + (p.x * cs - p.y * sn),
-        y: ov.cy + (p.x * sn + p.y * cs)
-      }))
-      let minX = pts[0].x
-      let maxX = pts[0].x
-      let minY = pts[0].y
-      let maxY = pts[0].y
-      for (const p of pts) {
-        if (p.x < minX) minX = p.x
-        if (p.x > maxX) maxX = p.x
-        if (p.y < minY) minY = p.y
-        if (p.y > maxY) maxY = p.y
-      }
-      return { minX, maxX, minY, maxY }
-    }
-
-    const docW = page.docWidth || 1000
-    const docH = page.docHeight || 1414
-    const rotation = page.rotation || 0
-
-    let pageW, pageH
-    if (rotation === 0) {
-      pageW = docW
-      pageH = docH
-    } else {
-      if (docW > 0) {
-        pageH = docH
-        pageW = (docH * docH) / docW
-      } else {
-        pageH = docH
-        pageW = docH
-      }
-    }
-    const docCx = docW / 2
-    const docCy = docH / 2
-    const pLeft = docCx - pageW / 2
-    const pRight = docCx + pageW / 2
-    const pTop = docCy - pageH / 2
-    const pBottom = docCy + pageH / 2
-
-    const b0 = getBounds(sim)
-    let dx = 0
-    let dy = 0
-    if (b0.minX < pLeft) dx = pLeft - b0.minX
-    if (b0.maxX > pRight) dx = pRight - b0.maxX
-    if (b0.minY < pTop) dy = pTop - b0.minY
-    if (b0.maxY > pBottom) dy = pBottom - b0.maxY
-    sim.cx += dx
-    sim.cy += dy
-    const b1 = getBounds(sim)
-
-    const eps = 0.5
-    if (
-      b1.minX < pLeft - eps ||
-      b1.maxX > pRight + eps ||
-      b1.minY < pTop - eps ||
-      b1.maxY > pBottom + eps
-    ) {
+    // ограничение + автосдвиг (в пределах страницы)
+    const bounded = engineRef.current.clampOverlayToPage(newOv, page.docWidth || 1000, page.docHeight || 1414, page.rotation || 0)
+    if (!bounded.ok) {
       showLimitWarning()
       return false
     }
 
-    newOv.cx = sim.cx
-    newOv.cy = sim.cy
-
-    const newOverlaysList = [...overlays]
-    newOverlaysList[idx] = newOv
-    engineRef.current.setOverlays(newOverlaysList)
-
+    engineRef.current.setOverlays(overlays.map(o => (o.id === activeId ? bounded.overlay : o)))
     const newBounds = engineRef.current.getOverlayScreenBoundsById(activeId)
 
     internalUpdateRef.current = true
@@ -1203,8 +1291,9 @@ export default function Editor () {
       if (!p) return prev
       const nextOvs = [...(p.overlays || [])]
       const matchIdx = nextOvs.findIndex(o => o.id === activeId)
-      if (matchIdx >= 0) nextOvs[matchIdx] = newOv
+      if (matchIdx >= 0) nextOvs[matchIdx] = bounded.overlay
       copy[pageIndex] = { ...p, overlays: nextOvs }
+      pagesRef.current = copy
       return copy
     })
 
@@ -1214,8 +1303,8 @@ export default function Editor () {
         return {
           ...prev,
           rectCanvas: newBounds,
-          docW: newW,
-          docH: newH,
+          docW: bounded.overlay.w,
+          docH: bounded.overlay.h,
           fontFamily: newFontFamily,
           fontSize: newFontSize,
           fontWeight: newFontWeight,
@@ -1228,44 +1317,37 @@ export default function Editor () {
 
     scheduleSaveDraft()
     return true
-  }, [font, fontSize, bold, italic, color, scheduleSaveDraft])
+  }, [font, fontSize, bold, italic, color, scheduleSaveDraft, fitOverlayToPage])
+
+// frontend/src/pages/Editor.jsx (часть 3/3)
 
   async function rotatePage () {
     const page = pagesRef.current[cur]
-    if (!page || !engineRef.current) return
+    const engine = engineRef.current
+    if (!page || !engine) return
+
     const newRot = page.rotation === 90 ? 0 : 90
-    
+
+    // FIX (п.5): НЕ выходим из режима редактирования текста при автоужатии/повороте
+    // (engine сам пересчитает overlays и вызовет onOverlayChange)
+    engine.setPageRotation(newRot, isMobile)
+    setDocRect(engine.getDocumentScreenRect())
+
+    // обновляем rotation в state (overlays синхронизируются callbacks-ами движка)
     internalUpdateRef.current = true
     setPages(prev => {
       const copy = [...prev]
       const p = copy[cur]
       if (!p) return prev
       copy[cur] = { ...p, rotation: newRot }
+      pagesRef.current = copy
       return copy
     })
-    
-    engineRef.current.setPageRotation(newRot, isMobile)
-    setDocRect(engineRef.current.getDocumentScreenRect())
+
     scheduleSaveDraft()
-        // Обновляем границы активного текстового редактора после поворота
-    const te = textEditRef.current
-    if (te && engineRef.current) {
-      const pagesArr = pagesRef.current
-      const pageNow = pagesArr[cur]
-      const ov = pageNow?.overlays?.find(o => o.id === te.overlayId)
-      const bounds = engineRef.current.getOverlayScreenBoundsById(te.overlayId)
-      if (ov && bounds) {
-        setTextEdit(prev => (prev && prev.overlayId === te.overlayId
-          ? {
-              ...prev,
-              rectCanvas: bounds,
-              docW: ov.w,
-              docH: ov.h,
-              fontSize: ov.data.fontSize
-            }
-          : prev))
-      }
-    }
+
+    // FIX (п.4/5): обновим bounds textarea после поворота (двойной rAF — под финальный layout)
+    forceLayoutSync()
   }
 
   function placeFromLib (url) {
@@ -1273,10 +1355,9 @@ export default function Editor () {
     if (!page) { toast('Сначала добавьте страницу', 'error'); return }
     if (!engineRef.current) return
     loadImageEl(url).then(img => {
-      const snapshot = (page.overlays || []).map(o => ({ ...o, data: { ...o.data } }))
-      setUndoStack(stk => [...stk, { type: 'page', pageIndex: cur, overlays: snapshot }])
       engineRef.current.addImageOverlay(img, { src: url })
       scheduleSaveDraft()
+      forceLayoutSync()
     }).catch(e => {
       console.error(e)
       toast('Не удалось загрузить изображение', 'error')
@@ -1301,40 +1382,56 @@ export default function Editor () {
     if (!undoStack.length) return
     const last = undoStack[undoStack.length - 1]
     setUndoStack(stk => stk.slice(0, -1))
-    
+
+    const cloneOvs = (arr) => (arr || []).map(o => ({ ...o, data: { ...(o.data || {}) } }))
+
     internalUpdateRef.current = true
     setPages(prev => {
       const copy = [...prev]
       if (last.type === 'page') {
         const p = copy[last.pageIndex]
         if (!p) return prev
-        copy[last.pageIndex] = { ...p, overlays: last.overlays }
+        const nextOvs = cloneOvs(last.overlays)
+        copy[last.pageIndex] = { ...p, overlays: nextOvs }
+        if (engineRef.current && last.pageIndex === curRef.current) {
+          engineRef.current.setOverlays(nextOvs)
+        }
       } else if (last.type === 'multi') {
-        for (const ch of last.pages) {
+        for (const ch of (last.pages || [])) {
           const p = copy[ch.pageIndex]
           if (!p) continue
-          copy[ch.pageIndex] = { ...p, overlays: ch.overlays }
+          const nextOvs = cloneOvs(ch.overlays)
+          copy[ch.pageIndex] = { ...p, overlays: nextOvs }
+          if (engineRef.current && ch.pageIndex === curRef.current) {
+            engineRef.current.setOverlays(nextOvs)
+          }
         }
       }
+      pagesRef.current = copy
       return copy
     })
+
     scheduleSaveDraft()
+    forceLayoutSync()
   }
 
   function applyToAllPages () {
     const pagesArr = pagesRef.current
     const currentPage = pagesArr[cur]
-    if (!currentPage || !engineRef.current) return
-    const activeId = engineRef.current.activeId
+    const engine = engineRef.current
+    if (!currentPage || !engine) return
+
+    const activeId = engine.activeId
     const src = (currentPage.overlays || []).find(o => o.id === activeId)
     if (!src) {
       toast('Выберите объект на странице', 'error')
       return
     }
 
+    // снапшот для undo (все страницы)
     const snapshotAll = pagesArr.map((p, idx) => ({
       pageIndex: idx,
-      overlays: (p.overlays || []).map(o => ({ ...o, data: { ...o.data } }))
+      overlays: (p.overlays || []).map(o => ({ ...o, data: { ...(o.data || {}) } }))
     }))
     setUndoStack(stk => [...stk, { type: 'multi', pages: snapshotAll }])
 
@@ -1343,23 +1440,39 @@ export default function Editor () {
 
     const newPages = pagesArr.map((page, idx) => {
       if (idx === cur) return page
+
       const dstW = page.docWidth || srcW
       const dstH = page.docHeight || srcH
 
       const relX = src.cx / srcW
       const relY = src.cy / srcH
 
-      const newOv = {
+      let newOv = {
         ...src,
         id: `${src.type}_${Date.now()}_${Math.random().toString(36).slice(2)}`,
         cx: relX * dstW,
         cy: relY * dstH,
-        w: (src.w * (src.scaleX || 1) / srcW) * dstW,
-        h: (src.h * (src.scaleY || 1) / srcH) * dstH,
-        scaleX: 1,
-        scaleY: 1,
-        data: { ...src.data }
+        data: { ...(src.data || {}) }
       }
+
+      // FIX (п.3): переносим правила текста (без scale)
+      if (newOv.type === 'text') {
+        newOv.scaleX = 1
+        newOv.scaleY = 1
+        newOv.data.fontSize = Math.max(6, Math.round(Number(newOv.data?.fontSize || 48)))
+      }
+
+      // FIX (п.3): авто-ужатие под целевую страницу + корректировка fontSize
+      newOv = fitOverlayToPage(newOv, page)
+
+      // финальный clamp (сдвиг в лист)
+      const cl = engine.clampOverlayToPage(
+        newOv,
+        page.docWidth || 1000,
+        page.docHeight || 1414,
+        page.rotation || 0
+      )
+      if (cl?.overlay) newOv = cl.overlay
 
       return {
         ...page,
@@ -1367,10 +1480,10 @@ export default function Editor () {
       }
     })
 
-    internalUpdateRef.current = true
-    setPages(newPages)
+    setPagesSync(newPages)
     scheduleSaveDraft()
     toast('Объект добавлен на все страницы', 'success')
+    forceLayoutSync()
   }
 
   async function applyPromo () {
@@ -1427,6 +1540,7 @@ export default function Editor () {
       })
 
       await ensureJSZip()
+      // eslint-disable-next-line no-undef
       const zip = new JSZip()
 
       for (let i = 0; i < pagesRef.current.length; i++) {
@@ -1542,24 +1656,32 @@ export default function Editor () {
         if (!page || !engineRef.current) return
         const activeId = engineRef.current.activeId
         if (!activeId) return
+
         e.preventDefault()
-        const snapshot = (page.overlays || []).map(o => ({ ...o, data: { ...o.data } }))
+
+        const snapshot = (page.overlays || []).map(o => ({ ...o, data: { ...(o.data || {}) } }))
         setUndoStack(stk => [...stk, { type: 'page', pageIndex: curRef.current, overlays: snapshot }])
-        
+
+        const newOvs = (page.overlays || []).filter(o => o.id !== activeId)
+        engineRef.current.setOverlays(newOvs)
+
         internalUpdateRef.current = true
         setPages(prev => {
           const copy = [...prev]
           const p = copy[curRef.current]
           if (!p) return prev
-          copy[curRef.current] = { ...p, overlays: (p.overlays || []).filter(o => o.id !== activeId) }
+          copy[curRef.current] = { ...p, overlays: newOvs }
+          pagesRef.current = copy
           return copy
         })
+
         scheduleSaveDraft()
+        forceLayoutSync()
       }
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
-  }, [scheduleSaveDraft])
+  }, [scheduleSaveDraft, forceLayoutSync])
 
   const onRenameChange = (e) => { setFileName(sanitizeName(e.target.value)) }
 
@@ -1579,10 +1701,11 @@ export default function Editor () {
     return !!id && (page.overlays || []).some(o => o.id === id)
   })()
 
-  function handleTextChange (value, force = false) {
+  function handleTextChange (value) {
     const te = textEditRef.current
     const id = te?.overlayId
-    if (!id || !engineRef.current) {
+    const engine = engineRef.current
+    if (!id || !engine) {
       setTextEditValue(value)
       return
     }
@@ -1602,10 +1725,13 @@ export default function Editor () {
       return
     }
 
-    const targetOv = { ...prevOverlays[targetIndex], data: { ...prevOverlays[targetIndex].data } }
+    const targetOv = { ...prevOverlays[targetIndex], data: { ...(prevOverlays[targetIndex].data || {}) } }
+    targetOv.type = 'text'
+    targetOv.scaleX = 1
+    targetOv.scaleY = 1
 
     const d = targetOv.data
-    const fontSizeLocal = d.fontSize || 48
+    const fontSizeLocal = Math.max(6, Math.round(d.fontSize || 48))
     const fontFamily = d.fontFamily || 'Arial'
     const fontWeight = d.fontWeight || 'bold'
     const fontStyle = d.fontStyle || 'normal'
@@ -1620,115 +1746,36 @@ export default function Editor () {
     }
 
     const totalH = lines.length * lineHeightPx
-    const newW = Math.max(20, maxLineW + 4)
-    const newH = Math.max(lineHeightPx, totalH)
-
-    targetOv.w = newW
-    targetOv.h = newH
+    targetOv.w = Math.max(20, maxLineW + 4)
+    targetOv.h = Math.max(lineHeightPx, totalH)
     targetOv.data.text = text
+    targetOv.data.fontSize = fontSizeLocal
 
-    if (!force) {
-      const sim = { ...targetOv, data: { ...targetOv.data } }
-
-      function getBounds (ov) {
-        const w = ov.w * (ov.scaleX || 1)
-        const h = ov.h * (ov.scaleY || 1)
-        const ang = ov.angleRad || 0
-        const hw = w / 2
-        const hh = h / 2
-        const cs = Math.cos(ang)
-        const sn = Math.sin(ang)
-        const pts = [
-          { x: -hw, y: -hh },
-          { x: hw, y: -hh },
-          { x: hw, y: hh },
-          { x: -hw, y: hh }
-        ].map(p => ({
-          x: ov.cx + (p.x * cs - p.y * sn),
-          y: ov.cy + (p.x * sn + p.y * cs)
-        }))
-        let minX = pts[0].x
-        let maxX = pts[0].x
-        let minY = pts[0].y
-        let maxY = pts[0].y
-        for (const p of pts) {
-          if (p.x < minX) minX = p.x
-          if (p.x > maxX) maxX = p.x
-          if (p.y < minY) minY = p.y
-          if (p.y > maxY) maxY = p.y
-        }
-        return { minX, maxX, minY, maxY }
-      }
-
-      const docW = page.docWidth || 1000
-      const docH = page.docHeight || 1414
-      const rotation = page.rotation || 0
-
-      let pageW, pageH
-      if (rotation === 0) {
-        pageW = docW
-        pageH = docH
-      } else {
-        if (docW > 0) {
-          pageH = docH
-          pageW = (docH * docH) / docW
-        } else {
-          pageH = docH
-          pageW = docH
-        }
-      }
-      const docCx = docW / 2
-      const docCy = docH / 2
-      const pLeft = docCx - pageW / 2
-      const pRight = docCx + pageW / 2
-      const pTop = docCy - pageH / 2
-      const pBottom = docCy + pageH / 2
-
-      const b0 = getBounds(sim)
-      let dx = 0
-      let dy = 0
-      if (b0.minX < pLeft) dx = pLeft - b0.minX
-      if (b0.maxX > pRight) dx = pRight - b0.maxX
-      if (b0.minY < pTop) dy = pTop - b0.minY
-      if (b0.maxY > pBottom) dy = pBottom - b0.maxY
-      sim.cx += dx
-      sim.cy += dy
-      const b1 = getBounds(sim)
-
-      const eps = 0.5
-      if (
-        b1.minX < pLeft - eps ||
-        b1.maxX > pRight + eps ||
-        b1.minY < pTop - eps ||
-        b1.maxY > pBottom + eps
-      ) {
-        showLimitWarning()
-        setTextEditValue(lastGoodTextRef.current)
-        return
-      }
-
-      targetOv.cx = sim.cx
-      targetOv.cy = sim.cy
+    // FIX: используем engine clamp под текущую страницу (предсказуемо)
+    const cl = engine.clampOverlayToPage(targetOv, page.docWidth || 1000, page.docHeight || 1414, page.rotation || 0)
+    if (!cl.ok) {
+      showLimitWarning()
+      setTextEditValue(lastGoodTextRef.current)
+      return
     }
 
     lastGoodTextRef.current = text
     setTextEditValue(text)
 
     const newOverlays = [...prevOverlays]
-    newOverlays[targetIndex] = targetOv
+    newOverlays[targetIndex] = cl.overlay
 
-    engineRef.current.setOverlays(newOverlays)
-    const bounds = engineRef.current.getOverlayScreenBoundsById(id)
+    engine.setOverlays(newOverlays)
+    const bounds = engine.getOverlayScreenBoundsById(id)
 
     internalUpdateRef.current = true
     const newPages = [...pagesSnap]
     newPages[pageIndex] = { ...page, overlays: newOverlays }
-    pagesRef.current = newPages
-    setPages(newPages)
+    setPagesSync(newPages)
 
     if (bounds) {
       setTextEdit(prev => (prev && prev.overlayId === id
-        ? { ...prev, rectCanvas: bounds, docW: targetOv.w, docH: targetOv.h }
+        ? { ...prev, rectCanvas: bounds, docW: cl.overlay.w, docH: cl.overlay.h }
         : prev))
     }
     scheduleSaveDraft()
@@ -1767,9 +1814,7 @@ export default function Editor () {
           engineRef.current.handleExternalPointerDown(fakeDown)
         }
       }
-      if (drag.started) {
-        e.preventDefault()
-      }
+      if (drag.started) e.preventDefault()
     }
 
     const onUp = (e) => {
@@ -1792,11 +1837,10 @@ export default function Editor () {
     }
   }, [textEdit])
 
-    const textEditorStyle = textEdit && canvasWrapRef.current
+  const textEditorStyle = textEdit && canvasWrapRef.current
     ? (() => {
         const rc = textEdit.rectCanvas || {}
 
-        // Учитываем смещение самого canvas внутри враппера
         const canvasEl = canvasRef.current
         let offX = 0
         let offY = 0
@@ -1805,18 +1849,20 @@ export default function Editor () {
           offY = canvasEl.offsetTop
         }
 
-        const screenW = rc.w || textEdit.docW || 40
-        const screenH = rc.h || textEdit.docH || 30
-        const screenFontSize = rc.fontSize || textEdit.fontSize || 48
+        const screenW = Math.round(rc.w || textEdit.docW || 40)
+        const screenH = Math.round(rc.h || textEdit.docH || 30)
+        const screenFontSize = Math.max(6, Math.round(rc.fontSize || textEdit.fontSize || 48))
 
         const angleDeg = (rc.angleRad || 0) * 180 / Math.PI
-        const lineHeightPx = screenFontSize * 1.2
+        const lineHeightPx = Math.round(screenFontSize * 1.2)
+
+        const leftPx = Math.round((rc.cx || 0) + offX)
+        const topPx = Math.round((rc.cy || 0) + offY)
 
         return {
           position: 'absolute',
-          // координаты центра textarea = центр оверлея + смещение canvas
-          left: `${rc.cx + offX}px`,
-          top: `${rc.cy + offY}px`,
+          left: `${leftPx}px`,
+          top: `${topPx}px`,
           width: `${screenW}px`,
           height: `${screenH}px`,
 
@@ -1837,12 +1883,15 @@ export default function Editor () {
           resize: 'none',
           outline: 'none',
           background: 'transparent',
-          zIndex: 200,
+
+          // ниже меню/баров
+          zIndex: 80,
+
           whiteSpace: 'pre',
           overflow: 'hidden',
 
           lineHeight: `${lineHeightPx}px`,
-          padding: 0,              // без отступов вообще
+          padding: 0,
           boxSizing: 'border-box',
 
           touchAction: 'none',
@@ -1854,7 +1903,7 @@ export default function Editor () {
   const onTopMenuClick = (e) => {
     const r = e.currentTarget.getBoundingClientRect()
     setMenuPos({ top: r.bottom + 8 + window.scrollY, left: r.left + window.scrollX })
-    setMenuActionsOpen(o => !o)
+    toggleMenu('actions')
   }
 
   return (
@@ -1867,15 +1916,8 @@ export default function Editor () {
         suffix={progress.suffix}
       />
 
-      {(menuActionsOpen || menuAddOpen || menuDownloadOpen) && (
-        <div
-          className="ed-dim"
-          onClick={() => {
-            setMenuActionsOpen(false)
-            setMenuAddOpen(false)
-            setMenuDownloadOpen(false)
-          }}
-        />
+      {menuOpen && (
+        <div className="ed-dim" onClick={closeMenus} />
       )}
 
       {banner && <div className="ed-banner">{banner}</div>}
@@ -1906,18 +1948,18 @@ export default function Editor () {
               value={font}
               onChange={e => {
                 const v = e.target.value
-                if (applyPanel({ font: v })) {
-                  setFont(v)
-                }
+                if (applyPanel({ font: v })) setFont(v)
               }}
             >
               {FONTS.map(f => <option key={f} value={f}>{f}</option>)}
             </select>
+
             <div className="sep" />
+
             <button
               onClick={() => {
                 setFontSize(s => {
-                  const nf = Math.max(6, s - 2)
+                  const nf = Math.max(6, s - 1)
                   return applyPanel({ fontSize: nf }) ? nf : s
                 })
               }}
@@ -1928,25 +1970,26 @@ export default function Editor () {
             <button
               onClick={() => {
                 setFontSize(s => {
-                  const nf = s + 2
+                  const nf = s + 1
                   return applyPanel({ fontSize: nf }) ? nf : s
                 })
               }}
             >
               +
             </button>
+
             <div className="sep" />
+
             <input
               type="color"
               value={color}
               onChange={e => {
                 const v = e.target.value
-                if (applyPanel({ color: v })) {
-                  setColor(v)
-                }
+                if (applyPanel({ color: v })) setColor(v)
               }}
               title="Цвет текста"
             />
+
             <button
               className={bold ? 'toggled' : ''}
               onClick={() => {
@@ -1958,6 +2001,7 @@ export default function Editor () {
             >
               <b>B</b>
             </button>
+
             <button
               className={italic ? 'toggled' : ''}
               onClick={() => {
@@ -1983,6 +2027,7 @@ export default function Editor () {
               <img className="ico" src={icSign} alt="" /><span>Загрузить подпись</span>
             </button>
           </div>
+
           <div className="ed-sign-list">
             <div
               className="thumb add"
@@ -1992,6 +2037,7 @@ export default function Editor () {
             >
               <img src={icPlus} alt="+" style={{ width: 22, height: 22, opacity: 0.6 }} />
             </div>
+
             {signLib.map(item => (
               <div
                 key={item.id}
@@ -2007,6 +2053,7 @@ export default function Editor () {
                     style={{ width: '100%', height: '100%', objectFit: 'contain', cursor: 'pointer' }}
                   />
                 )}
+
                 <button
                   className="thumb-x x-btn x-btn--small"
                   onClick={async (e) => {
@@ -2036,10 +2083,8 @@ export default function Editor () {
           >
             {hasDoc && (
               <>
-                <canvas
-                  ref={canvasRef}
-                  style={{ width: '100%', height: '100%', display: 'block' }}
-                />
+                <canvas ref={canvasRef} style={{ width: '100%', height: '100%', display: 'block' }} />
+
                 {docRect && (
                   <button
                     className="ed-page-x desktop-only x-btn x-btn--medium"
@@ -2054,6 +2099,7 @@ export default function Editor () {
                     <img src={icClose} alt="Удалить страницу" />
                   </button>
                 )}
+
                 {textEdit && textEditorStyle && (
                   <textarea
                     ref={textAreaRef}
@@ -2067,6 +2113,7 @@ export default function Editor () {
                 )}
               </>
             )}
+
             {!hasDoc && (
               <div className="ed-dropzone" onClick={pickDocument}>
                 <img src={icDocAdd} alt="" style={{ width: 140, height: 'auto', opacity: 0.9 }} />
@@ -2085,31 +2132,27 @@ export default function Editor () {
               onClick={async () => {
                 if (!pagesRef.current.length) return
                 if (!window.confirm('Удалить весь документ?')) return
-                setPages([]); setCur(0); setFileName(''); setUndoStack([])
+                if (textEditRef.current) finishTextEditing()
+                setPagesSync([]); setCur(0); setFileName(''); setUndoStack([])
                 try { if (docIdRef.current) await AuthAPI.deleteUploadsByClient(docIdRef.current) } catch {}
                 try { await AuthAPI.clearDraft() } catch {}
                 setDraftHint(false)
                 toast('Документ удалён', 'success')
+                forceLayoutSync()
               }}
             >
               <img src={icDelete} alt="" style={{ width: 18, height: 18, marginRight: 8 }} />Удалить документ
             </button>
-            <button
-              className={`ed-action ${canUndo ? '' : 'disabled'}`}
-              onClick={undoLast}
-            >
+
+            <button className={`ed-action ${canUndo ? '' : 'disabled'}`} onClick={undoLast}>
               <img src={icUndo} alt="" style={{ width: 18, height: 18, marginRight: 8 }} />Отменить
             </button>
-            <button
-              className={`ed-action ${pagesRef.current.length ? '' : 'disabled'}`}
-              onClick={rotatePage}
-            >
+
+            <button className={`ed-action ${pagesRef.current.length ? '' : 'disabled'}`} onClick={rotatePage}>
               <img src={icRotate} alt="" style={{ width: 18, height: 18, marginRight: 8 }} />Повернуть страницу
             </button>
-            <button
-              className={`ed-action ${hasActiveOverlay ? '' : 'disabled'}`}
-              onClick={applyToAllPages}
-            >
+
+            <button className={`ed-action ${hasActiveOverlay ? '' : 'disabled'}`} onClick={applyToAllPages}>
               <img src={icAddPage} alt="" style={{ width: 18, height: 18, marginRight: 8 }} />На все страницы
             </button>
           </div>
@@ -2124,6 +2167,7 @@ export default function Editor () {
                 <img src={icPdfFree} alt="" style={{ width: 18, height: 18, marginRight: 8 }} />PDF
               </button>
             </div>
+
             <div className="ed-dl-title" style={{ marginTop: 10 }}>Купить:</div>
             <div className="ed-dl-row ed-dl-row-paid">
               <button className={`btn ${(!pagesRef.current.length) ? 'disabled' : ''}`} onClick={() => { if (pagesRef.current.length) { setPlan('single'); setPayOpen(true) } }}>
@@ -2138,9 +2182,14 @@ export default function Editor () {
       </div>
 
       <div className="ed-bottom">
-        <button className="fab fab-add mobile-only" onClick={() => { if (pagesRef.current.length) { setMenuAddOpen(o => !o) } else { pickDocument() } }} title="Добавить">
+        <button
+          className="fab fab-add mobile-only"
+          onClick={() => { if (pagesRef.current.length) toggleMenu('add'); else pickDocument() }}
+          title="Добавить"
+        >
           <img src={icPlus} alt="+" />
         </button>
+
         <UnifiedPager
           total={pages.length}
           current={cur}
@@ -2154,37 +2203,47 @@ export default function Editor () {
           hasDoc={!!pagesRef.current.length}
           onAdd={pickDocument}
         />
-        <button className="fab fab-dl mobile-only" onClick={() => { if (!pagesRef.current.length) return; setMenuDownloadOpen(o => !o) }} title="Скачать">
+
+        <button
+          className="fab fab-dl mobile-only"
+          onClick={() => { if (!pagesRef.current.length) return; toggleMenu('download') }}
+          title="Скачать"
+        >
           <img src={icDownload} alt="↓" />
         </button>
       </div>
 
-      {menuActionsOpen && (
+      {menuOpen === 'actions' && (
         <div
           className="ed-sheet"
           ref={sheetActionsRef}
           style={{ position: 'fixed', top: menuPos.top, left: menuPos.left, maxWidth: '96vw', minWidth: 240 }}
         >
-          <button className={pagesRef.current.length ? '' : 'disabled'} onClick={() => { setMenuActionsOpen(false); rotatePage() }}>
+          <button className={pagesRef.current.length ? '' : 'disabled'} onClick={() => { closeMenus(); rotatePage() }}>
             <img src={icRotate} alt="" style={{ width: 18, height: 18, marginRight: 10 }} />Повернуть страницу
           </button>
-          <button className={(pagesRef.current.length && pagesRef.current.length > 1) ? '' : 'disabled'} onClick={async () => { setMenuActionsOpen(false); await deletePageAt(cur) }}>
+
+          <button className={(pagesRef.current.length && pagesRef.current.length > 1) ? '' : 'disabled'} onClick={async () => { closeMenus(); await deletePageAt(cur) }}>
             <img src={icDelete} alt="" style={{ width: 18, height: 18, marginRight: 10 }} />Удалить страницу
           </button>
-          <button className={hasActiveOverlay ? '' : 'disabled'} onClick={() => { setMenuActionsOpen(false); applyToAllPages() }}>
+
+          <button className={hasActiveOverlay ? '' : 'disabled'} onClick={() => { closeMenus(); applyToAllPages() }}>
             <img src={icAddPage} alt="" style={{ width: 18, height: 18, marginRight: 10 }} />На все страницы
           </button>
+
           <button
             className={pagesRef.current.length ? '' : 'disabled'}
             onClick={async () => {
-              setMenuActionsOpen(false)
+              closeMenus()
               if (!pagesRef.current.length) return
               if (!window.confirm('Удалить весь документ?')) return
-              setPages([]); setCur(0); setFileName(''); setUndoStack([])
+              if (textEditRef.current) finishTextEditing()
+              setPagesSync([]); setCur(0); setFileName(''); setUndoStack([])
               try { if (docIdRef.current) await AuthAPI.deleteUploadsByClient(docIdRef.current) } catch {}
               try { await AuthAPI.clearDraft() } catch {}
               setDraftHint(false)
               toast('Документ удалён', 'success')
+              forceLayoutSync()
             }}
           >
             <img src={icDelete} alt="" style={{ width: 18, height: 18, marginRight: 10 }} />Удалить документ
@@ -2192,28 +2251,28 @@ export default function Editor () {
         </div>
       )}
 
-      {menuAddOpen && (
+      {menuOpen === 'add' && (
         <div className="ed-sheet bottom-left" ref={sheetAddRef}>
-          <button className={pagesRef.current.length ? '' : 'disabled'} onClick={() => { setMenuAddOpen(false); addText() }}>
+          <button className={pagesRef.current.length ? '' : 'disabled'} onClick={() => { closeMenus(); addText() }}>
             <img src={icText} alt="" style={{ width: 18, height: 18, marginRight: 10 }} />Добавить текст
           </button>
-          <button onClick={() => { setMenuAddOpen(false); signFileRef.current?.click() }}>
+          <button onClick={() => { closeMenus(); signFileRef.current?.click() }}>
             <img src={icSign} alt="" style={{ width: 18, height: 18, marginRight: 10 }} />Добавить подпись/печать
           </button>
-          <button onClick={() => { setMenuAddOpen(false); pickDocument() }}>
+          <button onClick={() => { closeMenus(); pickDocument() }}>
             <img src={icPlus} alt="" style={{ width: 18, height: 18, marginRight: 10 }} />Добавить документ/страницу
           </button>
         </div>
       )}
 
-      {menuDownloadOpen && (
+      {menuOpen === 'download' && (
         <div className="ed-sheet bottom-right" ref={sheetDownloadRef} style={{ padding: 6 }}>
           <button
             className={`btn ${pagesRef.current.length ? '' : 'disabled'}`}
             style={{ padding: '10px 14px' }}
             onClick={() => {
               if (pagesRef.current.length) {
-                setMenuDownloadOpen(false)
+                closeMenus()
                 setPlan('single')
                 setPayOpen(true)
               }
@@ -2221,12 +2280,13 @@ export default function Editor () {
           >
             <img src={icJpgPaid} alt="" style={{ width: 18, height: 18, marginRight: 10 }} />Купить JPG
           </button>
+
           <button
             className={`btn ${pagesRef.current.length ? '' : 'disabled'}`}
             style={{ padding: '10px 14px' }}
             onClick={() => {
               if (pagesRef.current.length) {
-                setMenuDownloadOpen(false)
+                closeMenus()
                 setPlan('single')
                 setPayOpen(true)
               }
@@ -2234,24 +2294,26 @@ export default function Editor () {
           >
             <img src={icPdfPaid} alt="" style={{ width: 18, height: 18, marginRight: 10 }} />Купить PDF
           </button>
+
           <button
             className={`btn btn-lite ${pagesRef.current.length ? '' : 'disabled'}`}
             style={{ padding: '10px 14px' }}
             onClick={() => {
               if (pagesRef.current.length) {
-                setMenuDownloadOpen(false)
+                closeMenus()
                 exportJPG()
               }
             }}
           >
             <img src={icJpgFree} alt="" style={{ width: 18, height: 18, marginRight: 10 }} />Скачать бесплатно JPG
           </button>
+
           <button
             className={`btn btn-lite ${pagesRef.current.length ? '' : 'disabled'}`}
             style={{ padding: '10px 14px' }}
             onClick={() => {
               if (pagesRef.current.length) {
-                setMenuDownloadOpen(false)
+                closeMenus()
                 exportPDF()
               }
             }}
@@ -2266,6 +2328,7 @@ export default function Editor () {
           <div className="modal pay-modal" onClick={e => e.stopPropagation()}>
             <button className="modal-x" onClick={() => setPayOpen(false)}>×</button>
             <h3 className="modal-title">Чтобы выгрузить документ придётся немного заплатить</h3>
+
             <div className="pay-grid">
               <button className={`pay-card ${plan === 'single' ? 'active' : ''}`} onClick={() => setPlan('single')} type="button">
                 <img className="pay-ill" src={plan1} alt="" />
@@ -2283,6 +2346,7 @@ export default function Editor () {
                 <div className="pay-sub">безлимит на год</div>
               </button>
             </div>
+
             <div className={`pay-controls ${promoError ? 'error' : ''}`}>
               <div className="promo">
                 <label className="field-label">Промокод</label>
@@ -2294,9 +2358,14 @@ export default function Editor () {
                 </div>
                 {promoError && <div className="promo-err">{promoError}</div>}
               </div>
+
               <div className="pay-buttons">
                 <button className="btn btn-lite" onClick={applyPromo}><span className="label">Активировать</span></button>
-                <button className="btn" onClick={startPurchase}><span className="label">Оплатить {Math.max(0, (prices[plan] || 0) * (100 - promoPercent) / 100)} ₽</span></button>
+                <button className="btn" onClick={startPurchase}>
+                  <span className="label">
+                    Оплатить {Math.max(0, (prices[plan] || 0) * (100 - promoPercent) / 100)} ₽
+                  </span>
+                </button>
               </div>
             </div>
           </div>
@@ -2308,6 +2377,7 @@ export default function Editor () {
           <div className="modal" onClick={e => e.stopPropagation()} style={{ width: 'min(420px,92vw)', height: 'min(70vh,560px)', display: 'flex', flexDirection: 'column' }}>
             <button className="modal-x" onClick={() => setLibOpen(false)}>×</button>
             <h3 className="modal-title">Библиотека</h3>
+
             <div style={{ flex: '1 1 auto', overflowY: 'auto', padding: '8px' }}>
               <div className="defaults-grid" style={{ gridTemplateColumns: '1fr' }}>
                 {signLib.map(item => (
@@ -2320,6 +2390,7 @@ export default function Editor () {
                         onClick={() => { placeFromLib(item.url); setLibOpen(false) }}
                       />
                     )}
+
                     <button
                       className="thumb-x x-btn x-btn--small"
                       onClick={async () => {
@@ -2344,6 +2415,7 @@ export default function Editor () {
 
       <input ref={docFileRef} type="file" accept={ACCEPT_DOC} hidden multiple onChange={onPickDocument} />
       <input ref={bgFileRef} type="file" accept={ACCEPT_DOC} hidden onChange={() => {}} />
+
       <input
         ref={signFileRef}
         type="file"
@@ -2363,6 +2435,7 @@ export default function Editor () {
           reader.readAsDataURL(f)
         }}
       />
+
       <CropModal
         open={cropOpen}
         src={cropSrc}
@@ -2375,10 +2448,9 @@ export default function Editor () {
             const page = pagesRef.current[cur]
             if (page && engineRef.current) {
               const img = await loadImageEl(dataUrl)
-              const snapshot = (page.overlays || []).map(o => ({ ...o, data: { ...o.data } }))
-              setUndoStack(stk => [...stk, { type: 'page', pageIndex: cur, overlays: snapshot }])
               engineRef.current.addImageOverlay(img, { src: dataUrl })
               scheduleSaveDraft()
+              forceLayoutSync()
             }
           } catch (e) {
             toast(e.message || 'Не удалось обработать изображение', 'error')
@@ -2411,6 +2483,7 @@ function UnifiedPager ({ total, current, pgText, setPgText, onGo, onPrev, onNext
       <button className="pager-btn" onClick={onPrev} disabled={!canPrev} title="Предыдущая">
         <img src={icPrev} alt="Prev" />
       </button>
+
       <div className="pg" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
         {hasDoc ? (
           <>
@@ -2431,6 +2504,7 @@ function UnifiedPager ({ total, current, pgText, setPgText, onGo, onPrev, onNext
           <span className="pg-total">0/0</span>
         )}
       </div>
+
       <button className="pager-btn" onClick={onNext} title={canNext ? 'Следующая' : 'Добавить документ'}>
         {canNext ? (
           <img src={icPrev} alt="Next" style={{ transform: 'rotate(180deg)' }} />
