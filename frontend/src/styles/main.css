@@ -528,6 +528,8 @@ main { flex:1; }
   margin:0 0 8px;text-align:center;flex-shrink:0;padding:0 28px;
 }
 
+/* frontend/src/styles/main.css (часть 2/2) */
+
 .form-row{margin:8px 0}
 .input-wrap{position:relative}
 .form-row input,.input-wrap input{
@@ -733,7 +735,7 @@ main { flex:1; }
 .doc-editor .ed-menu-btn img{width:18px;height:18px;display:block;margin:0 auto}
 .doc-editor .ed-docid{font-weight:700;opacity:.85}
 
-/* FIX (п.4): слои меню должны быть выше слоя редактора текста */
+/* слои меню должны быть выше слоя редактора текста */
 .ed-dim{
   position:fixed;inset:0;
   background:transparent;
@@ -936,8 +938,6 @@ main { flex:1; }
   font-weight:800;font-size:18px;opacity:.9;white-space:nowrap;
 }
 
-/* frontend/src/styles/main.css (часть 2/2) */
-
 .disabled,.btn.disabled,.ed-action.disabled,.ed-tool.disabled,.fab.disabled,.ed-menu>button.disabled{
   opacity:.45;filter:saturate(0);cursor:default;pointer-events:none;
 }
@@ -1095,14 +1095,14 @@ main { flex:1; }
 
   .doc-editor .ed-bottom{
     position:fixed;left:0;right:0;bottom:0;
-    z-index:220; /* FIX (п.4): нижняя панель выше textarea и выше dim/sheet */
+    z-index:220; /* нижняя панель выше textarea и выше dim/sheet */
     height:var(--ed-bottom-h-mobile);
     padding:10px 12px calc(10px + env(safe-area-inset-bottom,0px));
     border-top:1px solid #eee;background:#fff;
   }
 
   .ed-sheet{
-    z-index:230; /* FIX (п.4): меню/шиты всегда сверху */
+    z-index:230; /* меню/шиты всегда сверху */
     max-height:calc(100vh - var(--hdr-h) - var(--ed-bottom-h-mobile) - 24px);
     overflow:auto;
   }

@@ -512,6 +512,7 @@ export class CustomCanvasEngine {
         ctx.restore()
         return
       }
+
       ctx.fillStyle = d.fill || '#000000'
       const fw = d.fontWeight || 'bold'
       const fs = d.fontStyle || 'normal'
@@ -521,7 +522,12 @@ export class CustomCanvasEngine {
 
       const align = d.textAlign || 'left'
       ctx.textAlign = align
-      ctx.textBaseline = 'top'
+
+      // ВАЖНО:
+      // canvas baseline "top" часто не совпадает по визуальным метрикам с CSS/textarea.
+      // Используем alphabetic + actualBoundingBoxAscent (если доступно), чтобы
+      // позиционирование текста было ближе к тому, как браузер рисует текст в textarea.
+      ctx.textBaseline = 'alphabetic'
 
       let xPos = 0
       if (align === 'left') xPos = -halfW
@@ -530,14 +536,29 @@ export class CustomCanvasEngine {
 
       const text = String(d.text || '')
       const lines = text.split('\n')
+
       const lh = sz * 1.2
       const totalH = lines.length * lh
 
-      let startY = -totalH / 2 + (lh - sz) / 2
+      // Оценка ascent. В современных браузерах есть actualBoundingBoxAscent.
+      // Фолбэк — эмпирическое значение.
+      let ascent = sz * 0.8
+      try {
+        const m = ctx.measureText('Mg')
+        if (m && typeof m.actualBoundingBoxAscent === 'number' && m.actualBoundingBoxAscent > 0) {
+          ascent = m.actualBoundingBoxAscent
+        }
+      } catch {}
 
-      for (let line of lines) {
-        ctx.fillText(line, xPos, startY)
-        startY += lh
+      // top линии в системе ov-координат:
+      // вертикально центрируем блок строк внутри overlay.
+      // baseline первой строки: lineTop + leading/2 + ascent
+      const leadingHalf = (lh - sz) / 2
+      let baselineY = (-totalH / 2) + leadingHalf + ascent
+
+      for (const line of lines) {
+        ctx.fillText(line, xPos, baselineY)
+        baselineY += lh
       }
     }
 
@@ -747,7 +768,7 @@ export class CustomCanvasEngine {
       this._setCursor('grabbing')
       this._draw()
 
-      if (ov.type === 'text') {
+            if (ov.type === 'text') {
         try {
           const bounds = this._getOverlayScreenBounds(ov)
           this.onTextEditRequest(cloneOverlay(ov), bounds)

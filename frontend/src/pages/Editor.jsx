@@ -306,7 +306,7 @@ export default function Editor () {
   const [italic, setItalic] = useState(false)
   const [color, setColor] = useState('#000000')
 
-  // FIX (п.6): единый стейт открытого меню
+  // единый стейт открытого меню
   const [menuOpen, setMenuOpen] = useState(null) // null | 'actions' | 'add' | 'download'
   const [menuPos, setMenuPos] = useState({ top: 0, left: 0 })
 
@@ -357,8 +357,9 @@ export default function Editor () {
   const sheetDownloadRef = useRef(null)
 
   const [isMobile, setIsMobile] = useState(() => window.matchMedia('(max-width: 960px)').matches)
-  const saveTimerRef = useRef(0)
+  const isMobileRef = useRef(isMobile)
 
+  const saveTimerRef = useRef(0)
   const dragFromTextareaRef = useRef({ active: false, started: false, pointerId: null, startX: 0, startY: 0 })
 
   useEffect(() => { pagesRef.current = pages }, [pages])
@@ -366,6 +367,7 @@ export default function Editor () {
   useEffect(() => { docIdRef.current = docId }, [docId])
   useEffect(() => { fileNameRef.current = fileName }, [fileName])
   useEffect(() => { textEditRef.current = textEdit }, [textEdit])
+  useEffect(() => { isMobileRef.current = isMobile }, [isMobile])
 
   const setPagesSync = useCallback((nextPages) => {
     pagesRef.current = nextPages
@@ -403,6 +405,9 @@ export default function Editor () {
     }, 400)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthed])
+
+  const scheduleSaveDraftRef = useRef(scheduleSaveDraft)
+  useEffect(() => { scheduleSaveDraftRef.current = scheduleSaveDraft }, [scheduleSaveDraft])
 
   function buildDraftSnapshot () {
     if (!pagesRef.current.length) return null
@@ -502,7 +507,7 @@ export default function Editor () {
     return () => window.removeEventListener('user:update', onUser)
   }, [])
 
-  // --- FIX (п.2, п.4): жёсткая синхронизация layout -> engine (двойной rAF, с ретраями) ---
+  // --- жёсткая синхронизация layout -> engine (двойной rAF, с ретраями) ---
   const forceLayoutSync = useCallback(() => {
     const engine = engineRef.current
     const wrap = canvasWrapRef.current
@@ -528,10 +533,19 @@ export default function Editor () {
           overlays: page.overlays || [],
           rotation: page.rotation || 0
         })
+
+        // важное: если сейчас редактируем текст — движок должен знать об этом
+        const te = textEditRef.current
+        if (te?.overlayId) {
+          engine.activeId = te.overlayId
+          engine.setEditingOverlayId(te.overlayId)
+        } else {
+          engine.setEditingOverlayId(null)
+        }
+
         setDocRect(engine.getDocumentScreenRect())
 
-        // если идёт редактирование текста — обновим bounds (боремся с “тонким caret” и рассинхроном)
-        const te = textEditRef.current
+        // обновим bounds textarea
         if (te?.overlayId) {
           const b = engine.getOverlayScreenBoundsById(te.overlayId)
           const ov = (page.overlays || []).find(o => o.id === te.overlayId)
@@ -555,23 +569,69 @@ export default function Editor () {
     requestAnimationFrame(() => requestAnimationFrame(run))
   }, [])
 
+  const forceLayoutSyncRef = useRef(forceLayoutSync)
+  useEffect(() => { forceLayoutSyncRef.current = forceLayoutSync }, [forceLayoutSync])
+
   useEffect(() => {
     // при резкой смене десктоп/мобайл — закрываем меню и форсим sync
     closeMenus()
     forceLayoutSync()
   }, [isMobile, closeMenus, forceLayoutSync])
 
+  const finishTextEditing = useCallback(() => {
+    const current = textEditRef.current
+    const engine = engineRef.current
+
+    if (!current || !engine) {
+      setTextEdit(null)
+      setPanelOpen(false)
+      if (engine) engine.setEditingOverlayId(null)
+      return
+    }
+
+    const pagesArr = pagesRef.current
+    const pIdx = curRef.current
+    const page = pagesArr[pIdx]
+    if (!page) {
+      engine.setEditingOverlayId(null)
+      setTextEdit(null)
+      setPanelOpen(false)
+      return
+    }
+
+    const overlays = page.overlays || []
+    const idx = overlays.findIndex(o => o.id === current.overlayId)
+    if (idx >= 0) {
+      const ov = overlays[idx]
+      const txt = (ov.data?.text || '').trim()
+      if (!txt) {
+        const newOvs = overlays.filter(o => o.id !== current.overlayId)
+        engine.setOverlays(newOvs)
+
+        internalUpdateRef.current = true
+        const newPages = [...pagesArr]
+        newPages[pIdx] = { ...page, overlays: newOvs }
+        setPagesSync(newPages)
+      }
+    }
+
+    engine.setEditingOverlayId(null)
+    setTextEdit(null)
+    setPanelOpen(false)
+  }, [setPagesSync])
+
   useEffect(() => {
     if (textEditRef.current) finishTextEditing()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cur])
 
+  // Создаём движок 1 раз на документ (НЕ пересоздаём при смене isMobile)
   useEffect(() => {
     if (!hasDoc || !canvasRef.current) return
     if (engineRef.current) return
 
     const engine = new CustomCanvasEngine(canvasRef.current, {
-      viewMargin: isMobile ? 0 : 24,
+      viewMargin: isMobileRef.current ? 0 : 24,
 
       onBeforeOverlayChange: (snapshot) => {
         const pageIndex = curRef.current
@@ -622,7 +682,7 @@ export default function Editor () {
       },
 
       onInteractionEnd: () => {
-        scheduleSaveDraft()
+        scheduleSaveDraftRef.current?.()
       },
 
       onOverlayDelete: (id) => {
@@ -639,7 +699,7 @@ export default function Editor () {
           pagesRef.current = copy
           return copy
         })
-        scheduleSaveDraft()
+        scheduleSaveDraftRef.current?.()
       },
 
       onSelectionChange: (ov) => {
@@ -665,7 +725,10 @@ export default function Editor () {
         if (current && current.overlayId === ov.id) return
         if (current && current.overlayId !== ov.id) finishTextEditing()
 
-        if (engineRef.current) engineRef.current.setEditingOverlayId(ov.id)
+        if (engineRef.current) {
+          engineRef.current.activeId = ov.id
+          engineRef.current.setEditingOverlayId(ov.id)
+        }
 
         const initialText = d.text || ''
         lastGoodTextRef.current = initialText
@@ -692,11 +755,12 @@ export default function Editor () {
       }
     })
 
-    engine.setMode(isMobile)
+    engine.setMode(isMobileRef.current)
+    engine.setViewMargin(isMobileRef.current ? 0 : 24)
     engineRef.current = engine
 
     const handleResize = () => {
-      forceLayoutSync()
+      forceLayoutSyncRef.current?.()
     }
 
     handleResize()
@@ -706,51 +770,33 @@ export default function Editor () {
     if (canvasWrapRef.current) ro.observe(canvasWrapRef.current)
 
     return () => {
-      engineRef.current && engineRef.current.destroy()
-      engineRef.current = null
+      try { ro.disconnect() } catch {}
       window.removeEventListener('resize', handleResize)
       window.removeEventListener('orientationchange', handleResize)
-      ro.disconnect()
+      try { engineRef.current && engineRef.current.destroy() } catch {}
+      engineRef.current = null
     }
-  }, [hasDoc, isMobile, scheduleSaveDraft, forceLayoutSync])
+  }, [hasDoc, finishTextEditing])
 
-  function finishTextEditing () {
-    const current = textEditRef.current
-    if (!current || !engineRef.current) {
-      setTextEdit(null)
-      setPanelOpen(false)
-      return
+  // при смене режима моб/десктоп — только обновляем режим/отступы, движок не пересоздаём
+  useEffect(() => {
+    const engine = engineRef.current
+    if (!engine) return
+    engine.setMode(isMobile)
+    engine.setViewMargin(isMobile ? 0 : 24)
+    forceLayoutSync()
+  }, [isMobile, forceLayoutSync])
+
+  useEffect(() => {
+    if (textEdit && textAreaRef.current) {
+      const ta = textAreaRef.current
+      const len = (textEditValue || '').length
+      requestAnimationFrame(() => {
+        ta.focus()
+        try { ta.setSelectionRange(len, len) } catch {}
+      })
     }
-
-    const pagesArr = pagesRef.current
-    const pIdx = curRef.current
-    const page = pagesArr[pIdx]
-    if (!page) {
-      setTextEdit(null)
-      setPanelOpen(false)
-      return
-    }
-
-    const overlays = page.overlays || []
-    const idx = overlays.findIndex(o => o.id === current.overlayId)
-    if (idx >= 0) {
-      const ov = overlays[idx]
-      const txt = (ov.data?.text || '').trim()
-      if (!txt) {
-        const newOvs = overlays.filter(o => o.id !== current.overlayId)
-        engineRef.current.setOverlays(newOvs)
-
-        internalUpdateRef.current = true
-        const newPages = [...pagesArr]
-        newPages[pIdx] = { ...page, overlays: newOvs }
-        setPagesSync(newPages)
-      }
-    }
-
-    if (engineRef.current) engineRef.current.setEditingOverlayId(null)
-    setTextEdit(null)
-    setPanelOpen(false)
-  }
+  }, [textEdit, textEditValue])
 
 // frontend/src/pages/Editor.jsx (часть 2/3)
 
@@ -780,10 +826,19 @@ export default function Editor () {
       overlays: page.overlays || [],
       rotation: page.rotation || 0
     })
+
+    // если сейчас редактируем — зафиксируем editingId/activeId, чтобы не было дубля текста
+    const te = textEditRef.current
+    if (te?.overlayId) {
+      engine.activeId = te.overlayId
+      engine.setEditingOverlayId(te.overlayId)
+    } else {
+      engine.setEditingOverlayId(null)
+    }
+
     setDocRect(engine.getDocumentScreenRect())
 
-    // FIX (п.4): после синхронизации обновляем bounds textarea, если редактируем
-    const te = textEditRef.current
+    // обновляем bounds textarea, если редактируем
     if (te?.overlayId) {
       const b = engine.getOverlayScreenBoundsById(te.overlayId)
       const ov = (page.overlays || []).find(o => o.id === te.overlayId)
@@ -801,25 +856,20 @@ export default function Editor () {
     }
   }, [pages, cur])
 
+  // Поддерживаем синхронность editingId при изменении textEdit (на всякий случай)
   useEffect(() => {
     const engine = engineRef.current
     if (!engine) return
-    engine.setMode(isMobile)
-    engine.setViewMargin(isMobile ? 0 : 24)
-    // важный форс после смены режима — лечит белый экран в некоторых кейсах
-    forceLayoutSync()
-  }, [isMobile, forceLayoutSync])
-
-  useEffect(() => {
-    if (textEdit && textAreaRef.current) {
-      const ta = textAreaRef.current
-      const len = (textEditValue || '').length
-      requestAnimationFrame(() => {
-        ta.focus()
-        try { ta.setSelectionRange(len, len) } catch {}
-      })
+    if (textEdit?.overlayId) {
+      engine.activeId = textEdit.overlayId
+      engine.setEditingOverlayId(textEdit.overlayId)
+    } else {
+      engine.setEditingOverlayId(null)
     }
-  }, [textEdit, textEditValue])
+    // важный redraw на некоторых браузерах
+    forceLayoutSyncRef.current?.()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [textEdit?.overlayId])
 
   async function loadLibrary () {
     if (!isAuthed) { setSignLib([]); return }
@@ -960,7 +1010,7 @@ export default function Editor () {
       showBanner('Восстановлен последний документ')
 
       // форсим sync движка после восстановления
-      forceLayoutSync()
+      forceLayoutSyncRef.current?.()
     })()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthed])
@@ -1112,7 +1162,7 @@ export default function Editor () {
 
       setPagesSync(newPages)
       if (!hasDoc && newPages.length) setCur(0)
-      scheduleSaveDraft()
+      scheduleSaveDraftRef.current?.()
 
       if (isAuthed && addedPages > 0) {
         try {
@@ -1122,7 +1172,7 @@ export default function Editor () {
       }
 
       toast('Страницы добавлены', 'success')
-      forceLayoutSync()
+      forceLayoutSyncRef.current?.()
     } catch (e) {
       console.error(e)
       toast(e.message || 'Ошибка загрузки файлов', 'error')
@@ -1151,9 +1201,9 @@ export default function Editor () {
     const nextPages = pagesRef.current.filter((_, i) => i !== idx)
     setPagesSync(nextPages)
     setCur(i => Math.max(0, idx - 1))
-    scheduleSaveDraft()
+    scheduleSaveDraftRef.current?.()
     toast('Страница удалена', 'success')
-    forceLayoutSync()
+    forceLayoutSyncRef.current?.()
   }
 
   async function addText () {
@@ -1177,10 +1227,10 @@ export default function Editor () {
       width: w + 4,
       height: newH
     })
-    scheduleSaveDraft()
+    scheduleSaveDraftRef.current?.()
   }
 
-  // helper: авто-ужатие overlay под страницу (п.3)
+  // helper: авто-ужатие overlay под страницу
   const fitOverlayToPage = useCallback((ov, page) => {
     const engine = engineRef.current
     if (!engine || !ov || !page) return ov
@@ -1217,7 +1267,7 @@ export default function Editor () {
     }
   }, [])
 
-  // Панель форматирования текста (шаг 1)
+  // Панель форматирования текста
   const applyPanel = useCallback((overrides = {}) => {
     const pageIndex = curRef.current
     const page = pagesRef.current[pageIndex]
@@ -1315,9 +1365,9 @@ export default function Editor () {
       })
     }
 
-    scheduleSaveDraft()
+    scheduleSaveDraftRef.current?.()
     return true
-  }, [font, fontSize, bold, italic, color, scheduleSaveDraft, fitOverlayToPage])
+  }, [font, fontSize, bold, italic, color, fitOverlayToPage])
 
 // frontend/src/pages/Editor.jsx (часть 3/3)
 
@@ -1328,12 +1378,11 @@ export default function Editor () {
 
     const newRot = page.rotation === 90 ? 0 : 90
 
-    // FIX (п.5): НЕ выходим из режима редактирования текста при автоужатии/повороте
-    // (engine сам пересчитает overlays и вызовет onOverlayChange)
-    engine.setPageRotation(newRot, isMobile)
+    // Важно: не выходим из редактирования текста.
+    engine.setPageRotation(newRot, isMobileRef.current)
     setDocRect(engine.getDocumentScreenRect())
 
-    // обновляем rotation в state (overlays синхронизируются callbacks-ами движка)
+    // Обновляем rotation в state (overlays синхронизируются callbacks-ами движка)
     internalUpdateRef.current = true
     setPages(prev => {
       const copy = [...prev]
@@ -1344,10 +1393,10 @@ export default function Editor () {
       return copy
     })
 
-    scheduleSaveDraft()
+    scheduleSaveDraftRef.current?.()
 
-    // FIX (п.4/5): обновим bounds textarea после поворота (двойной rAF — под финальный layout)
-    forceLayoutSync()
+    // Форсим финальный layout после поворота
+    forceLayoutSyncRef.current?.()
   }
 
   function placeFromLib (url) {
@@ -1356,8 +1405,8 @@ export default function Editor () {
     if (!engineRef.current) return
     loadImageEl(url).then(img => {
       engineRef.current.addImageOverlay(img, { src: url })
-      scheduleSaveDraft()
-      forceLayoutSync()
+      scheduleSaveDraftRef.current?.()
+      forceLayoutSyncRef.current?.()
     }).catch(e => {
       console.error(e)
       toast('Не удалось загрузить изображение', 'error')
@@ -1411,8 +1460,8 @@ export default function Editor () {
       return copy
     })
 
-    scheduleSaveDraft()
-    forceLayoutSync()
+    scheduleSaveDraftRef.current?.()
+    forceLayoutSyncRef.current?.()
   }
 
   function applyToAllPages () {
@@ -1455,14 +1504,14 @@ export default function Editor () {
         data: { ...(src.data || {}) }
       }
 
-      // FIX (п.3): переносим правила текста (без scale)
+      // переносим правила текста (без scale)
       if (newOv.type === 'text') {
         newOv.scaleX = 1
         newOv.scaleY = 1
         newOv.data.fontSize = Math.max(6, Math.round(Number(newOv.data?.fontSize || 48)))
       }
 
-      // FIX (п.3): авто-ужатие под целевую страницу + корректировка fontSize
+      // авто-ужатие под целевую страницу + корректировка fontSize
       newOv = fitOverlayToPage(newOv, page)
 
       // финальный clamp (сдвиг в лист)
@@ -1481,9 +1530,9 @@ export default function Editor () {
     })
 
     setPagesSync(newPages)
-    scheduleSaveDraft()
+    scheduleSaveDraftRef.current?.()
     toast('Объект добавлен на все страницы', 'success')
-    forceLayoutSync()
+    forceLayoutSyncRef.current?.()
   }
 
   async function applyPromo () {
@@ -1675,13 +1724,13 @@ export default function Editor () {
           return copy
         })
 
-        scheduleSaveDraft()
-        forceLayoutSync()
+        scheduleSaveDraftRef.current?.()
+        forceLayoutSyncRef.current?.()
       }
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
-  }, [scheduleSaveDraft, forceLayoutSync])
+  }, [])
 
   const onRenameChange = (e) => { setFileName(sanitizeName(e.target.value)) }
 
@@ -1751,7 +1800,6 @@ export default function Editor () {
     targetOv.data.text = text
     targetOv.data.fontSize = fontSizeLocal
 
-    // FIX: используем engine clamp под текущую страницу (предсказуемо)
     const cl = engine.clampOverlayToPage(targetOv, page.docWidth || 1000, page.docHeight || 1414, page.rotation || 0)
     if (!cl.ok) {
       showLimitWarning()
@@ -1778,7 +1826,8 @@ export default function Editor () {
         ? { ...prev, rectCanvas: bounds, docW: cl.overlay.w, docH: cl.overlay.h }
         : prev))
     }
-    scheduleSaveDraft()
+
+    scheduleSaveDraftRef.current?.()
   }
 
   useEffect(() => {
@@ -1856,6 +1905,9 @@ export default function Editor () {
         const angleDeg = (rc.angleRad || 0) * 180 / Math.PI
         const lineHeightPx = Math.round(screenFontSize * 1.2)
 
+        // Мини-подстройка, чтобы стартовая строка визуально не "проседала" при переходе в textarea
+        const padTop = Math.max(0, Math.round((lineHeightPx - screenFontSize) / 2))
+
         const leftPx = Math.round((rc.cx || 0) + offX)
         const topPx = Math.round((rc.cy || 0) + offY)
 
@@ -1866,8 +1918,11 @@ export default function Editor () {
           width: `${screenW}px`,
           height: `${screenH}px`,
 
-          transform: `translate(-50%, -50%) rotate(${angleDeg}deg)`,
+          // 3D-трансформ чаще стабилизирует caret при rotate/resize
+          transform: `translate3d(-50%, -50%, 0) rotate(${angleDeg}deg)`,
           transformOrigin: 'center center',
+          willChange: 'transform',
+          backfaceVisibility: 'hidden',
 
           fontFamily: textEdit.fontFamily,
           fontSize: `${screenFontSize}px`,
@@ -1891,11 +1946,15 @@ export default function Editor () {
           overflow: 'hidden',
 
           lineHeight: `${lineHeightPx}px`,
-          padding: 0,
+          padding: `${padTop}px 0 0 0`,
           boxSizing: 'border-box',
 
+          // не даём браузеру "подмешивать" свои хитрые жесты во время трансформа
           touchAction: 'none',
-          userSelect: 'none'
+          userSelect: 'none',
+
+          WebkitFontSmoothing: 'antialiased',
+          textRendering: 'geometricPrecision'
         }
       })()
     : null
@@ -2138,7 +2197,7 @@ export default function Editor () {
                 try { await AuthAPI.clearDraft() } catch {}
                 setDraftHint(false)
                 toast('Документ удалён', 'success')
-                forceLayoutSync()
+                forceLayoutSyncRef.current?.()
               }}
             >
               <img src={icDelete} alt="" style={{ width: 18, height: 18, marginRight: 8 }} />Удалить документ
@@ -2243,7 +2302,7 @@ export default function Editor () {
               try { await AuthAPI.clearDraft() } catch {}
               setDraftHint(false)
               toast('Документ удалён', 'success')
-              forceLayoutSync()
+              forceLayoutSyncRef.current?.()
             }}
           >
             <img src={icDelete} alt="" style={{ width: 18, height: 18, marginRight: 10 }} />Удалить документ
@@ -2449,8 +2508,8 @@ export default function Editor () {
             if (page && engineRef.current) {
               const img = await loadImageEl(dataUrl)
               engineRef.current.addImageOverlay(img, { src: dataUrl })
-              scheduleSaveDraft()
-              forceLayoutSync()
+              scheduleSaveDraftRef.current?.()
+              forceLayoutSyncRef.current?.()
             }
           } catch (e) {
             toast(e.message || 'Не удалось обработать изображение', 'error')
