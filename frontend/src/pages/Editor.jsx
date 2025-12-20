@@ -42,6 +42,10 @@ const FONTS = ['Arial', 'Times New Roman', 'Ermilov', 'Segoe UI', 'Roboto', 'Geo
 const PDF_RENDER_SCALE = 3.0
 const RASTER_RENDER_SCALE = 3.0
 
+// Множитель высоты строки для "плотной" рамки (убирает пустоту сверху/снизу)
+// ДОЛЖЕН совпадать с TEXT_LH_FACTOR в CustomCanvasEngine
+const LH_FACTOR = 0.85
+
 function randDocId () { return String(Math.floor(1e15 + Math.random() * 9e15)) }
 function genDefaultName () {
   const a = Math.floor(Math.random() * 1e6)
@@ -101,7 +105,7 @@ function measureTextWidthPx (text, fontFamily, fontSize, fontWeight, fontStyle) 
   const family = fontFamily || 'Arial'
   ctx.font = `${style} ${weight} ${size}px ${family}`
   const metrics = ctx.measureText(text || '')
-  return metrics.width || size * 2
+  return metrics.width
 }
 
 async function renderDOCXToCanvas (file) {
@@ -240,14 +244,13 @@ function renderPageOffscreen (page, scaleMul = 2) {
       ctx.fillStyle = d.fill || '#000000'
       const fontWeight = d.fontWeight || 'bold'
       const fontStyle = d.fontStyle || 'normal'
-      const fontSize = Math.max(6, Math.round(d.fontSize || 48))
+      const fontSize = Math.max(6, d.fontSize || 48)
       const fontFamily = d.fontFamily || 'Arial'
       ctx.font = `${fontStyle} ${fontWeight} ${fontSize}px ${fontFamily}`
 
       const align = d.textAlign || 'left'
       ctx.textAlign = align
-      
-      // Синхронизация
+
       ctx.textBaseline = 'top'
 
       let xPos = 0
@@ -257,8 +260,8 @@ function renderPageOffscreen (page, scaleMul = 2) {
 
       const text = d.text || ''
       const lines = text.split('\n')
-      // Множитель 1.0
-      const lh = fontSize * 1
+
+      const lh = fontSize * LH_FACTOR
       const totalH = lines.length * lh
       let startY = -totalH / 2
 
@@ -297,8 +300,6 @@ export default function Editor () {
 
   const engineRef = useRef(null)
 
-  // internalUpdateRef=true — мы уже обновили engine визуально и синхронизируем state,
-  // чтобы эффект setDocument не перерисовал его повторно.
   const internalUpdateRef = useRef(false)
 
   const [signLib, setSignLib] = useState([])
@@ -309,8 +310,7 @@ export default function Editor () {
   const [italic, setItalic] = useState(false)
   const [color, setColor] = useState('#000000')
 
-  // единый стейт открытого меню
-  const [menuOpen, setMenuOpen] = useState(null) // null | 'actions' | 'add' | 'download'
+  const [menuOpen, setMenuOpen] = useState(null)
   const [menuPos, setMenuPos] = useState({ top: 0, left: 0 })
 
   const [payOpen, setPayOpen] = useState(false)
@@ -442,7 +442,7 @@ export default function Editor () {
             ...base,
             data: {
               text: d.text || '',
-              fontSize: Math.max(6, Math.round(d.fontSize || 48)),
+              fontSize: Math.max(6, Number(d.fontSize || 48)),
               fontFamily: d.fontFamily || 'Arial',
               fontWeight: d.fontWeight || 'bold',
               fontStyle: d.fontStyle || 'normal',
@@ -488,29 +488,53 @@ export default function Editor () {
     return () => mq.removeEventListener('change', on)
   }, [])
 
+  // --- Загрузка и динамическое обновление биллинга/цен ---
   useEffect(() => {
-    const onUser = async () => {
-      if (localStorage.getItem('access')) {
-        try {
-          const st = await AuthAPI.getBillingStatus()
-          setBilling(st)
-          if (st && ('price_single' in st)) {
-            setPrices({
-              single: Number(st.price_single || 0),
-              month: Number(st.price_month || 0),
-              year: Number(st.price_year || 0)
-            })
-          }
-        } catch {}
-      } else {
+    let cancelled = false
+
+    const applyBilling = (st) => {
+      if (cancelled) return
+      if (!st) {
         setBilling(null)
+        return
+      }
+      setBilling(st)
+      if ('price_single' in st) {
+        setPrices({
+          single: Number(st.price_single || 0),
+          month: Number(st.price_month || 0),
+          year: Number(st.price_year || 0)
+        })
       }
     }
+
+    async function fetchBilling () {
+      if (!localStorage.getItem('access')) {
+        applyBilling(null)
+        return
+      }
+      try {
+        const st = await AuthAPI.getBillingStatus()
+        applyBilling(st)
+      } catch {}
+    }
+
+    // Начальный запрос при монтировании
+    fetchBilling()
+
+    const onUser = () => { fetchBilling() }
+    const onBill = (e) => { applyBilling(e.detail || null) }
+
     window.addEventListener('user:update', onUser)
-    return () => window.removeEventListener('user:update', onUser)
+    window.addEventListener('billing:update', onBill)
+
+    return () => {
+      cancelled = true
+      window.removeEventListener('user:update', onUser)
+      window.removeEventListener('billing:update', onBill)
+    }
   }, [])
 
-  // --- жёсткая синхронизация layout -> engine (двойной rAF, с ретраями) ---
   const forceLayoutSync = useCallback(() => {
     const engine = engineRef.current
     const wrap = canvasWrapRef.current
@@ -537,7 +561,6 @@ export default function Editor () {
           rotation: page.rotation || 0
         })
 
-        // важное: если сейчас редактируем текст — движок должен знать об этом
         const te = textEditRef.current
         if (te?.overlayId) {
           engine.activeId = te.overlayId
@@ -548,7 +571,6 @@ export default function Editor () {
 
         setDocRect(engine.getDocumentScreenRect())
 
-        // обновим bounds textarea
         if (te?.overlayId) {
           const b = engine.getOverlayScreenBoundsById(te.overlayId)
           const ov = (page.overlays || []).find(o => o.id === te.overlayId)
@@ -576,7 +598,6 @@ export default function Editor () {
   useEffect(() => { forceLayoutSyncRef.current = forceLayoutSync }, [forceLayoutSync])
 
   useEffect(() => {
-    // при резкой смене десктоп/мобайл — закрываем меню и форсим sync
     closeMenus()
     forceLayoutSync()
   }, [isMobile, closeMenus, forceLayoutSync])
@@ -628,7 +649,6 @@ export default function Editor () {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cur])
 
-  // Создаём движок 1 раз на документ (НЕ пересоздаём при смене isMobile)
   useEffect(() => {
     if (!hasDoc || !canvasRef.current) return
     if (engineRef.current) return
@@ -647,7 +667,7 @@ export default function Editor () {
 
         if (ov.id === engineRef.current?.activeId && ov.type === 'text') {
           const d = ov.data || {}
-          setFontSize(Math.max(6, Math.round(d.fontSize || 48)))
+          setFontSize(Math.max(6, Number(d.fontSize || 48)))
           setFont(d.fontFamily || 'Arial')
           setBold(d.fontWeight === 'bold' || d.fontWeight === 700)
           setItalic(d.fontStyle === 'italic')
@@ -714,7 +734,7 @@ export default function Editor () {
         if (ov && ov.type === 'text') {
           const d = ov.data || {}
           setFont(d.fontFamily || 'Arial')
-          setFontSize(Math.max(6, Math.round(d.fontSize || 48)))
+          setFontSize(Math.max(6, Number(d.fontSize || 48)))
           setBold(d.fontWeight === 'bold' || d.fontWeight === 700)
           setItalic(d.fontStyle === 'italic')
           setColor(d.fill || '#000000')
@@ -755,6 +775,11 @@ export default function Editor () {
 
       onBlankClick: () => {
         finishTextEditing()
+      },
+
+      // Ограничения при скейле/повороте — показываем аккуратное предупреждение
+      onLimit: () => {
+        showLimitWarning()
       }
     })
 
@@ -781,7 +806,6 @@ export default function Editor () {
     }
   }, [hasDoc, finishTextEditing])
 
-  // при смене режима моб/десктоп — только обновляем режим/отступы, движок не пересоздаём
   useEffect(() => {
     const engine = engineRef.current
     if (!engine) return
@@ -801,7 +825,6 @@ export default function Editor () {
     }
   }, [textEdit, textEditValue])
 
-  // Синхронизация: React(state) -> Canvas(engine)
   const prevCurForSyncRef = useRef(0)
   useEffect(() => {
     const curChanged = prevCurForSyncRef.current !== cur
@@ -828,7 +851,6 @@ export default function Editor () {
       rotation: page.rotation || 0
     })
 
-    // если сейчас редактируем — зафиксируем editingId/activeId, чтобы не было дубля текста
     const te = textEditRef.current
     if (te?.overlayId) {
       engine.activeId = te.overlayId
@@ -839,7 +861,6 @@ export default function Editor () {
 
     setDocRect(engine.getDocumentScreenRect())
 
-    // обновляем bounds textarea, если редактируем
     if (te?.overlayId) {
       const b = engine.getOverlayScreenBoundsById(te.overlayId)
       const ov = (page.overlays || []).find(o => o.id === te.overlayId)
@@ -857,7 +878,6 @@ export default function Editor () {
     }
   }, [pages, cur])
 
-  // Поддерживаем синхронность editingId при изменении textEdit (на всякий случай)
   useEffect(() => {
     const engine = engineRef.current
     if (!engine) return
@@ -867,7 +887,6 @@ export default function Editor () {
     } else {
       engine.setEditingOverlayId(null)
     }
-    // важный redraw на некоторых браузерах
     forceLayoutSyncRef.current?.()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [textEdit?.overlayId])
@@ -881,7 +900,6 @@ export default function Editor () {
   }
   useEffect(() => { if (isAuthed) loadLibrary() }, [isAuthed])
 
-  // --- восстановление черновика ---
   useEffect(() => {
     if (!isAuthed) return
 
@@ -968,7 +986,7 @@ export default function Editor () {
             base.scaleY = 1
             base.data = {
               text: d.text || ov.text || '',
-              fontSize: Math.max(6, Math.round(d.fontSize || ov.fontSize || 48)),
+              fontSize: Math.max(6, Number(d.fontSize || ov.fontSize || 48)),
               fontFamily: d.fontFamily || ov.fontFamily || 'Arial',
               fontWeight: d.fontWeight || ov.fontWeight || 'bold',
               fontStyle: d.fontStyle || ov.fontStyle || 'normal',
@@ -1010,7 +1028,6 @@ export default function Editor () {
       setProgress(p => ({ ...p, active: false }))
       showBanner('Восстановлен последний документ')
 
-      // форсим sync движка после восстановления
       forceLayoutSyncRef.current?.()
     })()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1214,13 +1231,10 @@ export default function Editor () {
 
     const initText = 'Вставьте текст'
     const fontSizeLocal = 48
-    
-    // Множитель 1.0 (компактно)
-    const lineHeightLocal = fontSizeLocal * 1 
-    
+
+    const lineHeightLocal = fontSizeLocal * LH_FACTOR
+
     const totalH = lineHeightLocal
-    const newH = totalH
-    // Убрали + 4
     const w = measureTextWidthPx(initText, 'Arial', fontSizeLocal, 'bold', 'normal')
 
     engineRef.current.addTextOverlay(initText, {
@@ -1230,7 +1244,7 @@ export default function Editor () {
       fill: '#000000',
       textAlign: 'left',
       width: w,
-      height: newH
+      height: totalH
     })
     scheduleSaveDraftRef.current?.()
   }
@@ -1240,8 +1254,9 @@ export default function Editor () {
     const engine = engineRef.current
     if (!engine || !ov || !page) return ov
 
-    const maxW = (engine.computePageSize(page.docWidth || 1000, page.docHeight || 1414, page.rotation || 0).pageW || (page.docWidth || 1000)) - 4
-    const maxH = (engine.computePageSize(page.docWidth || 1000, page.docHeight || 1414, page.rotation || 0).pageH || (page.docHeight || 1414)) - 4
+    const maxSize = engine.computePageSize(page.docWidth || 1000, page.docHeight || 1414, page.rotation || 0)
+    const maxW = (maxSize.pageW || (page.docWidth || 1000)) - 4
+    const maxH = (maxSize.pageH || (page.docHeight || 1414)) - 4
 
     const bounds = engine.getOverlayDocBoundsForPage(ov, page.docWidth || 1000, page.docHeight || 1414, page.rotation || 0)
     const bw = Math.max(1e-6, bounds.w)
@@ -1253,7 +1268,7 @@ export default function Editor () {
     if (ov.type === 'text') {
       const d = { ...(ov.data || {}) }
       const fs0 = Number(d.fontSize || 48)
-      const fs1 = Math.max(6, Math.round(fs0 * factor))
+      const fs1 = Math.max(6, Number(fs0 * factor))
       const real = fs0 ? (fs1 / fs0) : factor
       return {
         ...ov,
@@ -1290,7 +1305,7 @@ export default function Editor () {
 
     const newFontFamily = overrides.font ?? font
     const rawSize = overrides.fontSize ?? fontSize
-    const newFontSize = Math.max(6, Math.round(rawSize))
+    const newFontSize = Math.max(6, Number(rawSize))
     const useBold = overrides.bold ?? bold
     const useItalic = overrides.italic ?? italic
     const newColor = overrides.color ?? color
@@ -1301,9 +1316,8 @@ export default function Editor () {
     const d = oldOv.data || {}
     const text = d.text || ''
     const lines = text.split('\n')
-    
-    // Множитель 1.0 (был 1.2)
-    const lineHeightPx = newFontSize * 1
+
+    const lineHeightPx = newFontSize * LH_FACTOR
 
     let maxLineW = 0
     for (const line of lines) {
@@ -1312,9 +1326,8 @@ export default function Editor () {
     }
 
     const totalH = lines.length * lineHeightPx
-    // Убрали + 4
     const newW = Math.max(20, maxLineW)
-    const newH = Math.max(lineHeightPx, totalH)
+    const newH = totalH
 
     const newOv = {
       ...oldOv,
@@ -1332,7 +1345,6 @@ export default function Editor () {
       }
     }
 
-    // ограничение + автосдвиг (в пределах страницы)
     const bounded = engineRef.current.clampOverlayToPage(newOv, page.docWidth || 1000, page.docHeight || 1414, page.rotation || 0)
     if (!bounded.ok) {
       showLimitWarning()
@@ -1384,11 +1396,9 @@ export default function Editor () {
 
     const newRot = page.rotation === 90 ? 0 : 90
 
-    // Важно: не выходим из редактирования текста.
     engine.setPageRotation(newRot, isMobileRef.current)
     setDocRect(engine.getDocumentScreenRect())
 
-    // Обновляем rotation в state (overlays синхронизируются callbacks-ами движка)
     internalUpdateRef.current = true
     setPages(prev => {
       const copy = [...prev]
@@ -1401,7 +1411,6 @@ export default function Editor () {
 
     scheduleSaveDraftRef.current?.()
 
-    // Форсим финальный layout после поворота
     forceLayoutSyncRef.current?.()
   }
 
@@ -1483,7 +1492,6 @@ export default function Editor () {
       return
     }
 
-    // снапшот для undo (все страницы)
     const snapshotAll = pagesArr.map((p, idx) => ({
       pageIndex: idx,
       overlays: (p.overlays || []).map(o => ({ ...o, data: { ...(o.data || {}) } }))
@@ -1510,17 +1518,14 @@ export default function Editor () {
         data: { ...(src.data || {}) }
       }
 
-      // переносим правила текста (без scale)
       if (newOv.type === 'text') {
         newOv.scaleX = 1
         newOv.scaleY = 1
-        newOv.data.fontSize = Math.max(6, Math.round(Number(newOv.data?.fontSize || 48)))
+        newOv.data.fontSize = Math.max(6, Number(newOv.data?.fontSize || 48))
       }
 
-      // авто-ужатие под целевую страницу + корректировка fontSize
       newOv = fitOverlayToPage(newOv, page)
 
-      // финальный clamp (сдвиг в лист)
       const cl = engine.clampOverlayToPage(
         newOv,
         page.docWidth || 1000,
@@ -1786,15 +1791,14 @@ export default function Editor () {
     targetOv.scaleY = 1
 
     const d = targetOv.data
-    const fontSizeLocal = Math.max(6, Math.round(d.fontSize || 48))
+    const fontSizeLocal = Math.max(6, Number(d.fontSize || 48))
     const fontFamily = d.fontFamily || 'Arial'
     const fontWeight = d.fontWeight || 'bold'
     const fontStyle = d.fontStyle || 'normal'
     const text = value || ''
     const lines = text.split('\n')
-    
-    // Множитель 1.0 (компактно)
-    const lineHeightPx = fontSizeLocal * 1
+
+    const lineHeightPx = fontSizeLocal * LH_FACTOR
 
     let maxLineW = 0
     for (const line of lines) {
@@ -1803,9 +1807,8 @@ export default function Editor () {
     }
 
     const totalH = lines.length * lineHeightPx
-    // Убрали + 4
     targetOv.w = Math.max(20, maxLineW)
-    targetOv.h = Math.max(lineHeightPx, totalH)
+    targetOv.h = totalH
     targetOv.data.text = text
     targetOv.data.fontSize = fontSizeLocal
 
@@ -1907,31 +1910,31 @@ export default function Editor () {
           offY = canvasEl.offsetTop
         }
 
-        const screenW = Math.round(rc.w || textEdit.docW || 40)
-        const screenH = Math.round(rc.h || textEdit.docH || 30)
-        const screenFontSize = Math.max(6, Math.round(rc.fontSize || textEdit.fontSize || 48))
+        const screenW = Number(rc.w || textEdit.docW || 40)
+        const screenH = Number(rc.h || textEdit.docH || 30)
+        const screenFontSize = Math.max(6, Number(rc.fontSize || textEdit.fontSize || 48))
 
         const angleDeg = (rc.angleRad || 0) * 180 / Math.PI
-        const lineHeightPx = Math.round(screenFontSize * 1.0) // Множитель 1
 
-        const leftPx = Math.round((rc.cx || 0) + offX)
-        const topPx = Math.round((rc.cy || 0) + offY)
+        const leftPx = (rc.cx || 0) + offX
+        const topPx = (rc.cy || 0) + offY
+
+        const marginTop = 0
 
         return {
           position: 'absolute',
-          left: `${leftPx}px`,
-          top: `${topPx}px`,
-          width: `${screenW}px`,
-          height: `${screenH}px`,
+          left: `${leftPx.toFixed(2)}px`,
+          top: `${topPx.toFixed(2)}px`,
+          width: `${screenW.toFixed(2)}px`,
+          height: `${screenH.toFixed(2)}px`,
 
-          // 3D-трансформ чаще стабилизирует caret при rotate/resize
           transform: `translate3d(-50%, -50%, 0) rotate(${angleDeg}deg)`,
           transformOrigin: 'center center',
           willChange: 'transform',
           backfaceVisibility: 'hidden',
 
           fontFamily: textEdit.fontFamily,
-          fontSize: `${screenFontSize}px`,
+          fontSize: `${screenFontSize.toFixed(2)}px`,
           fontWeight: textEdit.fontWeight,
           fontStyle: textEdit.fontStyle,
           color: textEdit.fill,
@@ -1941,22 +1944,23 @@ export default function Editor () {
 
           border: 'none',
           margin: '0',
+          marginTop: `${marginTop}px`,
           resize: 'none',
           outline: 'none',
           background: 'transparent',
 
-          // ниже меню/баров
+          padding: '0',
+          lineHeight: String(LH_FACTOR),
+          letterSpacing: 'normal',
+
           zIndex: 80,
 
           whiteSpace: 'pre',
           overflow: 'hidden',
 
-          display: 'block', // Fix alignment
-          lineHeight: '1',  // Fix alignment
-          padding: '0',     // Fix alignment
+          display: 'block',
           boxSizing: 'border-box',
 
-          // не даём браузеру "подмешивать" свои хитрые жесты во время трансформа
           touchAction: 'none',
           userSelect: 'none',
 

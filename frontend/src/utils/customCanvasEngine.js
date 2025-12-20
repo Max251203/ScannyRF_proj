@@ -14,6 +14,9 @@ scaleImg.src = icScale
 const editImg = new Image()
 editImg.src = icEdit
 
+// ВАЖНО: должен совпадать с LH_FACTOR в Editor.jsx
+const TEXT_LH_FACTOR = 0.85
+
 function rotateVec (x, y, c, s) {
   return { x: x * c - y * s, y: x * s + y * c }
 }
@@ -80,6 +83,8 @@ export class CustomCanvasEngine {
     this.onTextEditRequest = opts.onTextEditRequest || (() => {})
     this.onBlankClick = opts.onBlankClick || (() => {})
     this.onInteractionEnd = opts.onInteractionEnd || (() => {})
+    // Вызывается при невозможности дальше растягивать/поворачивать (для показа предупреждения)
+    this.onLimit = opts.onLimit || (() => {})
 
     this.docWidth = 1000
     this.docHeight = 1414
@@ -518,7 +523,7 @@ export class CustomCanvasEngine {
       const align = d.textAlign || 'left'
       ctx.textAlign = align
 
-      // Рисуем от верха, как в HTML textarea
+      // Рисуем от верха контейнера, baseline = top
       ctx.textBaseline = 'top'
 
       let xPos = 0
@@ -529,12 +534,8 @@ export class CustomCanvasEngine {
       const text = String(d.text || '')
       const lines = text.split('\n')
 
-      // Множитель 1.0 (компактно)
-      const lh = sz * 1
-      const totalH = lines.length * lh
-
-      // Старт с самого верха
-      let currentY = -totalH / 2
+      const lh = sz * TEXT_LH_FACTOR
+      let currentY = -halfH
 
       for (const line of lines) {
         ctx.fillText(line, xPos, currentY)
@@ -853,7 +854,7 @@ export class CustomCanvasEngine {
     let desired = distCur / distStart
     desired = Math.max(0.1, Math.min(5, desired))
 
-    // ограничиваем factor, чтобы оверлей помещался (без сдвига центра)
+    // ограничиваем factor, чтобы оверлей помещался (с учётом возможного сдвига внутрь страницы)
     const factor = this._limitScaleFactorToPage(start, desired)
 
     if (ov.type === 'text') {
@@ -876,20 +877,43 @@ export class CustomCanvasEngine {
   }
 
   _handleRotate (ov, sx, sy) {
-    const { x, y } = this._screenToDoc(sx, sy)
-    const dx = x - ov.cx
-    const dy = y - ov.cy
-    ov.angleRad = Math.atan2(dy, dx) + Math.PI / 2
-    this._clampOverlay(ov)
+    const drag = this.dragState
+    if (!drag || !drag.startOverlay) return
+
+    const start = drag.startOverlay
+    const center = { x: start.cx, y: start.cy }
+
+    const curDoc = this._screenToDoc(sx, sy)
+    const dx = curDoc.x - center.x
+    const dy = curDoc.y - center.y
+    const newAngle = Math.atan2(dy, dx) + Math.PI / 2
+
+    // Кандидат: вращаем исходный overlay вокруг центра без сдвига
+    const cand = cloneOverlay(start)
+    cand.cx = center.x
+    cand.cy = center.y
+    cand.angleRad = newAngle
+
+    // Проверяем по 4 углам: если не помещается — запрещаем дальнейшее вращение
+    if (!this._overlayInsidePage(cand)) {
+      try { this.onLimit('rotate') } catch {}
+      return
+    }
+
+    ov.cx = cand.cx
+    ov.cy = cand.cy
+    ov.w = cand.w
+    ov.h = cand.h
+    ov.scaleX = cand.scaleX
+    ov.scaleY = cand.scaleY
+    ov.angleRad = cand.angleRad
+    ov.data = { ...(cand.data || {}) }
   }
 
   _limitScaleFactorToPage (startOverlay, desiredFactor) {
     if (desiredFactor <= 1) return desiredFactor
 
-    const pageW = this.pageWidth || this.docWidth
-    const pageH = this.pageHeight || this.docHeight
-    const rect = this._pageRect(this.docWidth, this.docHeight, pageW, pageH)
-
+    // Если уже помещается с desiredFactor с учётом возможного сдвига внутрь — оставляем как есть
     const fits = (f) => {
       const sim = { ...startOverlay, data: { ...(startOverlay.data || {}) } }
       if (sim.type === 'text') {
@@ -907,14 +931,10 @@ export class CustomCanvasEngine {
         sim.scaleY = (sim.scaleY || 1) * f
       }
 
-      const b = this._getOverlayDocBounds(sim)
-      const eps = 0.5
-      return (
-        b.minX >= rect.left - eps &&
-        b.maxX <= rect.right + eps &&
-        b.minY >= rect.top - eps &&
-        b.maxY <= rect.bottom + eps
-      )
+      // Разрешаем смещение объекта внутрь страницы
+      this._clampOverlay(sim)
+
+      return this._overlayInsidePage(sim)
     }
 
     if (fits(desiredFactor)) return desiredFactor
@@ -993,6 +1013,20 @@ export class CustomCanvasEngine {
     return { minX, maxX, minY, maxY, w: maxX - minX, h: maxY - minY }
   }
 
+  _overlayInsidePage (ov) {
+    const pageW = this.pageWidth || this.docWidth
+    const pageH = this.pageHeight || this.docHeight
+    const rect = this._pageRect(this.docWidth, this.docHeight, pageW, pageH)
+    const b = this._getOverlayDocBounds(ov)
+    const eps = 0.5
+    return (
+      b.minX >= rect.left - eps &&
+      b.maxX <= rect.right + eps &&
+      b.minY >= rect.top - eps &&
+      b.maxY <= rect.bottom + eps
+    )
+  }
+
   _getOverlayScreenBounds (ov) {
     const s = this.scale
     const center = this._docToScreen(ov.cx, ov.cy)
@@ -1015,7 +1049,7 @@ export class CustomCanvasEngine {
       w: wLocal,
       h: hLocal,
       angleRad: ov.angleRad || 0,
-      fontSize: Math.max(6, Math.round(Number(ov.data?.fontSize || 48) * effFontScale)),
+      fontSize: Math.max(6, Number(ov.data?.fontSize || 48) * effFontScale),
       bbox: { x: p1.x, y: p1.y, w: p2.x - p1.x, h: p2.y - p1.y }
     }
   }
@@ -1073,8 +1107,7 @@ export class CustomCanvasEngine {
 
     const id = opts.id || `tb_${Date.now()}_${Math.random().toString(36).slice(2)}`
     const fontSize = Math.max(6, Math.round(Number(opts.fontSize || 48)))
-    // Множитель 1
-    const lh = fontSize * 1
+    const lh = fontSize * TEXT_LH_FACTOR
     const h = lh
 
     const ov = {
