@@ -1,4 +1,4 @@
-// frontend/src/pages/Editor.jsx (часть 1/3)
+// frontend/src/pages/Editor.jsx
 
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { toast } from '../components/Toast.jsx'
@@ -246,6 +246,8 @@ function renderPageOffscreen (page, scaleMul = 2) {
 
       const align = d.textAlign || 'left'
       ctx.textAlign = align
+      
+      // Синхронизация
       ctx.textBaseline = 'top'
 
       let xPos = 0
@@ -255,9 +257,10 @@ function renderPageOffscreen (page, scaleMul = 2) {
 
       const text = d.text || ''
       const lines = text.split('\n')
-      const lh = fontSize * 1.2
+      // Множитель 1.0
+      const lh = fontSize * 1
       const totalH = lines.length * lh
-      let startY = -totalH / 2 + (lh - fontSize) / 2
+      let startY = -totalH / 2
 
       for (const line of lines) {
         ctx.fillText(line, xPos, startY)
@@ -798,8 +801,6 @@ export default function Editor () {
     }
   }, [textEdit, textEditValue])
 
-// frontend/src/pages/Editor.jsx (часть 2/3)
-
   // Синхронизация: React(state) -> Canvas(engine)
   const prevCurForSyncRef = useRef(0)
   useEffect(() => {
@@ -1213,9 +1214,13 @@ export default function Editor () {
 
     const initText = 'Вставьте текст'
     const fontSizeLocal = 48
-    const lineHeightLocal = fontSizeLocal * 1.2
+    
+    // Множитель 1.0 (компактно)
+    const lineHeightLocal = fontSizeLocal * 1 
+    
     const totalH = lineHeightLocal
     const newH = totalH
+    // Убрали + 4
     const w = measureTextWidthPx(initText, 'Arial', fontSizeLocal, 'bold', 'normal')
 
     engineRef.current.addTextOverlay(initText, {
@@ -1224,7 +1229,7 @@ export default function Editor () {
       fontWeight: 'bold',
       fill: '#000000',
       textAlign: 'left',
-      width: w + 4,
+      width: w,
       height: newH
     })
     scheduleSaveDraftRef.current?.()
@@ -1296,7 +1301,9 @@ export default function Editor () {
     const d = oldOv.data || {}
     const text = d.text || ''
     const lines = text.split('\n')
-    const lineHeightPx = newFontSize * 1.2
+    
+    // Множитель 1.0 (был 1.2)
+    const lineHeightPx = newFontSize * 1
 
     let maxLineW = 0
     for (const line of lines) {
@@ -1305,7 +1312,8 @@ export default function Editor () {
     }
 
     const totalH = lines.length * lineHeightPx
-    const newW = Math.max(20, maxLineW + 4)
+    // Убрали + 4
+    const newW = Math.max(20, maxLineW)
     const newH = Math.max(lineHeightPx, totalH)
 
     const newOv = {
@@ -1368,8 +1376,6 @@ export default function Editor () {
     scheduleSaveDraftRef.current?.()
     return true
   }, [font, fontSize, bold, italic, color, fitOverlayToPage])
-
-// frontend/src/pages/Editor.jsx (часть 3/3)
 
   async function rotatePage () {
     const page = pagesRef.current[cur]
@@ -1786,7 +1792,9 @@ export default function Editor () {
     const fontStyle = d.fontStyle || 'normal'
     const text = value || ''
     const lines = text.split('\n')
-    const lineHeightPx = fontSizeLocal * 1.2
+    
+    // Множитель 1.0 (компактно)
+    const lineHeightPx = fontSizeLocal * 1
 
     let maxLineW = 0
     for (const line of lines) {
@@ -1795,7 +1803,8 @@ export default function Editor () {
     }
 
     const totalH = lines.length * lineHeightPx
-    targetOv.w = Math.max(20, maxLineW + 4)
+    // Убрали + 4
+    targetOv.w = Math.max(20, maxLineW)
     targetOv.h = Math.max(lineHeightPx, totalH)
     targetOv.data.text = text
     targetOv.data.fontSize = fontSizeLocal
@@ -1903,10 +1912,7 @@ export default function Editor () {
         const screenFontSize = Math.max(6, Math.round(rc.fontSize || textEdit.fontSize || 48))
 
         const angleDeg = (rc.angleRad || 0) * 180 / Math.PI
-        const lineHeightPx = Math.round(screenFontSize * 1.2)
-
-        // Мини-подстройка, чтобы стартовая строка визуально не "проседала" при переходе в textarea
-        const padTop = Math.max(0, Math.round((lineHeightPx - screenFontSize) / 2))
+        const lineHeightPx = Math.round(screenFontSize * 1.0) // Множитель 1
 
         const leftPx = Math.round((rc.cx || 0) + offX)
         const topPx = Math.round((rc.cy || 0) + offY)
@@ -1945,8 +1951,9 @@ export default function Editor () {
           whiteSpace: 'pre',
           overflow: 'hidden',
 
-          lineHeight: `${lineHeightPx}px`,
-          padding: `${padTop}px 0 0 0`,
+          display: 'block', // Fix alignment
+          lineHeight: '1',  // Fix alignment
+          padding: '0',     // Fix alignment
           boxSizing: 'border-box',
 
           // не даём браузеру "подмешивать" свои хитрые жесты во время трансформа

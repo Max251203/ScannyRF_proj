@@ -165,13 +165,10 @@ export class CustomCanvasEngine {
   // bounds в doc-координатах для конкретной страницы (rotation влияет только на page size,
   // но сам bounds зависит лишь от ov и его scale/angle)
   getOverlayDocBoundsForPage (ov, docW, docH, rotation = 0) {
-    // docW/docH/rotation пока не нужны для вычисления bounds овера (ov живёт в doc-space),
-    // но оставляем сигнатуру для удобства вызова.
     return this._getOverlayDocBounds(ov)
   }
 
-  // Попытаться сдвинуть overlay внутрь листа. Возвращает ok=false если объект больше листа
-  // и никак не может поместиться.
+  // Попытаться сдвинуть overlay внутрь листа.
   clampOverlayToPage (ov, docW, docH, rotation = 0) {
     const safe = { ...ov, data: { ...(ov?.data || {}) } }
     if (safe?.type === 'text') normalizeTextOverlay(safe)
@@ -179,13 +176,11 @@ export class CustomCanvasEngine {
     const { pageW, pageH } = this.computePageSize(docW, docH, rotation)
     const rect = this._pageRect(docW, docH, pageW, pageH)
 
-    // если объект физически больше страницы — не помещается
     const b0 = this._getOverlayDocBounds(safe)
     if (b0.w > pageW + 0.5 || b0.h > pageH + 0.5) {
       return { ok: false, overlay: safe }
     }
 
-    // сдвигаем внутрь
     let dx = 0
     let dy = 0
     if (b0.minX < rect.left) dx = rect.left - b0.minX
@@ -298,7 +293,7 @@ export class CustomCanvasEngine {
       this._updateTransform()
     }
 
-    // 90 -> 0: автоужатие по размеру листа (для текста — и fontSize тоже)
+    // 90 -> 0: автоужатие по размеру листа
     if (prevRotation === 90 && this.rotation === 0) {
       const maxW = (this.pageWidth || this.docWidth) - 4
       const maxH = (this.pageHeight || this.docHeight) - 4
@@ -523,11 +518,8 @@ export class CustomCanvasEngine {
       const align = d.textAlign || 'left'
       ctx.textAlign = align
 
-      // ВАЖНО:
-      // canvas baseline "top" часто не совпадает по визуальным метрикам с CSS/textarea.
-      // Используем alphabetic + actualBoundingBoxAscent (если доступно), чтобы
-      // позиционирование текста было ближе к тому, как браузер рисует текст в textarea.
-      ctx.textBaseline = 'alphabetic'
+      // Рисуем от верха, как в HTML textarea
+      ctx.textBaseline = 'top'
 
       let xPos = 0
       if (align === 'left') xPos = -halfW
@@ -537,28 +529,16 @@ export class CustomCanvasEngine {
       const text = String(d.text || '')
       const lines = text.split('\n')
 
-      const lh = sz * 1.2
+      // Множитель 1.0 (компактно)
+      const lh = sz * 1
       const totalH = lines.length * lh
 
-      // Оценка ascent. В современных браузерах есть actualBoundingBoxAscent.
-      // Фолбэк — эмпирическое значение.
-      let ascent = sz * 0.8
-      try {
-        const m = ctx.measureText('Mg')
-        if (m && typeof m.actualBoundingBoxAscent === 'number' && m.actualBoundingBoxAscent > 0) {
-          ascent = m.actualBoundingBoxAscent
-        }
-      } catch {}
-
-      // top линии в системе ov-координат:
-      // вертикально центрируем блок строк внутри overlay.
-      // baseline первой строки: lineTop + leading/2 + ascent
-      const leadingHalf = (lh - sz) / 2
-      let baselineY = (-totalH / 2) + leadingHalf + ascent
+      // Старт с самого верха
+      let currentY = -totalH / 2
 
       for (const line of lines) {
-        ctx.fillText(line, xPos, baselineY)
-        baselineY += lh
+        ctx.fillText(line, xPos, currentY)
+        currentY += lh
       }
     }
 
@@ -768,7 +748,7 @@ export class CustomCanvasEngine {
       this._setCursor('grabbing')
       this._draw()
 
-            if (ov.type === 'text') {
+      if (ov.type === 'text') {
         try {
           const bounds = this._getOverlayScreenBounds(ov)
           this.onTextEditRequest(cloneOverlay(ov), bounds)
@@ -862,9 +842,6 @@ export class CustomCanvasEngine {
     this._clampOverlay(ov)
   }
 
-  // FIX (п.1): при масштабировании не “упираемся” в старые ограничения —
-  // вместо _clampOverlay (который сдвигает центр) ограничиваем factor так,
-  // чтобы bounds оставались в пределах листа при фиксированном центре.
   _handleScale (ov, sx, sy) {
     const start = this.dragState.startOverlay
     const center = { x: start.cx, y: start.cy }
@@ -895,7 +872,6 @@ export class CustomCanvasEngine {
       ov.scaleY = (start.scaleY || 1) * factor
     }
 
-    // на всякий случай поджимаем в лист (не должно двигать при нормальной работе)
     this._clampOverlay(ov)
   }
 
@@ -908,7 +884,6 @@ export class CustomCanvasEngine {
   }
 
   _limitScaleFactorToPage (startOverlay, desiredFactor) {
-    // для уменьшения всегда можно
     if (desiredFactor <= 1) return desiredFactor
 
     const pageW = this.pageWidth || this.docWidth
@@ -944,7 +919,6 @@ export class CustomCanvasEngine {
 
     if (fits(desiredFactor)) return desiredFactor
 
-    // бинарный поиск максимального подходящего factor
     let lo = 0.1
     let hi = desiredFactor
     for (let i = 0; i < 18; i++) {
@@ -1099,7 +1073,8 @@ export class CustomCanvasEngine {
 
     const id = opts.id || `tb_${Date.now()}_${Math.random().toString(36).slice(2)}`
     const fontSize = Math.max(6, Math.round(Number(opts.fontSize || 48)))
-    const lh = fontSize * 1.2
+    // Множитель 1
+    const lh = fontSize * 1
     const h = lh
 
     const ov = {
