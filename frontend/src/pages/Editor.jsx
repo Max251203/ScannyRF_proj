@@ -42,9 +42,8 @@ const FONTS = ['Arial', 'Times New Roman', 'Ermilov', 'Segoe UI', 'Roboto', 'Geo
 const PDF_RENDER_SCALE = 3.0
 const RASTER_RENDER_SCALE = 3.0
 
-// Множитель высоты строки для "плотной" рамки (убирает пустоту сверху/снизу)
-// ДОЛЖЕН совпадать с TEXT_LH_FACTOR в CustomCanvasEngine
-const LH_FACTOR = 0.85
+// Линейный коэффициент, совпадает с движком (без дополнительных отступов)
+const LH_FACTOR = 1
 
 function randDocId () { return String(Math.floor(1e15 + Math.random() * 9e15)) }
 function genDefaultName () {
@@ -59,6 +58,45 @@ function sanitizeName (s) {
 }
 function setDraftHint (flag) {
   try { localStorage.setItem('has_draft', flag ? '1' : '0') } catch {}
+}
+
+/**
+ * Замер прямоугольника текста через скрытый DOM-элемент.
+ * Так мы максимально точно повторяем поведение браузера (line-box),
+ * и рамка совпадает с текстом без артефактов.
+ */
+function measureTextBoxDom (text, fontFamily, fontSize, fontWeight, fontStyle) {
+  if (typeof document === 'undefined') {
+    const size = fontSize || 48
+    return { width: size * 2, height: size }
+  }
+  let el = measureTextBoxDom._el
+  if (!el) {
+    el = document.createElement('div')
+    measureTextBoxDom._el = el
+    el.style.position = 'fixed'
+    el.style.left = '-99999px'
+    el.style.top = '-99999px'
+    el.style.whiteSpace = 'pre'
+    el.style.margin = '0'
+    el.style.padding = '0'
+    el.style.border = '0'
+    el.style.outline = 'none'
+    el.style.lineHeight = String(LH_FACTOR)
+    el.style.visibility = 'hidden'
+    document.body.appendChild(el)
+  }
+  const size = fontSize || 48
+  el.style.fontFamily = fontFamily || 'Arial'
+  el.style.fontSize = `${size}px`
+  el.style.fontWeight = fontWeight || 'normal'
+  el.style.fontStyle = fontStyle || 'normal'
+  el.textContent = text || ''
+  const rect = el.getBoundingClientRect()
+  return {
+    width: rect.width || size * 2,
+    height: rect.height || size * LH_FACTOR
+  }
 }
 
 async function ensurePDFLib () {
@@ -95,17 +133,85 @@ function loadImageEl (src) {
   })
 }
 
-function measureTextWidthPx (text, fontFamily, fontSize, fontWeight, fontStyle) {
-  if (typeof document === 'undefined') return (fontSize || 48) * 2
-  const canvas = measureTextWidthPx._canvas || (measureTextWidthPx._canvas = document.createElement('canvas'))
-  const ctx = canvas.getContext('2d')
-  const size = fontSize || 48
-  const weight = fontWeight || 'normal'
-  const style = fontStyle || 'normal'
-  const family = fontFamily || 'Arial'
-  ctx.font = `${style} ${weight} ${size}px ${family}`
-  const metrics = ctx.measureText(text || '')
-  return metrics.width
+// Построение стиля HTML-слоя текста (и просмотр, и редактирование)
+function buildTextOverlayStyle (rc, ov, canvasEl, editable = false) {
+  if (!rc || !ov) return null
+
+  let offX = 0
+  let offY = 0
+  if (canvasEl) {
+    offX = canvasEl.offsetLeft || 0
+    offY = canvasEl.offsetTop || 0
+  }
+
+  const leftPx = (rc.cx || 0) + offX
+  const topPx = (rc.cy || 0) + offY
+
+  const screenW = Number(rc.w || ov.w || 40)
+  const screenH = Number(rc.h || ov.h || 30)
+  const fontSize = Math.max(6, Number(rc.fontSize || ov.data?.fontSize || 48))
+  const angleDeg = (rc.angleRad || 0) * 180 / Math.PI
+
+  const d = ov.data || {}
+
+  const base = {
+    position: 'absolute',
+    left: `${leftPx.toFixed(2)}px`,
+    top: `${topPx.toFixed(2)}px`,
+    width: `${screenW.toFixed(2)}px`,
+    height: `${screenH.toFixed(2)}px`,
+
+    transform: `translate3d(-50%, -50%, 0) rotate(${angleDeg}deg)`,
+    transformOrigin: 'center center',
+    willChange: 'transform',
+    backfaceVisibility: 'hidden',
+
+    fontFamily: d.fontFamily || 'Arial',
+    fontSize: `${fontSize.toFixed(2)}px`,
+    fontWeight: d.fontWeight || 'bold',
+    fontStyle: d.fontStyle || 'normal',
+    color: d.fill || '#000000',
+
+    textAlign: d.textAlign || 'left',
+
+    border: 'none',
+    margin: '0',
+    padding: '0',
+    resize: 'none',
+    outline: 'none',
+    background: 'transparent',
+
+    lineHeight: String(LH_FACTOR),
+    letterSpacing: 'normal',
+
+    whiteSpace: 'pre',
+    overflow: 'hidden',
+
+    display: 'block',
+    boxSizing: 'border-box',
+
+    WebkitFontSmoothing: 'antialiased',
+    textRendering: 'geometricPrecision'
+  }
+
+  if (editable) {
+    return {
+      ...base,
+      caretColor: '#ff1744',
+      touchAction: 'none',
+      userSelect: 'none',
+      pointerEvents: 'auto',
+      zIndex: 80
+    }
+  }
+
+  return {
+    ...base,
+    caretColor: 'transparent',
+    pointerEvents: 'none',
+    userSelect: 'none',
+    zIndex: 40
+  }
 }
 
 async function renderDOCXToCanvas (file) {
@@ -250,7 +356,6 @@ function renderPageOffscreen (page, scaleMul = 2) {
 
       const align = d.textAlign || 'left'
       ctx.textAlign = align
-
       ctx.textBaseline = 'top'
 
       let xPos = 0
@@ -383,11 +488,17 @@ export default function Editor () {
     showBanner._t = window.setTimeout(() => setBanner(''), timeout)
   }
 
-  function showLimitWarning () {
+  // вместо простого showLimitWarning() — умеем различать ситуации
+  function showLimitWarning (kind = 'text') {
     const now = Date.now()
     if (now - limitErrorAtRef.current < 1200) return
     limitErrorAtRef.current = now
-    toast('Текст выходит за границы документа', 'error')
+
+    const msg = kind === 'rotate'
+      ? 'Объект выходит за границы документа'
+      : 'Текст выходит за границы документа'
+
+    toast(msg, 'error')
   }
 
   const closeMenus = useCallback(() => setMenuOpen(null), [])
@@ -488,51 +599,26 @@ export default function Editor () {
     return () => mq.removeEventListener('change', on)
   }, [])
 
-  // --- Загрузка и динамическое обновление биллинга/цен ---
   useEffect(() => {
-    let cancelled = false
-
-    const applyBilling = (st) => {
-      if (cancelled) return
-      if (!st) {
+    const onUser = async () => {
+      if (localStorage.getItem('access')) {
+        try {
+          const st = await AuthAPI.getBillingStatus()
+          setBilling(st)
+          if (st && ('price_single' in st)) {
+            setPrices({
+              single: Number(st.price_single || 0),
+              month: Number(st.price_month || 0),
+              year: Number(st.price_year || 0)
+            })
+          }
+        } catch {}
+      } else {
         setBilling(null)
-        return
-      }
-      setBilling(st)
-      if ('price_single' in st) {
-        setPrices({
-          single: Number(st.price_single || 0),
-          month: Number(st.price_month || 0),
-          year: Number(st.price_year || 0)
-        })
       }
     }
-
-    async function fetchBilling () {
-      if (!localStorage.getItem('access')) {
-        applyBilling(null)
-        return
-      }
-      try {
-        const st = await AuthAPI.getBillingStatus()
-        applyBilling(st)
-      } catch {}
-    }
-
-    // Начальный запрос при монтировании
-    fetchBilling()
-
-    const onUser = () => { fetchBilling() }
-    const onBill = (e) => { applyBilling(e.detail || null) }
-
     window.addEventListener('user:update', onUser)
-    window.addEventListener('billing:update', onBill)
-
-    return () => {
-      cancelled = true
-      window.removeEventListener('user:update', onUser)
-      window.removeEventListener('billing:update', onBill)
-    }
+    return () => window.removeEventListener('user:update', onUser)
   }, [])
 
   const forceLayoutSync = useCallback(() => {
@@ -655,6 +741,7 @@ export default function Editor () {
 
     const engine = new CustomCanvasEngine(canvasRef.current, {
       viewMargin: isMobileRef.current ? 0 : 24,
+      onLimit: (kind) => showLimitWarning(kind), // <- новая строка
 
       onBeforeOverlayChange: (snapshot) => {
         const pageIndex = curRef.current
@@ -775,11 +862,6 @@ export default function Editor () {
 
       onBlankClick: () => {
         finishTextEditing()
-      },
-
-      // Ограничения при скейле/повороте — показываем аккуратное предупреждение
-      onLimit: () => {
-        showLimitWarning()
       }
     })
 
@@ -1231,11 +1313,7 @@ export default function Editor () {
 
     const initText = 'Вставьте текст'
     const fontSizeLocal = 48
-
-    const lineHeightLocal = fontSizeLocal * LH_FACTOR
-
-    const totalH = lineHeightLocal
-    const w = measureTextWidthPx(initText, 'Arial', fontSizeLocal, 'bold', 'normal')
+    const metrics = measureTextBoxDom(initText, 'Arial', fontSizeLocal, 'bold', 'normal')
 
     engineRef.current.addTextOverlay(initText, {
       fontFamily: 'Arial',
@@ -1243,24 +1321,27 @@ export default function Editor () {
       fontWeight: 'bold',
       fill: '#000000',
       textAlign: 'left',
-      width: w,
-      height: totalH
+      width: metrics.width,
+      height: metrics.height
     })
     scheduleSaveDraftRef.current?.()
   }
 
-  // helper: авто-ужатие overlay под страницу
   const fitOverlayToPage = useCallback((ov, page) => {
     const engine = engineRef.current
     if (!engine || !ov || !page) return ov
 
-    const maxSize = engine.computePageSize(page.docWidth || 1000, page.docHeight || 1414, page.rotation || 0)
-    const maxW = (maxSize.pageW || (page.docWidth || 1000)) - 4
-    const maxH = (maxSize.pageH || (page.docHeight || 1414)) - 4
+    const bounds = engine.getOverlayDocBoundsForPage
+      ? engine.getOverlayDocBoundsForPage(ov, page.docWidth || 1000, page.docHeight || 1414, page.rotation || 0)
+      : null
 
-    const bounds = engine.getOverlayDocBoundsForPage(ov, page.docWidth || 1000, page.docHeight || 1414, page.rotation || 0)
-    const bw = Math.max(1e-6, bounds.w)
-    const bh = Math.max(1e-6, bounds.h)
+    const bw = bounds ? Math.max(1e-6, bounds.w) : Math.max(1e-6, ov.w)
+    const bh = bounds ? Math.max(1e-6, bounds.h) : Math.max(1e-6, ov.h)
+
+    const { pageW, pageH } = engine.computePageSize(page.docWidth || 1000, page.docHeight || 1414, page.rotation || 0)
+    const maxW = (pageW || page.docWidth || 1000) - 4
+    const maxH = (pageH || page.docHeight || 1414) - 4
+
     const factor = Math.min(maxW / bw, maxH / bh, 1)
 
     if (factor >= 1) return ov
@@ -1287,7 +1368,6 @@ export default function Editor () {
     }
   }, [])
 
-  // Панель форматирования текста
   const applyPanel = useCallback((overrides = {}) => {
     const pageIndex = curRef.current
     const page = pagesRef.current[pageIndex]
@@ -1315,24 +1395,13 @@ export default function Editor () {
 
     const d = oldOv.data || {}
     const text = d.text || ''
-    const lines = text.split('\n')
 
-    const lineHeightPx = newFontSize * LH_FACTOR
-
-    let maxLineW = 0
-    for (const line of lines) {
-      const w = measureTextWidthPx(line, newFontFamily, newFontSize, newFontWeight, newFontStyle)
-      if (w > maxLineW) maxLineW = w
-    }
-
-    const totalH = lines.length * lineHeightPx
-    const newW = Math.max(20, maxLineW)
-    const newH = totalH
+    const metrics = measureTextBoxDom(text, newFontFamily, newFontSize, newFontWeight, newFontStyle)
 
     const newOv = {
       ...oldOv,
-      w: newW,
-      h: newH,
+      w: Math.max(20, metrics.width),
+      h: metrics.height,
       scaleX: 1,
       scaleY: 1,
       data: {
@@ -1347,7 +1416,7 @@ export default function Editor () {
 
     const bounded = engineRef.current.clampOverlayToPage(newOv, page.docWidth || 1000, page.docHeight || 1414, page.rotation || 0)
     if (!bounded.ok) {
-      showLimitWarning()
+      showLimitWarning('text')
       return false
     }
 
@@ -1796,25 +1865,17 @@ export default function Editor () {
     const fontWeight = d.fontWeight || 'bold'
     const fontStyle = d.fontStyle || 'normal'
     const text = value || ''
-    const lines = text.split('\n')
 
-    const lineHeightPx = fontSizeLocal * LH_FACTOR
+    const metrics = measureTextBoxDom(text, fontFamily, fontSizeLocal, fontWeight, fontStyle)
 
-    let maxLineW = 0
-    for (const line of lines) {
-      const w = measureTextWidthPx(line, fontFamily, fontSizeLocal, fontWeight, fontStyle)
-      if (w > maxLineW) maxLineW = w
-    }
-
-    const totalH = lines.length * lineHeightPx
-    targetOv.w = Math.max(20, maxLineW)
-    targetOv.h = totalH
+    targetOv.w = Math.max(20, metrics.width)
+    targetOv.h = metrics.height
     targetOv.data.text = text
     targetOv.data.fontSize = fontSizeLocal
 
     const cl = engine.clampOverlayToPage(targetOv, page.docWidth || 1000, page.docHeight || 1414, page.rotation || 0)
     if (!cl.ok) {
-      showLimitWarning()
+      showLimitWarning('text')
       setTextEditValue(lastGoodTextRef.current)
       return
     }
@@ -1898,83 +1959,26 @@ export default function Editor () {
     }
   }, [textEdit])
 
-  const textEditorStyle = textEdit && canvasWrapRef.current
-    ? (() => {
-        const rc = textEdit.rectCanvas || {}
-
-        const canvasEl = canvasRef.current
-        let offX = 0
-        let offY = 0
-        if (canvasEl) {
-          offX = canvasEl.offsetLeft
-          offY = canvasEl.offsetTop
-        }
-
-        const screenW = Number(rc.w || textEdit.docW || 40)
-        const screenH = Number(rc.h || textEdit.docH || 30)
-        const screenFontSize = Math.max(6, Number(rc.fontSize || textEdit.fontSize || 48))
-
-        const angleDeg = (rc.angleRad || 0) * 180 / Math.PI
-
-        const leftPx = (rc.cx || 0) + offX
-        const topPx = (rc.cy || 0) + offY
-
-        const marginTop = 0
-
-        return {
-          position: 'absolute',
-          left: `${leftPx.toFixed(2)}px`,
-          top: `${topPx.toFixed(2)}px`,
-          width: `${screenW.toFixed(2)}px`,
-          height: `${screenH.toFixed(2)}px`,
-
-          transform: `translate3d(-50%, -50%, 0) rotate(${angleDeg}deg)`,
-          transformOrigin: 'center center',
-          willChange: 'transform',
-          backfaceVisibility: 'hidden',
-
-          fontFamily: textEdit.fontFamily,
-          fontSize: `${screenFontSize.toFixed(2)}px`,
-          fontWeight: textEdit.fontWeight,
-          fontStyle: textEdit.fontStyle,
-          color: textEdit.fill,
-
-          textAlign: textEdit.textAlign || 'left',
-          caretColor: '#ff1744',
-
-          border: 'none',
-          margin: '0',
-          marginTop: `${marginTop}px`,
-          resize: 'none',
-          outline: 'none',
-          background: 'transparent',
-
-          padding: '0',
-          lineHeight: String(LH_FACTOR),
-          letterSpacing: 'normal',
-
-          zIndex: 80,
-
-          whiteSpace: 'pre',
-          overflow: 'hidden',
-
-          display: 'block',
-          boxSizing: 'border-box',
-
-          touchAction: 'none',
-          userSelect: 'none',
-
-          WebkitFontSmoothing: 'antialiased',
-          textRendering: 'geometricPrecision'
-        }
-      })()
-    : null
+  const textEditorStyle = (() => {
+    if (!textEdit || !canvasRef.current || !engineRef.current) return null
+    const pageIndex = curRef.current
+    const page = pagesRef.current[pageIndex]
+    if (!page) return null
+    const ov = (page.overlays || []).find(o => o.id === textEdit.overlayId)
+    if (!ov) return null
+    const rc = engineRef.current.getOverlayScreenBoundsById(ov.id) || textEdit.rectCanvas
+    if (!rc) return null
+    return buildTextOverlayStyle(rc, ov, canvasRef.current, true)
+  })()
 
   const onTopMenuClick = (e) => {
     const r = e.currentTarget.getBoundingClientRect()
     setMenuPos({ top: r.bottom + 8 + window.scrollY, left: r.left + window.scrollX })
     toggleMenu('actions')
   }
+
+  const pageForRender = hasDoc ? pages[cur] : null
+  const engineForRender = engineRef.current
 
   return (
     <div className="doc-editor page" style={{ paddingTop: 0 }}>
@@ -2154,6 +2158,24 @@ export default function Editor () {
             {hasDoc && (
               <>
                 <canvas ref={canvasRef} style={{ width: '100%', height: '100%', display: 'block' }} />
+
+                {/* Текстовые HTML-слои (просмотр) */}
+                {engineForRender && pageForRender && (pageForRender.overlays || []).filter(ov => ov.type === 'text').map(ov => {
+                  if (textEdit && textEdit.overlayId === ov.id) return null
+                  const rc = engineForRender.getOverlayScreenBoundsById(ov.id)
+                  if (!rc) return null
+                  const style = buildTextOverlayStyle(rc, ov, canvasRef.current, false)
+                  if (!style) return null
+                  const text = ov.data?.text || ''
+                  return (
+                    <div
+                      key={ov.id}
+                      style={style}
+                    >
+                      {text}
+                    </div>
+                  )
+                })}
 
                 {docRect && (
                   <button
