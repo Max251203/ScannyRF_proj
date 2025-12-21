@@ -220,7 +220,7 @@ function buildTextOverlayStyle (rc, ov, canvasEl, editable = false) {
     letterSpacing: 'normal',
 
     whiteSpace: 'pre',
-    overflow: 'hidden', // как было у тебя — без лишних скроллов
+    overflow: 'hidden',
 
     display: 'block',
     boxSizing: 'border-box',
@@ -489,6 +489,7 @@ export default function Editor () {
   const [textEditValue, setTextEditValue] = useState('')
   const textAreaRef = useRef(null)
   const textEditRef = useRef(textEdit)
+  const textEditValueRef = useRef(textEditValue)
   const lastGoodTextRef = useRef('')
   const limitErrorAtRef = useRef(0)
 
@@ -510,6 +511,7 @@ export default function Editor () {
   useEffect(() => { docIdRef.current = docId }, [docId])
   useEffect(() => { fileNameRef.current = fileName }, [fileName])
   useEffect(() => { textEditRef.current = textEdit }, [textEdit])
+  useEffect(() => { textEditValueRef.current = textEditValue }, [textEditValue])
   useEffect(() => { isMobileRef.current = isMobile }, [isMobile])
 
   const setPagesSync = useCallback((nextPages) => {
@@ -523,7 +525,6 @@ export default function Editor () {
     showBanner._t = window.setTimeout(() => setBanner(''), timeout)
   }
 
-  // вместо простого showLimitWarning() — умеем различать ситуации
   function showLimitWarning (kind = 'text') {
     const now = Date.now()
     if (now - limitErrorAtRef.current < 1200) return
@@ -557,6 +558,18 @@ export default function Editor () {
 
   const scheduleSaveDraftRef = useRef(scheduleSaveDraft)
   useEffect(() => { scheduleSaveDraftRef.current = scheduleSaveDraft }, [scheduleSaveDraft])
+
+  const applyBilling = useCallback((st) => {
+    if (!st) return
+    setBilling(st)
+    if ('price_single' in st) {
+      setPrices({
+        single: Number(st.price_single || 0),
+        month: Number(st.price_month || 0),
+        year: Number(st.price_year || 0)
+      })
+    }
+  }, [])
 
   function buildDraftSnapshot () {
     if (!pagesRef.current.length) return null
@@ -634,19 +647,27 @@ export default function Editor () {
     return () => mq.removeEventListener('change', on)
   }, [])
 
+  // Подтягиваем биллинг один раз при заходе в редактор
+  useEffect(() => {
+    if (!isAuthed) {
+      setBilling(null)
+      return
+    }
+    (async () => {
+      try {
+        const st = await AuthAPI.getBillingStatus()
+        applyBilling(st)
+      } catch {}
+    })()
+  }, [isAuthed, applyBilling])
+
+  // Обновление по user:update (логин, регистрация, bootstrap)
   useEffect(() => {
     const onUser = async () => {
       if (localStorage.getItem('access')) {
         try {
           const st = await AuthAPI.getBillingStatus()
-          setBilling(st)
-          if (st && ('price_single' in st)) {
-            setPrices({
-              single: Number(st.price_single || 0),
-              month: Number(st.price_month || 0),
-              year: Number(st.price_year || 0)
-            })
-          }
+          applyBilling(st)
         } catch {}
       } else {
         setBilling(null)
@@ -654,7 +675,17 @@ export default function Editor () {
     }
     window.addEventListener('user:update', onUser)
     return () => window.removeEventListener('user:update', onUser)
-  }, [])
+  }, [applyBilling])
+
+  // Динамическое обновление цен по billing:update (админ меняет тарифы и т.п.)
+  useEffect(() => {
+    const onBill = (e) => {
+      const st = e.detail || null
+      if (st) applyBilling(st)
+    }
+    window.addEventListener('billing:update', onBill)
+    return () => window.removeEventListener('billing:update', onBill)
+  }, [applyBilling])
 
   const forceLayoutSync = useCallback(() => {
     const engine = engineRef.current
@@ -776,7 +807,7 @@ export default function Editor () {
 
     const engine = new CustomCanvasEngine(canvasRef.current, {
       viewMargin: isMobileRef.current ? 0 : 24,
-      onLimit: (kind) => showLimitWarning(kind), // <- новая строка
+      onLimit: (kind) => showLimitWarning(kind),
 
       onBeforeOverlayChange: (snapshot) => {
         const pageIndex = curRef.current
@@ -828,6 +859,16 @@ export default function Editor () {
 
       onInteractionEnd: () => {
         scheduleSaveDraftRef.current?.()
+
+        const ta = textAreaRef.current
+        const te = textEditRef.current
+        if (ta && te) {
+          const val = textEditValueRef.current || ''
+          requestAnimationFrame(() => {
+            ta.focus()
+            try { ta.setSelectionRange(val.length, val.length) } catch {}
+          })
+        }
       },
 
       onOverlayDelete: (id) => {
@@ -2033,10 +2074,21 @@ export default function Editor () {
 
       {!panelOpen ? (
         <div className="ed-top">
-          <button className="ed-menu-btn mobile-only" aria-label="Меню действий" onClick={onTopMenuClick}>
+          <button
+            className="ed-menu-btn mobile-only"
+            aria-label="Меню действий"
+            onMouseDown={e => e.preventDefault()}
+            onClick={onTopMenuClick}
+          >
             <img src={icMore} alt="" style={{ width: 18, height: 18 }} />
           </button>
-          <button className="ed-menu-btn mobile-only" aria-label="Библиотека" onClick={() => setLibOpen(true)} title="Библиотека">
+          <button
+            className="ed-menu-btn mobile-only"
+            aria-label="Библиотека"
+            onMouseDown={e => e.preventDefault()}
+            onClick={() => setLibOpen(true)}
+            title="Библиотека"
+          >
             <img src={icLibrary} alt="" style={{ width: 18, height: 18 }} />
           </button>
           <div className="ed-namebar" style={{ flex: 1, display: 'flex', justifyContent: 'center' }}>
@@ -2055,6 +2107,7 @@ export default function Editor () {
           <div className="ed-toolbar" style={{ margin: '0 auto' }}>
             <select
               value={font}
+              onMouseDown={e => e.preventDefault()}
               onChange={e => {
                 const v = e.target.value
                 if (applyPanel({ font: v })) setFont(v)
@@ -2066,6 +2119,7 @@ export default function Editor () {
             <div className="sep" />
 
             <button
+              onMouseDown={e => e.preventDefault()}
               onClick={() => {
                 setFontSize(s => {
                   const nf = Math.max(6, s - 1)
@@ -2077,6 +2131,7 @@ export default function Editor () {
             </button>
             <span className="val">{fontSize}</span>
             <button
+              onMouseDown={e => e.preventDefault()}
               onClick={() => {
                 setFontSize(s => {
                   const nf = s + 1
@@ -2092,6 +2147,7 @@ export default function Editor () {
             <input
               type="color"
               value={color}
+              onMouseDown={e => e.preventDefault()}
               onChange={e => {
                 const v = e.target.value
                 if (applyPanel({ color: v })) setColor(v)
@@ -2101,6 +2157,7 @@ export default function Editor () {
 
             <button
               className={bold ? 'toggled' : ''}
+              onMouseDown={e => e.preventDefault()}
               onClick={() => {
                 setBold(b => {
                   const nv = !b
@@ -2113,6 +2170,7 @@ export default function Editor () {
 
             <button
               className={italic ? 'toggled' : ''}
+              onMouseDown={e => e.preventDefault()}
               onClick={() => {
                 setItalic(i => {
                   const nv = !i
@@ -2129,10 +2187,18 @@ export default function Editor () {
       <div className="ed-body">
         <aside className="ed-left">
           <div className="ed-tools">
-            <button className={`ed-tool ${pagesRef.current.length ? '' : 'disabled'}`} onClick={addText}>
+            <button
+              className={`ed-tool ${pagesRef.current.length ? '' : 'disabled'}`}
+              onMouseDown={e => e.preventDefault()}
+              onClick={addText}
+            >
               <img className="ico" src={icText} alt="" /><span>Добавить текст</span>
             </button>
-            <button className="ed-tool" onClick={() => signFileRef.current?.click()}>
+            <button
+              className="ed-tool"
+              onMouseDown={e => e.preventDefault()}
+              onClick={() => signFileRef.current?.click()}
+            >
               <img className="ico" src={icSign} alt="" /><span>Загрузить подпись</span>
             </button>
           </div>
@@ -2256,6 +2322,7 @@ export default function Editor () {
           <div className="ed-actions">
             <button
               className={`ed-action ${pagesRef.current.length ? '' : 'disabled'}`}
+              onMouseDown={e => e.preventDefault()}
               onClick={async () => {
                 if (!pagesRef.current.length) return
                 if (!window.confirm('Удалить весь документ?')) return
@@ -2271,15 +2338,27 @@ export default function Editor () {
               <img src={icDelete} alt="" style={{ width: 18, height: 18, marginRight: 8 }} />Удалить документ
             </button>
 
-            <button className={`ed-action ${canUndo ? '' : 'disabled'}`} onClick={undoLast}>
+            <button
+              className={`ed-action ${canUndo ? '' : 'disabled'}`}
+              onMouseDown={e => e.preventDefault()}
+              onClick={undoLast}
+            >
               <img src={icUndo} alt="" style={{ width: 18, height: 18, marginRight: 8 }} />Отменить
             </button>
 
-            <button className={`ed-action ${pagesRef.current.length ? '' : 'disabled'}`} onClick={rotatePage}>
+            <button
+              className={`ed-action ${pagesRef.current.length ? '' : 'disabled'}`}
+              onMouseDown={e => e.preventDefault()}
+              onClick={rotatePage}
+            >
               <img src={icRotate} alt="" style={{ width: 18, height: 18, marginRight: 8 }} />Повернуть страницу
             </button>
 
-            <button className={`ed-action ${hasActiveOverlay ? '' : 'disabled'}`} onClick={applyToAllPages}>
+            <button
+              className={`ed-action ${hasActiveOverlay ? '' : 'disabled'}`}
+              onMouseDown={e => e.preventDefault()}
+              onClick={applyToAllPages}
+            >
               <img src={icAddPage} alt="" style={{ width: 18, height: 18, marginRight: 8 }} />На все страницы
             </button>
           </div>
@@ -2287,20 +2366,36 @@ export default function Editor () {
           <div className="ed-download">
             <div className="ed-dl-title">Скачать бесплатно:</div>
             <div className="ed-dl-row">
-              <button className={`btn btn-lite ${(!pagesRef.current.length) ? 'disabled' : ''}`} onClick={exportJPG}>
+              <button
+                className={`btn btn-lite ${(!pagesRef.current.length) ? 'disabled' : ''}`}
+                onMouseDown={e => e.preventDefault()}
+                onClick={exportJPG}
+              >
                 <img src={icJpgFree} alt="" style={{ width: 18, height: 18, marginRight: 8 }} />JPG
               </button>
-              <button className={`btn btn-lite ${(!pagesRef.current.length) ? 'disabled' : ''}`} onClick={exportPDF}>
+              <button
+                className={`btn btn-lite ${(!pagesRef.current.length) ? 'disabled' : ''}`}
+                onMouseDown={e => e.preventDefault()}
+                onClick={exportPDF}
+              >
                 <img src={icPdfFree} alt="" style={{ width: 18, height: 18, marginRight: 8 }} />PDF
               </button>
             </div>
 
             <div className="ed-dl-title" style={{ marginTop: 10 }}>Купить:</div>
             <div className="ed-dl-row ed-dl-row-paid">
-              <button className={`btn ${(!pagesRef.current.length) ? 'disabled' : ''}`} onClick={() => { if (pagesRef.current.length) { setPlan('single'); setPayOpen(true) } }}>
+              <button
+                className={`btn ${(!pagesRef.current.length) ? 'disabled' : ''}`}
+                onMouseDown={e => e.preventDefault()}
+                onClick={() => { if (pagesRef.current.length) { setPlan('single'); setPayOpen(true) } }}
+              >
                 <img src={icJpgPaid} alt="" style={{ width: 18, height: 18, marginRight: 8 }} />JPG
               </button>
-              <button className={`btn ${(!pagesRef.current.length) ? 'disabled' : ''}`} onClick={() => { if (pagesRef.current.length) { setPlan('single'); setPayOpen(true) } }}>
+              <button
+                className={`btn ${(!pagesRef.current.length) ? 'disabled' : ''}`}
+                onMouseDown={e => e.preventDefault()}
+                onClick={() => { if (pagesRef.current.length) { setPlan('single'); setPayOpen(true) } }}
+              >
                 <img src={icPdfPaid} alt="" style={{ width: 18, height: 18, marginRight: 10 }} />PDF
               </button>
             </div>
@@ -2311,6 +2406,7 @@ export default function Editor () {
       <div className="ed-bottom">
         <button
           className="fab fab-add mobile-only"
+          onMouseDown={e => e.preventDefault()}
           onClick={() => { if (pagesRef.current.length) toggleMenu('add'); else pickDocument() }}
           title="Добавить"
         >
@@ -2333,6 +2429,7 @@ export default function Editor () {
 
         <button
           className="fab fab-dl mobile-only"
+          onMouseDown={e => e.preventDefault()}
           onClick={() => { if (!pagesRef.current.length) return; toggleMenu('download') }}
           title="Скачать"
         >
@@ -2346,20 +2443,33 @@ export default function Editor () {
           ref={sheetActionsRef}
           style={{ position: 'fixed', top: menuPos.top, left: menuPos.left, maxWidth: '96vw', minWidth: 240 }}
         >
-          <button className={pagesRef.current.length ? '' : 'disabled'} onClick={() => { closeMenus(); rotatePage() }}>
+          <button
+            className={pagesRef.current.length ? '' : 'disabled'}
+            onMouseDown={e => e.preventDefault()}
+            onClick={() => { closeMenus(); rotatePage() }}
+          >
             <img src={icRotate} alt="" style={{ width: 18, height: 18, marginRight: 10 }} />Повернуть страницу
           </button>
 
-          <button className={(pagesRef.current.length && pagesRef.current.length > 1) ? '' : 'disabled'} onClick={async () => { closeMenus(); await deletePageAt(cur) }}>
+          <button
+            className={(pagesRef.current.length && pagesRef.current.length > 1) ? '' : 'disabled'}
+            onMouseDown={e => e.preventDefault()}
+            onClick={async () => { closeMenus(); await deletePageAt(cur) }}
+          >
             <img src={icDelete} alt="" style={{ width: 18, height: 18, marginRight: 10 }} />Удалить страницу
           </button>
 
-          <button className={hasActiveOverlay ? '' : 'disabled'} onClick={() => { closeMenus(); applyToAllPages() }}>
+          <button
+            className={hasActiveOverlay ? '' : 'disabled'}
+            onMouseDown={e => e.preventDefault()}
+            onClick={() => { closeMenus(); applyToAllPages() }}
+          >
             <img src={icAddPage} alt="" style={{ width: 18, height: 18, marginRight: 10 }} />На все страницы
           </button>
 
           <button
             className={pagesRef.current.length ? '' : 'disabled'}
+            onMouseDown={e => e.preventDefault()}
             onClick={async () => {
               closeMenus()
               if (!pagesRef.current.length) return
@@ -2380,13 +2490,23 @@ export default function Editor () {
 
       {menuOpen === 'add' && (
         <div className="ed-sheet bottom-left" ref={sheetAddRef}>
-          <button className={pagesRef.current.length ? '' : 'disabled'} onClick={() => { closeMenus(); addText() }}>
+          <button
+            className={pagesRef.current.length ? '' : 'disabled'}
+            onMouseDown={e => e.preventDefault()}
+            onClick={() => { closeMenus(); addText() }}
+          >
             <img src={icText} alt="" style={{ width: 18, height: 18, marginRight: 10 }} />Добавить текст
           </button>
-          <button onClick={() => { closeMenus(); signFileRef.current?.click() }}>
+          <button
+            onMouseDown={e => e.preventDefault()}
+            onClick={() => { closeMenus(); signFileRef.current?.click() }}
+          >
             <img src={icSign} alt="" style={{ width: 18, height: 18, marginRight: 10 }} />Добавить подпись/печать
           </button>
-          <button onClick={() => { closeMenus(); pickDocument() }}>
+          <button
+            onMouseDown={e => e.preventDefault()}
+            onClick={() => { closeMenus(); pickDocument() }}
+          >
             <img src={icPlus} alt="" style={{ width: 18, height: 18, marginRight: 10 }} />Добавить документ/страницу
           </button>
         </div>
@@ -2397,6 +2517,7 @@ export default function Editor () {
           <button
             className={`btn ${pagesRef.current.length ? '' : 'disabled'}`}
             style={{ padding: '10px 14px' }}
+            onMouseDown={e => e.preventDefault()}
             onClick={() => {
               if (pagesRef.current.length) {
                 closeMenus()
@@ -2411,6 +2532,7 @@ export default function Editor () {
           <button
             className={`btn ${pagesRef.current.length ? '' : 'disabled'}`}
             style={{ padding: '10px 14px' }}
+            onMouseDown={e => e.preventDefault()}
             onClick={() => {
               if (pagesRef.current.length) {
                 closeMenus()
@@ -2425,6 +2547,7 @@ export default function Editor () {
           <button
             className={`btn btn-lite ${pagesRef.current.length ? '' : 'disabled'}`}
             style={{ padding: '10px 14px' }}
+            onMouseDown={e => e.preventDefault()}
             onClick={() => {
               if (pagesRef.current.length) {
                 closeMenus()
@@ -2438,6 +2561,7 @@ export default function Editor () {
           <button
             className={`btn btn-lite ${pagesRef.current.length ? '' : 'disabled'}`}
             style={{ padding: '10px 14px' }}
+            onMouseDown={e => e.preventDefault()}
             onClick={() => {
               if (pagesRef.current.length) {
                 closeMenus()
@@ -2457,17 +2581,29 @@ export default function Editor () {
             <h3 className="modal-title">Чтобы выгрузить документ придётся немного заплатить</h3>
 
             <div className="pay-grid">
-              <button className={`pay-card ${plan === 'single' ? 'active' : ''}`} onClick={() => setPlan('single')} type="button">
+              <button
+                className={`pay-card ${plan === 'single' ? 'active' : ''}`}
+                onClick={() => setPlan('single')}
+                type="button"
+              >
                 <img className="pay-ill" src={plan1} alt="" />
                 <div className="pay-price">{prices.single} ₽</div>
                 <div className="pay-sub">один (этот) документ</div>
               </button>
-              <button className={`pay-card ${plan === 'month' ? 'active' : ''}`} onClick={() => setPlan('month')} type="button">
+              <button
+                className={`pay-card ${plan === 'month' ? 'active' : ''}`}
+                onClick={() => setPlan('month')}
+                type="button"
+              >
                 <img className="pay-ill" src={plan2} alt="" />
                 <div className="pay-price">{prices.month} ₽</div>
                 <div className="pay-sub">безлимит на месяц</div>
               </button>
-              <button className={`pay-card ${plan === 'year' ? 'active' : ''}`} onClick={() => setPlan('year')} type="button">
+              <button
+                className={`pay-card ${plan === 'year' ? 'active' : ''}`}
+                onClick={() => setPlan('year')}
+                type="button"
+              >
                 <img className="pay-ill" src={plan3} alt="" />
                 <div className="pay-price">{prices.year} ₽</div>
                 <div className="pay-sub">безлимит на год</div>

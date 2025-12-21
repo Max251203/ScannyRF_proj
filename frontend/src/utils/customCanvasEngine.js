@@ -209,51 +209,33 @@ export class CustomCanvasEngine {
   }
 
   /**
-   * Ограничивает коэффициент масштабирования так, чтобы объект оставался
-   * внутри страницы. Работает в экранных координатах, учитывая текущий
-   * поворот и трансформацию документа.
+   * Ограничивает коэффициент масштабирования так, чтобы объект
+   * НЕ становился физически больше страницы. Положение центра
+   * при этом не учитываем — им займётся _clampOverlay.
    */
   _limitScaleFactorToPage (startOverlay, desiredFactor) {
     // Уменьшать объект можно свободно — ограничиваем только рост
     if (desiredFactor <= 1) return desiredFactor
 
-    const pageRect = this.getDocumentScreenRect()
-    if (!pageRect) return desiredFactor
+    const pageW = this.pageWidth || this.docWidth
+    const pageH = this.pageHeight || this.docHeight
 
-    const screenInfo = this._getOverlayScreenBounds(startOverlay)
-    if (!screenInfo || !screenInfo.bbox) return desiredFactor
+    const b0 = this._getOverlayDocBounds(startOverlay)
+    const w0 = b0.w
+    const h0 = b0.h
 
-    const { bbox, cx, cy } = screenInfo
-    const halfW = bbox.w / 2
-    const halfH = bbox.h / 2
-    if (!halfW || !halfH) return desiredFactor
+    if (!w0 || !h0) return desiredFactor
 
-    const left = pageRect.x
-    const right = pageRect.x + pageRect.width
-    const top = pageRect.y
-    const bottom = pageRect.y + pageRect.height
-
-    const spaceLeft = cx - left
-    const spaceRight = right - cx
-    const spaceTop = cy - top
-    const spaceBottom = bottom - cy
-
-    // Если центр вообще вне страницы — не даём увеличиваться
-    if (spaceLeft <= 0 || spaceRight <= 0 || spaceTop <= 0 || spaceBottom <= 0) {
-      return 1
-    }
-
-    const maxFactorX = Math.min(spaceLeft, spaceRight) / halfW
-    const maxFactorY = Math.min(spaceTop, spaceBottom) / halfH
-
-    let fMax = Math.min(maxFactorX, maxFactorY)
+    const maxFactorW = pageW / w0
+    const maxFactorH = pageH / h0
+    let fMax = Math.min(maxFactorW, maxFactorH)
 
     if (!isFinite(fMax) || fMax <= 0) {
       return 1
     }
 
-    // Немного ограничим безумный рост — как и раньше (до 5x)
-    fMax = Math.max(0.1, Math.min(5, fMax))
+    // Без искусственного потолка 5x — только реальный размер страницы
+    fMax = Math.max(0.1, fMax)
 
     return Math.min(desiredFactor, fMax)
   }
@@ -877,7 +859,7 @@ export class CustomCanvasEngine {
     const distStart = Math.hypot(startDoc.x - center.x, startDoc.y - center.y) || 1
     const distCur = Math.hypot(curDoc.x - center.x, curDoc.y - center.y) || 1
     let desired = distCur / distStart
-    desired = Math.max(0.1, Math.min(5, desired))
+    desired = Math.max(0.1, Math.min(50, desired))
 
     const factor = this._limitScaleFactorToPage(start, desired)
 
@@ -919,7 +901,6 @@ export class CustomCanvasEngine {
     )
 
     if (!ok) {
-      // запрет вращения дальше
       try { this.onLimit('rotate') } catch {}
       return
     }
