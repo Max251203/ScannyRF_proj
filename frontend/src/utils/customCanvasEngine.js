@@ -1001,6 +1001,8 @@ export class CustomCanvasEngine {
     const p2 = this._docToScreen(db.maxX, db.maxY)
 
     const effFontScale = s
+    const rawFontPx = Math.max(6, Number(ov.data?.fontSize || 48) * effFontScale)
+    const fontPx = Math.round(rawFontPx)
 
     return {
       cx: center.x,
@@ -1008,7 +1010,7 @@ export class CustomCanvasEngine {
       w: wLocal,
       h: hLocal,
       angleRad: ov.angleRad || 0,
-      fontSize: Math.max(6, Number(ov.data?.fontSize || 48) * effFontScale),
+      fontSize: fontPx,
       bbox: { x: p1.x, y: p1.y, w: p2.x - p1.x, h: p2.y - p1.y }
     }
   }

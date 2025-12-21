@@ -65,11 +65,19 @@ function setDraftHint (flag) {
  * Так мы максимально точно повторяем поведение браузера (line-box),
  * и рамка совпадает с текстом без артефактов.
  */
+/**
+ * Замер прямоугольника текста через скрытый DOM-элемент.
+ * ВАЖНО:
+ *  - высоту считаем по количеству строк (учитываем завершающий \n),
+ *    чтобы не "терять" пустую последнюю строку;
+ *  - ширину берём из реального DOM-замера браузера.
+ */
 function measureTextBoxDom (text, fontFamily, fontSize, fontWeight, fontStyle) {
   if (typeof document === 'undefined') {
     const size = fontSize || 48
-    return { width: size * 2, height: size }
+    return { width: size * 2, height: size * LH_FACTOR }
   }
+
   let el = measureTextBoxDom._el
   if (!el) {
     el = document.createElement('div')
@@ -86,16 +94,30 @@ function measureTextBoxDom (text, fontFamily, fontSize, fontWeight, fontStyle) {
     el.style.visibility = 'hidden'
     document.body.appendChild(el)
   }
+
   const size = fontSize || 48
   el.style.fontFamily = fontFamily || 'Arial'
   el.style.fontSize = `${size}px`
   el.style.fontWeight = fontWeight || 'normal'
   el.style.fontStyle = fontStyle || 'normal'
   el.textContent = text || ''
+
   const rect = el.getBoundingClientRect()
+
+  // Кол-во строк с учётом завершающего перевода строки
+  const str = text || ''
+  let lines = str.split('\n')
+  if (str.endsWith('\n')) {
+    lines = [...lines, '']
+  }
+  const lineCount = Math.max(1, lines.length)
+
+  const logicalHeight = lineCount * size * LH_FACTOR
+
   return {
     width: rect.width || size * 2,
-    height: rect.height || size * LH_FACTOR
+    // Берём максимум из DOM-замера и «логической» высоты по строкам
+    height: Math.max(rect.height || size * LH_FACTOR, logicalHeight)
   }
 }
 
@@ -134,6 +156,7 @@ function loadImageEl (src) {
 }
 
 // Построение стиля HTML-слоя текста (и просмотр, и редактирование)
+// Построение стиля HTML-слоя текста (и просмотр, и редактирование)
 function buildTextOverlayStyle (rc, ov, canvasEl, editable = false) {
   if (!rc || !ov) return null
 
@@ -144,22 +167,24 @@ function buildTextOverlayStyle (rc, ov, canvasEl, editable = false) {
     offY = canvasEl.offsetTop || 0
   }
 
-  const leftPx = (rc.cx || 0) + offX
-  const topPx = (rc.cy || 0) + offY
+  // Округляем к целым пикселям, чтобы текст и каретка не попадали "между пикселями"
+  const leftPx = Math.round((rc.cx || 0) + offX)
+  const topPx = Math.round((rc.cy || 0) + offY)
 
-  const screenW = Number(rc.w || ov.w || 40)
-  const screenH = Number(rc.h || ov.h || 30)
-  const fontSize = Math.max(6, Number(rc.fontSize || ov.data?.fontSize || 48))
+  const screenW = Math.max(1, Math.round(Number(rc.w || ov.w || 40)))
+  const screenH = Math.max(1, Math.round(Number(rc.h || ov.h || 30)))
+  const fontSizePx = Math.max(6, Number(rc.fontSize || ov.data?.fontSize || 48))
+  const fontSize = Math.round(fontSizePx)
   const angleDeg = (rc.angleRad || 0) * 180 / Math.PI
 
   const d = ov.data || {}
 
   const base = {
     position: 'absolute',
-    left: `${leftPx.toFixed(2)}px`,
-    top: `${topPx.toFixed(2)}px`,
-    width: `${screenW.toFixed(2)}px`,
-    height: `${screenH.toFixed(2)}px`,
+    left: `${leftPx}px`,
+    top: `${topPx}px`,
+    width: `${screenW}px`,
+    height: `${screenH}px`,
 
     transform: `translate3d(-50%, -50%, 0) rotate(${angleDeg}deg)`,
     transformOrigin: 'center center',
@@ -167,7 +192,7 @@ function buildTextOverlayStyle (rc, ov, canvasEl, editable = false) {
     backfaceVisibility: 'hidden',
 
     fontFamily: d.fontFamily || 'Arial',
-    fontSize: `${fontSize.toFixed(2)}px`,
+    fontSize: `${fontSize}px`,
     fontWeight: d.fontWeight || 'bold',
     fontStyle: d.fontStyle || 'normal',
     color: d.fill || '#000000',
@@ -185,7 +210,7 @@ function buildTextOverlayStyle (rc, ov, canvasEl, editable = false) {
     letterSpacing: 'normal',
 
     whiteSpace: 'pre',
-    overflow: 'hidden',
+    overflow: 'hidden', // как было у тебя — без лишних скроллов
 
     display: 'block',
     boxSizing: 'border-box',
