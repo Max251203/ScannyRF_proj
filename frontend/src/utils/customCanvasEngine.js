@@ -80,7 +80,7 @@ export class CustomCanvasEngine {
     this.onTextEditRequest = opts.onTextEditRequest || (() => {})
     this.onBlankClick = opts.onBlankClick || (() => {})
     this.onInteractionEnd = opts.onInteractionEnd || (() => {})
-    this.onLimit = opts.onLimit || (() => {}) // <- новый колбэк для ошибок ограничений
+    this.onLimit = opts.onLimit || (() => {}) // колбэк при достижении ограничения
 
     this.docWidth = 1000
     this.docHeight = 1414
@@ -167,7 +167,10 @@ export class CustomCanvasEngine {
     return this._getOverlayDocBounds(ov)
   }
 
-  // Мягкое ограничение: учитываем 4 угла и возможность сдвига центра.
+  /**
+   * Мягкое ограничение: учитываем 4 угла и возможность сдвига центра.
+   * Используется извне (Editor.jsx) и внутри движка при повороте.
+   */
   clampOverlayToPage (ov, docW, docH, rotation = 0) {
     const safe = { ...ov, data: { ...(ov?.data || {}) } }
     if (safe?.type === 'text') normalizeTextOverlay(safe)
@@ -203,6 +206,56 @@ export class CustomCanvasEngine {
       b1.maxY <= rect.bottom + eps
 
     return { ok, overlay: safe }
+  }
+
+  /**
+   * Ограничивает коэффициент масштабирования так, чтобы объект оставался
+   * внутри страницы. Работает в экранных координатах, учитывая текущий
+   * поворот и трансформацию документа.
+   */
+  _limitScaleFactorToPage (startOverlay, desiredFactor) {
+    // Уменьшать объект можно свободно — ограничиваем только рост
+    if (desiredFactor <= 1) return desiredFactor
+
+    const pageRect = this.getDocumentScreenRect()
+    if (!pageRect) return desiredFactor
+
+    const screenInfo = this._getOverlayScreenBounds(startOverlay)
+    if (!screenInfo || !screenInfo.bbox) return desiredFactor
+
+    const { bbox, cx, cy } = screenInfo
+    const halfW = bbox.w / 2
+    const halfH = bbox.h / 2
+    if (!halfW || !halfH) return desiredFactor
+
+    const left = pageRect.x
+    const right = pageRect.x + pageRect.width
+    const top = pageRect.y
+    const bottom = pageRect.y + pageRect.height
+
+    const spaceLeft = cx - left
+    const spaceRight = right - cx
+    const spaceTop = cy - top
+    const spaceBottom = bottom - cy
+
+    // Если центр вообще вне страницы — не даём увеличиваться
+    if (spaceLeft <= 0 || spaceRight <= 0 || spaceTop <= 0 || spaceBottom <= 0) {
+      return 1
+    }
+
+    const maxFactorX = Math.min(spaceLeft, spaceRight) / halfW
+    const maxFactorY = Math.min(spaceTop, spaceBottom) / halfH
+
+    let fMax = Math.min(maxFactorX, maxFactorY)
+
+    if (!isFinite(fMax) || fMax <= 0) {
+      return 1
+    }
+
+    // Немного ограничим безумный рост — как и раньше (до 5x)
+    fMax = Math.max(0.1, Math.min(5, fMax))
+
+    return Math.min(desiredFactor, fMax)
   }
 
   // ---------------------------------------------------------------------------
@@ -875,51 +928,6 @@ export class CustomCanvasEngine {
     ov.cx = overlay.cx
     ov.cy = overlay.cy
     this.dragState.lastOverlay = cloneOverlay(overlay)
-  }
-
-  // Ограничение scale: проверяем через clampOverlayToPage (разрешаем расти в другую сторону)
-  _limitScaleFactorToPage (startOverlay, desiredFactor) {
-    if (desiredFactor <= 1) return desiredFactor
-
-    const fits = (f) => {
-      const sim = { ...startOverlay, data: { ...(startOverlay.data || {}) } }
-      if (sim.type === 'text') {
-        const d = sim.data || (sim.data = {})
-        const fs0 = Number(d.fontSize || 48)
-        const fs1 = Math.max(6, Math.round(fs0 * f))
-        const real = fs0 ? (fs1 / fs0) : f
-        d.fontSize = fs1
-        sim.w = Math.max(1, Number(sim.w || 1) * real)
-        sim.h = Math.max(1, Number(sim.h || 1) * real)
-        sim.scaleX = 1
-        sim.scaleY = 1
-      } else {
-        sim.scaleX = (sim.scaleX || 1) * f
-        sim.scaleY = (sim.scaleY || 1) * f
-      }
-
-      const { ok } = this.clampOverlayToPage(
-        sim,
-        this.docWidth,
-        this.docHeight,
-        this.rotation
-      )
-      return ok
-    }
-
-    if (fits(desiredFactor)) return desiredFactor
-
-    let lo = 0.1
-    let hi = desiredFactor
-    for (let i = 0; i < 18; i++) {
-      const mid = (lo + hi) / 2
-      if (fits(mid)) lo = mid
-      else hi = mid
-    }
-
-    // если даже 0.1 не помещается — просто ограничиваем рост
-    if (!fits(lo)) return 1
-    return Math.max(0.1, Math.min(desiredFactor, lo))
   }
 
   // ---------------------------------------------------------------------------

@@ -62,20 +62,25 @@ function setDraftHint (flag) {
 
 /**
  * Замер прямоугольника текста через скрытый DOM-элемент.
- * Так мы максимально точно повторяем поведение браузера (line-box),
- * и рамка совпадает с текстом без артефактов.
- */
-/**
- * Замер прямоугольника текста через скрытый DOM-элемент.
  * ВАЖНО:
  *  - высоту считаем по количеству строк (учитываем завершающий \n),
  *    чтобы не "терять" пустую последнюю строку;
- *  - ширину берём из реального DOM-замера браузера.
+ *  - ширину берём из реального DOM-замера браузера;
+ *  - добавляем минимальные «подушки» по краям, чтобы рамка не подрезала буквы.
  */
 function measureTextBoxDom (text, fontFamily, fontSize, fontWeight, fontStyle) {
+  const size = fontSize || 48
+
+  // SSR / тесты без DOM — возвращаем приближённые размеры с маленьким запасом
   if (typeof document === 'undefined') {
-    const size = fontSize || 48
-    return { width: size * 2, height: size * LH_FACTOR }
+    const padY = Math.max(2, Math.round(size * 0.1))
+    const padX = Math.max(1, Math.round(size * 0.04))
+    const baseH = size * LH_FACTOR
+    const baseW = size * 2
+    return {
+      width: baseW + padX * 2,
+      height: baseH + padY * 2
+    }
   }
 
   let el = measureTextBoxDom._el
@@ -95,7 +100,6 @@ function measureTextBoxDom (text, fontFamily, fontSize, fontWeight, fontStyle) {
     document.body.appendChild(el)
   }
 
-  const size = fontSize || 48
   el.style.fontFamily = fontFamily || 'Arial'
   el.style.fontSize = `${size}px`
   el.style.fontWeight = fontWeight || 'normal'
@@ -112,12 +116,19 @@ function measureTextBoxDom (text, fontFamily, fontSize, fontWeight, fontStyle) {
   }
   const lineCount = Math.max(1, lines.length)
 
-  const logicalHeight = lineCount * size * LH_FACTOR
+  const baseLineHeight = size * LH_FACTOR
+  const baseWidth = rect.width || size * 2
+  const logicalHeight = lineCount * baseLineHeight
+  const baseHeight = Math.max(rect.height || baseLineHeight, logicalHeight)
+
+  // Небольшие симметричные «подушки», чтобы рамка не подрезала хвосты
+  // и последнюю букву справа, но визуально оставалась максимально плотной.
+  const padY = Math.max(2, Math.round(size * 0.1))   // ~10% от fontSize, минимум 2px
+  const padX = Math.max(1, Math.round(size * 0.04))  // ~4% от fontSize, минимум 1px
 
   return {
-    width: rect.width || size * 2,
-    // Берём максимум из DOM-замера и «логической» высоты по строкам
-    height: Math.max(rect.height || size * LH_FACTOR, logicalHeight)
+    width: baseWidth + padX * 2,
+    height: baseHeight + padY * 2
   }
 }
 
@@ -155,7 +166,6 @@ function loadImageEl (src) {
   })
 }
 
-// Построение стиля HTML-слоя текста (и просмотр, и редактирование)
 // Построение стиля HTML-слоя текста (и просмотр, и редактирование)
 function buildTextOverlayStyle (rc, ov, canvasEl, editable = false) {
   if (!rc || !ov) return null
