@@ -32,7 +32,7 @@ export PYTHONPATH="$(pwd)"
 python backend/manage.py collectstatic --noinput --clear
 
 # Если хотите выполнять миграции на стадии build локально — раскомментируйте:
-# python backend/manage.py migrate
-# python backend/create_superuser.py
+python backend/manage.py migrate
+python backend/create_superuser.py
 
 echo "Build completed."
