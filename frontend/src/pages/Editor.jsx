@@ -1,6 +1,7 @@
 // frontend/src/pages/Editor.jsx
 
 import { useEffect, useRef, useState, useCallback } from 'react'
+import { useLocation } from 'react-router-dom'
 import { toast } from '../components/Toast.jsx'
 import { AuthAPI } from '../api'
 import {
@@ -37,7 +38,8 @@ import plan1 from '../assets/images/один документ.png'
 import plan2 from '../assets/images/безлимит.png'
 import plan3 from '../assets/images/безлимит про.png'
 
-const ACCEPT_DOC = '.jpg,.jpeg,.png,.pdf,.doc,.docx,.xls,.xlsx'
+// УБРАЛИ .doc — поддерживаем только .docx
+const ACCEPT_DOC = '.jpg,.jpeg,.png,.pdf,.docx,.xls,.xlsx'
 const FONTS = ['Arial', 'Times New Roman', 'Ermilov', 'Segoe UI', 'Roboto', 'Georgia']
 const PDF_RENDER_SCALE = 3.0
 const RASTER_RENDER_SCALE = 3.0
@@ -459,7 +461,9 @@ export default function Editor () {
   const [cropKind, setCropKind] = useState('signature')
   const [cropThresh, setCropThresh] = useState(40)
 
-  const [plan, setPlan] = useState('month')
+  const loc = useLocation()
+  const [plan, setPlan] = useState('single')
+  const [entryPlan, setEntryPlan] = useState('single')
   const [promo, setPromo] = useState('')
   const [promoError, setPromoError] = useState('')
   const [prices, setPrices] = useState({ single: 0, month: 0, year: 0 })
@@ -505,6 +509,18 @@ export default function Editor () {
 
   const saveTimerRef = useRef(0)
   const dragFromTextareaRef = useRef({ active: false, started: false, pointerId: null, startX: 0, startY: 0 })
+
+  useEffect(() => {
+    const p = loc.state && loc.state.plan
+    if (p && ['single', 'month', 'year'].includes(p)) {
+      setPlan(p)
+      setEntryPlan(p)
+    } else {
+      setPlan('single')
+      setEntryPlan('single')
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   useEffect(() => { pagesRef.current = pages }, [pages])
   useEffect(() => { curRef.current = cur }, [cur])
@@ -1225,7 +1241,8 @@ export default function Editor () {
           const pdf = await pdfjsLib.getDocument({ data: await f.arrayBuffer() }).promise
           total += pdf.numPages || 1
         } catch { total += 1 }
-      } else if (['docx', 'doc', 'xls', 'xlsx'].includes(ext)) {
+      // DOCX и таблицы — считаем как 2 условные страницы
+      } else if (['docx', 'xls', 'xlsx'].includes(ext)) {
         total += 2
       } else {
         total += 1
@@ -1296,7 +1313,8 @@ export default function Editor () {
             })
             addedPages++; tick(1)
           }
-        } else if (['docx', 'doc'].includes(ext)) {
+        // DOCX: обрабатываем как раньше
+        } else if (ext === 'docx') {
           const big = await renderDOCXToCanvas(f)
           const slices = sliceCanvasToPages(big)
           for (const url of slices) {
@@ -1313,6 +1331,7 @@ export default function Editor () {
             addedPages++
           }
           tick(2)
+        // XLS / XLSX
         } else if (['xls', 'xlsx'].includes(ext)) {
           const big = await renderXLSXToCanvas(f)
           const slices = sliceCanvasToPages(big)
@@ -1330,6 +1349,10 @@ export default function Editor () {
             addedPages++
           }
           tick(2)
+        // НОВОЕ: .doc — устаревший и не поддерживается
+        } else if (ext === 'doc') {
+          toast('Формат .doc устарел и не поддерживается. Пожалуйста, сохраните документ в формате .docx и загрузите его снова.', 'error')
+          tick(1)
         } else {
           toast(`Формат не поддерживается: ${ext}`, 'error')
           tick(1)
@@ -1347,7 +1370,9 @@ export default function Editor () {
         } catch {}
       }
 
-      toast('Страницы добавлены', 'success')
+      if (addedPages > 0) {
+        toast('Страницы добавлены', 'success')
+      }
       forceLayoutSyncRef.current?.()
     } catch (e) {
       console.error(e)
@@ -1733,7 +1758,7 @@ export default function Editor () {
       const bn = baseName()
       if (!bn) return
       const count = pagesRef.current.length
-      if ((billing?.free_left ?? 0) < count) { setPlan('single'); setPayOpen(true); return }
+      if ((billing?.free_left ?? 0) < count) { setPlan(entryPlan); setPayOpen(true); return }
 
       setProgress({
         active: true,
@@ -1793,7 +1818,7 @@ export default function Editor () {
       const bn = baseName()
       if (!bn) return
       const count = pagesRef.current.length
-      if ((billing?.free_left ?? 0) < count) { setPlan('single'); setPayOpen(true); return }
+      if ((billing?.free_left ?? 0) < count) { setPlan(entryPlan); setPayOpen(true); return }
 
       setProgress({
         active: true,
@@ -2312,7 +2337,7 @@ export default function Editor () {
                 <img src={icDocAdd} alt="" style={{ width: 140, height: 'auto', opacity: 0.9 }} />
                 <div className="dz-title">Загрузите документы</div>
                 <div className="dz-sub">Можно перетащить их в это поле</div>
-                <div className="dz-types">JPG, JPEG, PNG, PDF, DOC, DOCX, XLS, XLSX</div>
+                <div className="dz-types">JPG, JPEG, PNG, PDF, DOCX, XLS, XLSX</div>
               </div>
             )}
           </div>
@@ -2387,14 +2412,14 @@ export default function Editor () {
               <button
                 className={`btn ${(!pagesRef.current.length) ? 'disabled' : ''}`}
                 onMouseDown={e => e.preventDefault()}
-                onClick={() => { if (pagesRef.current.length) { setPlan('single'); setPayOpen(true) } }}
+                onClick={() => { if (pagesRef.current.length) { setPlan(entryPlan); setPayOpen(true) } }}
               >
                 <img src={icJpgPaid} alt="" style={{ width: 18, height: 18, marginRight: 8 }} />JPG
               </button>
               <button
                 className={`btn ${(!pagesRef.current.length) ? 'disabled' : ''}`}
                 onMouseDown={e => e.preventDefault()}
-                onClick={() => { if (pagesRef.current.length) { setPlan('single'); setPayOpen(true) } }}
+                onClick={() => { if (pagesRef.current.length) { setPlan(entryPlan); setPayOpen(true) } }}
               >
                 <img src={icPdfPaid} alt="" style={{ width: 18, height: 18, marginRight: 10 }} />PDF
               </button>
@@ -2521,7 +2546,7 @@ export default function Editor () {
             onClick={() => {
               if (pagesRef.current.length) {
                 closeMenus()
-                setPlan('single')
+                setPlan(entryPlan); 
                 setPayOpen(true)
               }
             }}
@@ -2536,7 +2561,7 @@ export default function Editor () {
             onClick={() => {
               if (pagesRef.current.length) {
                 closeMenus()
-                setPlan('single')
+                setPlan(entryPlan); 
                 setPayOpen(true)
               }
             }}

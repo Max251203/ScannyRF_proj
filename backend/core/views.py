@@ -1,3 +1,7 @@
+import os
+from decimal import Decimal
+from django.conf import settings
+from yookassa import Configuration, Payment
 import time
 import base64
 import copy
@@ -476,17 +480,92 @@ class HideDefaultSignView(APIView):
     
 # ---------- Платежи (заглушка-редирект) ----------
 class PaymentCreateView(APIView):
+    """
+    Создание платежа в ЮKassa и возврат URL для редиректа.
+    Пока только создаём платёж, не меняем подписки (для этого нужен webhook).
+    """
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
-        plan = (request.data.get('plan') or 'single')
+        plan = (request.data.get('plan') or 'single').strip()
         promo = (request.data.get('promo') or '').strip()
-        percent = 0
+
+        # ---- 1. Определяем базовую цену из BillingConfig ----
+        cfg, _ = BillingConfig.objects.get_or_create(pk=1, defaults={
+            'free_daily_quota': 3,
+            'draft_ttl_hours': 24,
+            'price_single': 99,
+            'price_month': 399,
+            'price_year': 3999,
+        })
+
+        if plan == 'single':
+            base_price = int(cfg.price_single or 0)
+        elif plan == 'month':
+            base_price = int(cfg.price_month or 0)
+        elif plan == 'year':
+            base_price = int(cfg.price_year or 0)
+        else:
+            return Response({'detail': 'Неизвестный план'}, status=400)
+
+        if base_price <= 0:
+            return Response({'detail': 'Цена для выбранного плана не задана'}, status=400)
+
+        price = Decimal(str(base_price))
+        discount_percent = 0
+
+        # ---- 2. Применяем промокод, если есть ----
         if promo:
             pr = PromoCode.objects.filter(code__iexact=promo, active=True).first()
-            percent = pr.discount_percent if pr else 0
-        url = f'https://example.com/pay?plan={plan}&uid={request.user.id}&discount={percent}'
-        return Response({'url': url})
+            if pr:
+                discount_percent = int(pr.discount_percent or 0)
+                if discount_percent > 0:
+                    price = price * (Decimal('100') - Decimal(discount_percent)) / Decimal('100')
+
+        # Округляем до копеек
+        price = price.quantize(Decimal('0.01'))
+        if price <= 0:
+            return Response({'detail': 'Итоговая сумма должна быть больше 0'}, status=400)
+
+        # ---- 3. Настройки ЮKassa ----
+        shop_id = os.environ.get('YOOKASSA_SHOP_ID') or getattr(settings, 'YOOKASSA_SHOP_ID', '')
+        secret_key = os.environ.get('YOOKASSA_SECRET_KEY') or getattr(settings, 'YOOKASSA_SECRET_KEY', '')
+        return_url = os.environ.get('YOOKASSA_RETURN_URL') or getattr(settings, 'YOOKASSA_RETURN_URL', '')
+
+        if not shop_id or not secret_key:
+            # Если ЮKassa не настроена — возвращаем заглушку, чтобы не ломать фронт
+            url = f'https://example.com/pay?plan={plan}&uid={request.user.id}&discount={discount_percent}'
+            return Response({'url': url})
+
+        Configuration.account_id = shop_id
+        Configuration.secret_key = secret_key
+
+        # Если return_url не задан в настройках — по умолчанию ведём в профиль
+        if not return_url:
+            return_url = request.build_absolute_uri('/#/profile').replace('http://', 'https://')
+
+        try:
+            payment = Payment.create({
+                "amount": {
+                    "value": str(price),      # в рублях, с точкой, например "399.00"
+                    "currency": "RUB",
+                },
+                "confirmation": {
+                    "type": "redirect",
+                    "return_url": return_url,
+                },
+                "capture": True,
+                "description": f"Сканни.рф — тариф {plan} для пользователя #{request.user.id}",
+                "metadata": {
+                    "user_id": request.user.id,
+                    "plan": plan,
+                    "promo": promo,
+                    "discount_percent": discount_percent,
+                },
+            })
+            return Response({"url": payment.confirmation.confirmation_url})
+        except Exception as e:
+            return Response({'detail': f'Ошибка ЮKassa: {e}'}, status=500)
 
 
 # ---------- История загрузок документов ----------

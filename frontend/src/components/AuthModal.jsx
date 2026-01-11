@@ -12,7 +12,7 @@ import iconG from '../assets/icons/social-google.png'
 
 const emailRx = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
-function PasswordField({ value, onChange, placeholder, id }) {
+function PasswordField({ value, onChange, placeholder, id, onKeyDown }) {
   const [show, setShow] = useState(false)
   return (
     <div className="input-wrap pw-wrap">
@@ -22,6 +22,7 @@ function PasswordField({ value, onChange, placeholder, id }) {
         placeholder={placeholder}
         value={value}
         onChange={onChange}
+        onKeyDown={onKeyDown}
       />
       <button
         type="button"
@@ -52,10 +53,57 @@ export default function AuthModal({ open, onClose, onSuccess }) {
   const fileRef = useRef(null)
 
   useEffect(() => { if (!open) reset() }, [open])
+
   const reset = () => {
     setMode('login'); setOk(false); setLoading(false); setError('');
     setIdn(''); setPwd(''); setEmail(''); setUsername(''); setRpwd('');
     setAvatar(null); if (fileRef.current) fileRef.current.value = ''
+  }
+
+  // --- ВХОД ПО ENTER ---
+
+  const submitLogin = async () => {
+    if (!canLogin) return
+    try {
+      setLoading(true); setError('')
+      const u = await AuthAPI.login(idn.trim(), pwd)
+      window.dispatchEvent(new CustomEvent('user:update', { detail: u }))
+      onSuccess?.(u); onClose?.()
+    } catch (e) { setError(e.message) } finally { setLoading(false) }
+  }
+
+  const submitRegister = async () => {
+    if (!canRegister) {
+      if (!ok) setError('Подтвердите условия соглашения')
+      else if (!emailRx.test(email.trim())) setError('Введите корректный e‑mail')
+      else if (rpwd.trim().length < 6) setError('Пароль должен быть не менее 6 символов')
+      return
+    }
+    try {
+      setLoading(true); setError('')
+      let u = await AuthAPI.register(email.trim(), username.trim(), rpwd)
+      if (avatar) {
+        const fd = new FormData(); fd.append('avatar', avatar)
+        const u2 = await AuthAPI.updateProfile(fd)
+        if (u2) u = u2
+      }
+      window.dispatchEvent(new CustomEvent('user:update', { detail: u }))
+      onSuccess?.(u); onClose?.()
+    } catch (e) { setError(e.message) } finally { setLoading(false) }
+  }
+
+  const handleLoginKeyDown = (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      submitLogin()
+    }
+  }
+
+  const handleRegisterKeyDown = (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      submitRegister()
+    }
   }
 
   // Слушатель ответов от popup (Google/FB/VK)
@@ -101,7 +149,9 @@ export default function AuthModal({ open, onClose, onSuccess }) {
     if (!clientId) {
       setError('Отсутствуют данные Google'); toast('Укажите VITE_GOOGLE_CLIENT_ID в .env фронта','error'); return
     }
-    const redirectUri = (import.meta.env.VITE_GOOGLE_REDIRECT || (location.origin + '/')).replace(/#.*$/,'')
+    // Унифицированный redirect для всех провайдеров: /#/oauth
+    const redirectUri = (import.meta.env.VITE_OAUTH_REDIRECT || (location.origin + '/oauth'))
+
     const nonceBytes = new Uint8Array(16); crypto.getRandomValues(nonceBytes)
     const nonce = Array.from(nonceBytes).map(b=>b.toString(16).padStart(2,'0')).join('')
     const url =
@@ -118,7 +168,7 @@ export default function AuthModal({ open, onClose, onSuccess }) {
 
   const openFacebook = () => {
     const appId = import.meta.env.VITE_FB_APP_ID
-    const redirect = (import.meta.env.VITE_OAUTH_REDIRECT || (location.origin + '/#/oauth'))
+    const redirect = (import.meta.env.VITE_OAUTH_REDIRECT || (location.origin + '/oauth'))
     if (!appId) { setError('Не указан VITE_FB_APP_ID'); toast('Не указан VITE_FB_APP_ID','error'); return }
     const url =
       'https://www.facebook.com/v11.0/dialog/oauth' +
@@ -131,7 +181,7 @@ export default function AuthModal({ open, onClose, onSuccess }) {
 
   const openVK = () => {
     const appId = import.meta.env.VITE_VK_APP_ID
-    const redirect = (import.meta.env.VITE_OAUTH_REDIRECT || (location.origin + '/#/oauth'))
+    const redirect = (import.meta.env.VITE_OAUTH_REDIRECT || (location.origin + '/oauth'))
     if (!appId) { setError('Не указан VITE_VK_APP_ID'); toast('Не указан VITE_VK_APP_ID','error'); return }
     const url =
       'https://oauth.vk.com/authorize' +
@@ -145,38 +195,8 @@ export default function AuthModal({ open, onClose, onSuccess }) {
   const canLogin = idn.trim().length > 0 && pwd.trim().length >= 1 && !loading
   const canRegister = ok && emailRx.test(email.trim()) && rpwd.trim().length >= 6 && !loading
 
-  const submitLogin = async () => {
-    if (!canLogin) return
-    try {
-      setLoading(true); setError('')
-      const u = await AuthAPI.login(idn.trim(), pwd)
-      window.dispatchEvent(new CustomEvent('user:update', { detail: u }))
-      onSuccess?.(u); onClose?.()
-    } catch (e) { setError(e.message) } finally { setLoading(false) }
-  }
-
   const onPickAvatar = (e) => { const f = e.target.files?.[0] || null; setAvatar(f); e.target.value = '' }
   const clearAvatar = () => { setAvatar(null); if (fileRef.current) fileRef.current.value = '' }
-
-  const submitRegister = async () => {
-    if (!canRegister) {
-      if (!ok) setError('Подтвердите условия соглашения')
-      else if (!emailRx.test(email.trim())) setError('Введите корректный e‑mail')
-      else if (rpwd.trim().length < 6) setError('Пароль должен быть не менее 6 символов')
-      return
-    }
-    try {
-      setLoading(true); setError('')
-      let u = await AuthAPI.register(email.trim(), username.trim(), rpwd)
-      if (avatar) {
-        const fd = new FormData(); fd.append('avatar', avatar)
-        const u2 = await AuthAPI.updateProfile(fd)
-        if (u2) u = u2
-      }
-      window.dispatchEvent(new CustomEvent('user:update', { detail: u }))
-      onSuccess?.(u); onClose?.()
-    } catch (e) { setError(e.message) } finally { setLoading(false) }
-  }
 
   if (!open) return null
 
@@ -188,8 +208,23 @@ export default function AuthModal({ open, onClose, onSuccess }) {
 
         {mode === 'login' ? (
           <>
-            <div className="form-row"><input placeholder="Логин или e‑mail" value={idn} onChange={e => setIdn(e.target.value)} /></div>
-            <div className="form-row"><PasswordField id="login-password" placeholder="Пароль" value={pwd} onChange={e => setPwd(e.target.value)} /></div>
+            <div className="form-row">
+              <input
+                placeholder="Логин или e‑mail"
+                value={idn}
+                onChange={e => setIdn(e.target.value)}
+                onKeyDown={handleLoginKeyDown}
+              />
+            </div>
+            <div className="form-row">
+              <PasswordField
+                id="login-password"
+                placeholder="Пароль"
+                value={pwd}
+                onChange={e => setPwd(e.target.value)}
+                onKeyDown={handleLoginKeyDown}
+              />
+            </div>
 
             {error && <div className="form-row form-error">{error}</div>}
 
@@ -218,15 +253,40 @@ export default function AuthModal({ open, onClose, onSuccess }) {
                 </div>
               )}
             </div>
-            
-            <div className="form-row"><input placeholder="E‑mail" value={email} onChange={e => setEmail(e.target.value)} /></div>
-            <div className="form-row"><input placeholder="Логин (необязательно)" value={username} onChange={e => setUsername(e.target.value)} /></div>
-            <div className="form-row"><PasswordField id="reg-password" placeholder="Пароль (мин. 6 символов)" value={rpwd} onChange={e => setRpwd(e.target.value)} /></div>
+
+            <div className="form-row">
+              <input
+                placeholder="E‑mail"
+                value={email}
+                onChange={e => setEmail(e.target.value)}
+                onKeyDown={handleRegisterKeyDown}
+              />
+            </div>
+            <div className="form-row">
+              <input
+                placeholder="Логин (необязательно)"
+                value={username}
+                onChange={e => setUsername(e.target.value)}
+                onKeyDown={handleRegisterKeyDown}
+              />
+            </div>
+            <div className="form-row">
+              <PasswordField
+                id="reg-password"
+                placeholder="Пароль (мин. 6 символов)"
+                value={rpwd}
+                onChange={e => setRpwd(e.target.value)}
+                onKeyDown={handleRegisterKeyDown}
+              />
+            </div>
 
             <div className="form-row agree">
               <label className="agree-line">
                 <input type="checkbox" checked={ok} onChange={e => setOk(e.target.checked)} />
-                <span className="agree-text">Принимаю условия <Link to="/terms" onClick={onClose}>Пользовательского соглашения</Link> и <Link to="/privacy" onClick={onClose}>Политики конфиденциальности</Link></span>
+                <span className="agree-text">
+                  Принимаю условия <Link to="/terms" onClick={onClose}>Пользовательского соглашения</Link> и{' '}
+                  <Link to="/privacy" onClick={onClose}>Политики конфиденциальности</Link>
+                </span>
               </label>
             </div>
 

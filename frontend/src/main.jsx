@@ -1,15 +1,15 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
-import { HashRouter } from 'react-router-dom'
+import { BrowserRouter } from 'react-router-dom'
 import App from './App.jsx'
 import './styles/main.css'
 import { AuthAPI } from './api'
 
 // Монтируем приложение сразу (без "прогрева" библиотек)
 ReactDOM.createRoot(document.getElementById('root')).render(
-  <HashRouter>
+  <BrowserRouter>
     <App />
-  </HashRouter>
+  </BrowserRouter>
 )
 
 // Тихое восстановление сессии в фоне (без блокировки UI)

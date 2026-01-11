@@ -261,6 +261,7 @@ class VkAuthView(APIView):
 # Админ — CRUD пользователей
 class AdminUsersListCreate(APIView):
     permission_classes = [permissions.IsAdminUser]
+
     def get(self, request):
         qs = User.objects.all().order_by('id')
         return Response([UserSerializer(u).data for u in qs])
@@ -268,16 +269,22 @@ class AdminUsersListCreate(APIView):
     def post(self, request):
         email = (request.data.get('email') or '').strip().lower()
         username = (request.data.get('username') or '').strip() or ensure_username(email)
-        password = request.data.get('password') or ''
+        password = (request.data.get('password') or '').strip()
+
         if not email:
-            return Response({'detail':'email обязателен'}, status=400)
+            return Response({'detail': 'email обязателен'}, status=400)
 
         if User.objects.filter(Q(email__iexact=email) | Q(username__iexact=username)).exists():
-            return Response({'detail':'Пользователь уже существует (email или логин)'}, status=400)
+            return Response({'detail': 'Пользователь уже существует (email или логин)'}, status=400)
+
+        # Пароль обязателен и не меньше 6 символов
+        if not password:
+            return Response({'detail': 'Пароль обязателен'}, status=400)
+        if len(password) < 6:
+            return Response({'detail': 'Пароль должен быть не менее 6 символов'}, status=400)
 
         u = User.objects.create(username=username, email=email, is_staff=False)
-        if password: u.set_password(password)
-        else: u.set_unusable_password()
+        u.set_password(password)
 
         if request.data.get('remove_avatar'):
             u.avatar_bin = None; u.avatar_mime = None
@@ -308,8 +315,12 @@ class AdminUserDetail(APIView):
 
         u.email = email
         u.username = username
-        if request.data.get('password'):
-            u.set_password(request.data['password'])
+
+        pwd = (request.data.get('password') or '').strip()
+        if pwd:
+            if len(pwd) < 6:
+                return Response({'detail': 'Пароль должен быть не менее 6 символов'}, status=400)
+            u.set_password(pwd)
 
         if request.data.get('remove_avatar'):
             u.avatar_bin = None; u.avatar_mime = None

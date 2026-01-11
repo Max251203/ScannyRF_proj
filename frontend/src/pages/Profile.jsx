@@ -6,6 +6,7 @@ import UserModal from '../components/UserModal.jsx'
 import eyeOpen from '../assets/icons/eye-open.png'
 import eyeClosed from '../assets/icons/eye-closed.png'
 import CropModal from '../components/CropModal.jsx'
+import icClose from '../assets/icons/x-close.svg'
 
 function PasswordField({ value, onChange, placeholder, id }) {
   const [show, setShow] = useState(false)
@@ -549,7 +550,6 @@ function DefaultSignsAdmin(){
   const [loading, setLoading] = useState(false)
   const fileRef = useRef(null)
 
-  // Кроп модалка (общая)
   const [cropOpen, setCropOpen] = useState(false)
   const [cropSrc, setCropSrc] = useState('')
   const [cropKind, setCropKind] = useState('signature')
@@ -613,7 +613,13 @@ function DefaultSignsAdmin(){
         {list.map(it=>(
           <div key={it.id} className="thumb">
             <img src={it.url} alt="" style={{width:'100%',height:'100%',objectFit:'contain'}}/>
-            <button className="thumb-x" onClick={()=>del(it)}>×</button>
+            <button
+              className="thumb-x x-btn x-btn--small"
+              onClick={() => del(it)}
+              title="Удалить"
+            >
+              <img src={icClose} alt="Удалить" />
+            </button>
           </div>
         ))}
         {list.length===0 && !loading && <div style={{gridColumn:'1 / -1',opacity:.7}}>Пока пусто</div>}

@@ -86,7 +86,7 @@ export default function Header() {
   return (
     <header className="site-header" id="top">
       <div className="container header-inner">
-        <a className="logo-wrap" href="/#/" onClick={(e)=>{e.preventDefault(); setMenuOpen(false); nav('/') }}>
+        <a className="logo-wrap" href="/" onClick={(e)=>{e.preventDefault(); setMenuOpen(false); nav('/') }}>
           <img src={logo} alt="" /><span>СКАННИ.РФ</span>
         </a>
 

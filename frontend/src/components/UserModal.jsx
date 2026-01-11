@@ -64,14 +64,34 @@ export default function UserModal({ open, onClose, initialUser=null, onSaved }) 
   }
 
   const save = async () => {
-    if (!email.trim()) { toast('Укажите e‑mail','error'); return }
+    const emailTrim = (email || '').trim()
+    const usernameTrim = (username || '').trim()
+    const pwd = password || ''
+
+    if (!emailTrim) {
+      toast('Укажите e‑mail', 'error')
+      return
+    }
+
+    // При создании пользователя пароль обязателен
+    if (!isEdit && !pwd) {
+      toast('Укажите пароль', 'error')
+      return
+    }
+
+    // Если пароль введён (и при создании, и при редактировании) — валидируем длину
+    if (pwd && pwd.length < 6) {
+      toast('Пароль должен быть не менее 6 символов', 'error')
+      return
+    }
+
     try {
       setLoading(true)
 
       const fd = new FormData()
-      fd.append('email', email.trim())
-      fd.append('username', (username || '').trim())
-      if (password) fd.append('password', password)
+      fd.append('email', emailTrim)
+      fd.append('username', usernameTrim)
+      if (pwd) fd.append('password', pwd)
       if (avatar === 'remove') fd.append('remove_avatar','true')
       else if (avatar instanceof File) fd.append('avatar', avatar)
 
@@ -120,10 +140,19 @@ export default function UserModal({ open, onClose, initialUser=null, onSaved }) 
 
         <div className="form-row"><input placeholder="E‑mail" value={email} onChange={e=>setEmail(e.target.value)} /></div>
         <div className="form-row"><input placeholder="Логин (опц.)" value={username} onChange={e=>setUsername(e.target.value)} /></div>
-        <div className="form-row"><PasswordField id="adm-user-pass" placeholder={isEdit ? 'Новый пароль (опц.)' : 'Пароль (опц.)'} value={password} onChange={e=>setPassword(e.target.value)} /></div>
+        <div className="form-row">
+          <PasswordField
+            id="adm-user-pass"
+            placeholder={isEdit ? 'Новый пароль (опц.)' : 'Пароль'}
+            value={password}
+            onChange={e=>setPassword(e.target.value)}
+          />
+        </div>
 
         <div className="form-row two">
-          <button className={`btn ${loading?'loading':''}`} onClick={save} disabled={loading}><span className="spinner" aria-hidden="true" /> <span className="label">Сохранить</span></button>
+          <button className={`btn ${loading?'loading':''}`} onClick={save} disabled={loading}>
+            <span className="spinner" aria-hidden="true" /> <span className="label">Сохранить</span>
+          </button>
           <button className="link-btn" onClick={onClose}>Отмена</button>
         </div>
       </div>

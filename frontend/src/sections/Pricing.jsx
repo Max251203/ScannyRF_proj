@@ -21,9 +21,7 @@ export default function Pricing() {
       .then(p => { if (!cancelled) setPrices(p) })
       .catch(() => {})
 
-    // 2) Если пользователь авторизован и где-то меняются цены админом,
-    //    бэкенд вернёт новые значения в /billing/status/ и мы получим их
-    //    через единое событие billing:update
+    // 2) При авторизованном пользователе обновления тарифов прилетают через billing:update
     const onBill = (e) => {
       const st = e.detail || {}
       if ('price_single' in st) {
@@ -52,19 +50,43 @@ export default function Pricing() {
             <img className="price-pic" src={plan1} alt="" />
             <div className="title">Один документ</div>
             <div className="val">{fmt(prices.single)} ₽</div>
-            <div className="price-actions"><Link className="btn btn-lite" to="/editor">Попробовать</Link></div>
+            <div className="price-actions">
+              <Link
+                className="btn btn-lite"
+                to="/editor"
+                state={{ plan: 'single' }}
+              >
+                Попробовать
+              </Link>
+            </div>
           </div>
           <div className="card price">
             <img className="price-pic" src={plan2} alt="" />
             <div className="title">Без ограничений</div>
             <div className="val">{fmt(prices.month)} ₽/мес</div>
-            <div className="price-actions"><Link className="btn btn-lite" to="/editor">Попробовать</Link></div>
+            <div className="price-actions">
+              <Link
+                className="btn btn-lite"
+                to="/editor"
+                state={{ plan: 'month' }}
+              >
+                Попробовать
+              </Link>
+            </div>
           </div>
           <div className="card price">
             <img className="price-pic" src={plan3} alt="" />
             <div className="title">Без ограничений PRO</div>
             <div className="val">{fmt(prices.year)} ₽/год</div>
-            <div className="price-actions"><Link className="btn btn-lite" to="/editor">Попробовать</Link></div>
+            <div className="price-actions">
+              <Link
+                className="btn btn-lite"
+                to="/editor"
+                state={{ plan: 'year' }}
+              >
+                Попробовать
+              </Link>
+            </div>
           </div>
         </div>
       </div>

@@ -4,12 +4,12 @@ from pathlib import Path
 import dj_database_url
 from decouple import Config, RepositoryEnv
 from django.core.exceptions import ImproperlyConfigured
+from datetime import timedelta
 
-# BASE_DIR указывает на папку 'backend'
-BASE_DIR = Path(__file__).resolve().parent.parent
+BASE_DIR = Path(__file__).resolve().parent.parent  # .../backend
+ROOT_DIR = BASE_DIR.parent                         # корень репозитория
 
-# decouple ищет .env в папке `backend`
-config = Config(RepositoryEnv(str(BASE_DIR / '.env')))
+config = Config(RepositoryEnv(str(ROOT_DIR / '.env')))
 
 # --- Основные настройки ---
 SECRET_KEY = config('SECRET_KEY')
@@ -144,10 +144,18 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': ('rest_framework_simplejwt.authentication.JWTAuthentication',),
 }
+SIMPLE_JWT = {
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=30),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=30),
+    "ROTATE_REFRESH_TOKENS": False,
+    "BLACKLIST_AFTER_ROTATION": False,
+    "ALGORITHM": "HS256",
+    "SIGNING_KEY": SECRET_KEY,
+    "AUTH_HEADER_TYPES": ("Bearer",),
+}
 
-CORS_ALLOW_ALL_ORIGINS = True  # В проде можно переопределить
-# Если хотите ограничить:
-# CORS_ALLOWED_ORIGINS = [ 'https://example.com' ]
+
+CORS_ALLOW_ALL_ORIGINS = True  
 
 # --- Настройки E-mail и OAuth ---
 EMAIL_BACKEND = config('EMAIL_BACKEND', default='django.core.mail.backends.console.EmailBackend')
