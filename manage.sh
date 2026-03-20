@@ -1,27 +1,29 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -e
 
 CMD="${1:-help}"
 
+# Абсолютные пути
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKEND="$ROOT/backend"
 FRONTEND="$ROOT/frontend"
 VENV="$ROOT/.venv"
 
+# python3 или python
 if command -v python3 >/dev/null 2>&1; then
-  PYTHON_BIN=python3
+  PY_BIN=python3
 else
-  PYTHON_BIN=python
+  PY_BIN=python
 fi
 
 create_venv_if_needed() {
   if [ ! -d "$VENV" ]; then
-    echo "[venv] creating $VENV..."
-    "$PYTHON_BIN" -m venv "$VENV"
+    echo "[venv] creating $VENV ..."
+    "$PY_BIN" -m venv "$VENV"
   fi
 }
 
-pip_cmd() {
+pip_venv() {
   if [ -x "$VENV/bin/pip" ]; then
     "$VENV/bin/pip" "$@"
   else
@@ -33,49 +35,51 @@ python_venv() {
   if [ -x "$VENV/bin/python" ]; then
     "$VENV/bin/python" "$@"
   else
-    "$PYTHON_BIN" "$@"
+    "$PY_BIN" "$@"
   fi
 }
 
 sync_frontend_env() {
   if [ -f "$ROOT/.env" ]; then
-    echo "[env] syncing VITE_* to frontend/.env..."
+    echo "[env] syncing VITE_* to frontend/.env ..."
     grep '^VITE_' "$ROOT/.env" > "$FRONTEND/.env" || true
   fi
 }
 
 case "$CMD" in
   dev)
+    echo "[dev] === backend deps ==="
     create_venv_if_needed
-    echo "[dev] backend requirements..."
-    pip_cmd install -r "$BACKEND/requirements.txt"
+    pip_venv install -r "$BACKEND/requirements.txt"
 
-    echo "[dev] frontend deps..."
+    echo "[dev] === frontend deps ==="
     sync_frontend_env
-    (cd "$FRONTEND" && (npm install || npm ci || true))
+    cd "$FRONTEND"
+    npm install || npm ci || true
 
-    echo "[dev] running daphne + vite..."
-    (cd "$BACKEND" && python_venv -m daphne -b 0.0.0.0 -p 8000 backend.config.asgi:application) &
+    echo "[dev] === start daphne & vite ==="
+    cd "$BACKEND"
+    python_venv -m daphne -b 0.0.0.0 -p 8000 backend.config.asgi:application &
     BACK_PID=$!
-    (cd "$FRONTEND" && npm run dev) &
+
+    cd "$FRONTEND"
+    npm run dev &
     FRONT_PID=$!
 
-    trap "kill $BACK_PID $FRONT_PID 2>/dev/null || true" INT TERM
+    echo "[dev] backend pid: $BACK_PID, frontend pid: $FRONT_PID"
     wait $BACK_PID $FRONT_PID
     ;;
 
   build)
-    echo "[build] frontend..."
+    echo "[build] === frontend build ==="
     sync_frontend_env
     cd "$FRONTEND"
     npm ci || npm install
     npm run build
-    cd "$ROOT"
 
+    echo "[build] === backend collectstatic & migrate ==="
     create_venv_if_needed
-    echo "[build] backend requirements..."
-    pip_cmd install -r "$BACKEND/requirements.txt"
-
+    pip_venv install -r "$BACKEND/requirements.txt"
     export PYTHONPATH="$ROOT"
     cd "$BACKEND"
     python_venv manage.py collectstatic --noinput --clear
@@ -84,11 +88,12 @@ case "$CMD" in
     ;;
 
   start)
+    echo "[start] === production daphne ==="
     create_venv_if_needed
     export PYTHONPATH="$ROOT"
     cd "$BACKEND"
     PORT="${PORT:-8000}"
-    echo "[start] daphne on port $PORT..."
+    echo "[start] listening on $PORT"
     python_venv -m daphne -b 0.0.0.0 -p "$PORT" backend.config.asgi:application
     ;;
 
