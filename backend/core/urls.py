@@ -8,7 +8,7 @@ from .views import (
     PaymentCreateView,
     DefaultSignsListCreate, DefaultSignDetail, HideDefaultSignView,
     UploadRecordView, UploadDeleteView,
-    DraftGetView, DraftSaveView, DraftPatchView, DraftClearView,
+    DraftGetView, DraftSaveView, DraftPatchView, DraftClearView, YookassaWebhookView, UnsubscribeView
 )
 
 urlpatterns = [
@@ -27,6 +27,7 @@ urlpatterns = [
     path('billing/promos/', PromoListCreate.as_view()),
     path('billing/promos/<int:pk>/', PromoDetail.as_view()),
     path('billing/promo/validate/', PromoValidateView.as_view()),
+    path('billing/unsubscribe/', UnsubscribeView.as_view()),
 
     # Библиотека подписей/печати пользователя (+ глобальные дефолтные)
     path('library/signs/', UserSignsListCreate.as_view()),
@@ -37,8 +38,9 @@ urlpatterns = [
     path('library/default-signs/<int:pk>/', DefaultSignDetail.as_view()),
     path('library/default-signs/hide/', HideDefaultSignView.as_view()),
 
-    # Платежи (заглушка)
+    # Платежи
     path('payments/create/', PaymentCreateView.as_view()),
+    path('payments/webhook/', YookassaWebhookView.as_view()),
 
     # История загрузок документов
     path('uploads/record/', UploadRecordView.as_view()),
@@ -47,6 +49,6 @@ urlpatterns = [
     # Серверное хранилище черновика
     path('draft/get/', DraftGetView.as_view()),
     path('draft/save/', DraftSaveView.as_view()),
-    path('draft/patch/', DraftPatchView.as_view()),  # Лёгкие патчи к черновику
+    path('draft/patch/', DraftPatchView.as_view()),  
     path('draft/clear/', DraftClearView.as_view()),
 ]

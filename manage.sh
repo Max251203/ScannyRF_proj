@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+
 set -e
 
 CMD="${1:-help}"
@@ -40,9 +40,15 @@ python_venv() {
 }
 
 sync_frontend_env() {
+  echo "[env] generating frontend/.env ..."
+  : > "$FRONTEND/.env"
+
   if [ -f "$ROOT/.env" ]; then
-    echo "[env] syncing VITE_* to frontend/.env ..."
-    grep '^VITE_' "$ROOT/.env" > "$FRONTEND/.env" || true
+    # Локально / на VDS — читаем из корневого .env
+    grep '^VITE_' "$ROOT/.env" >> "$FRONTEND/.env" || true
+  else
+    # На Render — берём VITE_* из переменных окружения
+    env | grep '^VITE_' >> "$FRONTEND/.env" || true
   fi
 }
 

@@ -39,12 +39,25 @@ async function waitFor(check, timeoutMs = 8000, stepMs = 50) {
   return false;
 }
 
-// CKEditor 4.22.1 (как было)
+// CKEditor 4 (Локальная версия из public/ckeditor)
 export async function ensureCKE422() {
+  // Если уже загружен
   if (window.CKEDITOR && window.CKEDITOR.status === 'loaded') return;
-  if (window.CKEDITOR && window.CKEDITOR.status !== 'loaded') { try { delete window.CKEDITOR; } catch {} }
-  window.CKEDITOR_BASEPATH = 'https://cdn.ckeditor.com/4.22.1/standard/';
-  await loadScript('https://cdn.ckeditor.com/4.22.1/standard/ckeditor.js');
+  
+  // Если загружен криво - чистим
+  if (window.CKEDITOR && window.CKEDITOR.status !== 'loaded') { 
+    try { delete window.CKEDITOR; } catch {} 
+  }
+
+  // Определяем путь.
+  // В dev режиме BASE_URL = '/', путь будет /ckeditor/
+  // В prod режиме BASE_URL = '/static/', путь будет /static/ckeditor/
+  const basePath = `${import.meta.env.BASE_URL}ckeditor/`;
+  
+  window.CKEDITOR_BASEPATH = basePath;
+  
+  await loadScript(`${basePath}ckeditor.js`);
+
   if (!window.CKEDITOR || window.CKEDITOR.status !== 'loaded') {
     let loadedFired = false;
     try { window.CKEDITOR.on('loaded', () => { loadedFired = true; }); } catch {}

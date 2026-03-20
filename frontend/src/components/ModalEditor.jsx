@@ -16,6 +16,7 @@ export default function ModalEditor({
   const [locTitle, setLocTitle] = useState(initialTitle || '')
   const [lockTitle, setLockTitle] = useState(!!protectTitle)
 
+  // Генерируем уникальный ID для textarea
   const areaIdRef = useRef('editor-' + Math.random().toString(36).slice(2))
   const instRef = useRef(null)
   const fileRef = useRef(null)
@@ -28,31 +29,64 @@ export default function ModalEditor({
 
     const init = async () => {
       try {
-        await ensureCKE422() // теперь подгружается 4.25.1-lts (локально/через CDN)
+        await ensureCKE422() // Теперь грузит локальный CKEditor
         await new Promise(r => setTimeout(r, 0))
         if (canceled) return
 
-        try { instRef.current?.destroy(true) } catch {}
+        // Уничтожаем старый инстанс, если был
+        try { 
+          if (window.CKEDITOR.instances[areaIdRef.current]) {
+            window.CKEDITOR.instances[areaIdRef.current].destroy(true);
+          }
+        } catch {}
         instRef.current = null
 
         const el = document.getElementById(areaIdRef.current)
         if (!el || !window.CKEDITOR) {
-          toast('Не удалось инициализировать редактор', 'error')
+          console.error('CKEDITOR not found or element missing');
           return
         }
 
+        // Инициализация с настройками для сохранения форматирования
         const inst = window.CKEDITOR.replace(areaIdRef.current, {
-          removePlugins: 'elementspath',
-          resize_enabled: false,
           height: 360,
+          width: '100%',
+          
+          // ВАЖНО: Разрешаем любой HTML, чтобы не резались стили и теги
+          allowedContent: true,
+          
+          // Настройка переносов строк
+          // ENTER_P = новый абзац <p>, ENTER_BR = перенос строки <br>
+          // Обычно ENTER_P лучше для форматирования, но если нужно "как в блокноте" - ставьте ENTER_BR
+          enterMode: window.CKEDITOR.ENTER_P, 
+          shiftEnterMode: window.CKEDITOR.ENTER_BR,
+          
+          // Отключаем лишние плагины, если они мешают (опционально)
+          removePlugins: 'elementspath,resize', 
+          
+          // Не добавлять <p>&nbsp;</p> в пустой редактор автоматически (иногда мешает)
+          fillEmptyBlocks: false,
+          
+          // Убираем вкладки, которые обычно не нужны обычному юзеру
+          removeDialogTabs: 'image:advanced;link:advanced',
         })
+
         instRef.current = inst
+        
         inst.on('instanceReady', () => {
-          if (initialHTML) inst.setData(initialHTML)
+          if (initialHTML) {
+            inst.setData(initialHTML)
+          }
         })
+
+        // Синхронизация данных при изменениях (на всякий случай)
+        inst.on('change', () => {
+           // можно сохранять во временное состояние, если нужно
+        })
+
       } catch (e) {
         console.error('[ModalEditor] CKEditor init error:', e)
-        toast('Не удалось инициализировать редактор (CDN/локальный файл недоступен?)', 'error')
+        toast('Не удалось инициализировать редактор', 'error')
       }
     }
 
@@ -60,14 +94,21 @@ export default function ModalEditor({
 
     return () => {
       canceled = true
-      try { instRef.current?.destroy(true) } catch {}
+      try { 
+        if (instRef.current) instRef.current.destroy() 
+      } catch {}
       instRef.current = null
     }
   }, [open])
 
+  // Обновление данных при смене пропса (например, загрузка другого вопроса)
   useEffect(() => {
-    if (open && instRef.current) {
-      instRef.current.setData(initialHTML || '')
+    if (open && instRef.current && initialHTML !== undefined) {
+      // Проверяем, отличается ли контент, чтобы курсор не прыгал, если бы мы это делали на change
+      const current = instRef.current.getData()
+      if (current !== initialHTML) {
+        instRef.current.setData(initialHTML || '')
+      }
     }
   }, [initialHTML, open])
 
@@ -77,6 +118,7 @@ export default function ModalEditor({
     try {
       if (ext === 'txt') {
         const t = await f.text()
+        // Превращаем переносы строк в <br> для HTML
         instRef.current?.setData(`<p>${t.replace(/\n/g,'<br>')}</p>`)
       } else if (ext === 'docx') {
         await ensureMammothCDN()
@@ -96,12 +138,15 @@ export default function ModalEditor({
 
   const handleSave = () => {
     const htmlFromEditor = instRef.current?.getData?.()
+    // Если редактор не загрузился, пытаемся взять из textarea
     const raw = document.getElementById(areaIdRef.current)?.value || ''
     const html = (typeof htmlFromEditor === 'string') ? htmlFromEditor : raw
+    
     const finalTitle = (protectTitle && lockTitle) ? (initialTitle || '') : (locTitle || '').trim()
 
     if (requireTitle && !finalTitle) { toast('Введите заголовок','error'); return }
     if (!html || !html.trim()) { toast('Текст пустой','error'); return }
+    
     onSave?.({ title: finalTitle, html })
   }
 

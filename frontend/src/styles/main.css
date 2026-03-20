@@ -1170,3 +1170,85 @@ main { flex:1; }
 @keyframes shimmer {
   100% { transform: translateX(100%); }
 }
+
+/* Linked Card Panel */
+.linked-card-panel {
+  background: #f8f9fa;
+  border: 1px solid #e0e0e0;
+  border-radius: 12px;
+  padding: 16px;
+  margin-top: 16px;
+}
+
+.lc-top-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.lc-icon {
+  width: 42px;
+  height: 42px;
+  flex-shrink: 0;
+}
+.lc-icon img {
+  width: 100%; height: 100%; object-fit: contain;
+}
+
+.lc-details {
+  display: flex;
+  flex-direction: column;
+  margin-right: auto; 
+}
+
+.lc-title {
+  font-size: 13px; color: #666; margin-bottom: 2px;
+}
+.lc-number {
+  font-size: 16px; font-weight: 700; font-family: monospace; color: #333; letter-spacing: 0.5px;
+}
+
+.lc-badge {
+  background: #e6fcf5;
+  color: #0c855a;
+  border: 1px solid #b7ebda;
+  border-radius: 20px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.lc-desc {
+  margin-top: 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #555;
+  max-width: 600px;
+}
+
+.lc-footer {
+  margin-top: 16px;
+}
+
+.btn-sm {
+  padding: 8px 16px;
+  font-size: 14px;
+  min-width: auto;
+  border-radius: 8px;
+}
+
+@media (max-width: 600px) {
+  .lc-top-row {
+    align-items: flex-start;
+  }
+  .lc-badge {
+    margin-left: 54px; 
+    margin-top: -8px;
+    margin-bottom: 8px;
+  }
+  .lc-footer {
+    text-align: left;
+  }
+}

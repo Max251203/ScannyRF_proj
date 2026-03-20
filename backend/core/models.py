@@ -2,9 +2,9 @@ from django.conf import settings
 from django.db import models
 from django.utils import timezone
 
-
 class Subscription(models.Model):
     PLAN_CHOICES = [
+        ('single', 'single'), 
         ('month', 'month'),
         ('year', 'year'),
     ]
@@ -12,6 +12,11 @@ class Subscription(models.Model):
     plan = models.CharField(max_length=16, choices=PLAN_CHOICES)
     started_at = models.DateTimeField(auto_now_add=True)
     expires_at = models.DateTimeField()
+    
+    # Новые поля для автоплатежа
+    auto_renew = models.BooleanField(default=False)  # Включено ли автопродление
+    payment_method_id = models.CharField(max_length=100, blank=True, null=True) # Токен карты ЮKassa
+    card_info = models.CharField(max_length=50, blank=True, null=True) # Например: "Visa **** 1234"
 
     def is_active(self) -> bool:
         return self.expires_at > timezone.now()

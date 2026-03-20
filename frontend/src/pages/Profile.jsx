@@ -7,6 +7,7 @@ import eyeOpen from '../assets/icons/eye-open.png'
 import eyeClosed from '../assets/icons/eye-closed.png'
 import CropModal from '../components/CropModal.jsx'
 import icClose from '../assets/icons/x-close.svg'
+import cardIcon from '../assets/icons/credit-card.svg' 
 
 function PasswordField({ value, onChange, placeholder, id }) {
   const [show, setShow] = useState(false)
@@ -143,6 +144,62 @@ export default function Profile(){
   )
 }
 
+function AdminBillingSettings({
+  freeQuota, setFreeQuota, priceSingle, setPriceSingle, 
+  priceMonth, setPriceMonth, priceYear, setPriceYear, onSaveBilling,
+  promos, onCreatePromo, onEditPromo, onDeletePromo
+}) {
+  return (
+    <>
+      <div className="card admin-form" style={{marginBottom:16}}>
+        <h3 style={{marginTop:0}}>Настройки тарифа</h3>
+        <div className="field">
+          <label className="subhead with-colon">Бесплатные страницы (сутки)</label>
+          <input className="text-input admin-input" type="number" min="0" value={freeQuota} onChange={e=>setFreeQuota(e.target.value)} />
+        </div>
+        <div className="form-stack">
+          <div className="field">
+            <label className="subhead with-colon">Цена: 1 документ</label>
+            <input className="text-input admin-input" type="number" min="0" value={priceSingle} onChange={e=>setPriceSingle(e.target.value)} />
+          </div>
+          <div className="field">
+            <label className="subhead with-colon">Цена: Месяц</label>
+            <input className="text-input admin-input" type="number" min="0" value={priceMonth} onChange={e=>setPriceMonth(e.target.value)} />
+          </div>
+          <div className="field">
+            <label className="subhead with-colon">Цена: Год</label>
+            <input className="text-input admin-input" type="number" min="0" value={priceYear} onChange={e=>setPriceYear(e.target.value)} />
+          </div>
+        </div>
+        <div className="form-actions">
+          <button className="btn" onClick={onSaveBilling}><span className="label">Сохранить</span></button>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="admin-head">
+          <h3 style={{margin:'6px 0'}}>Промокоды</h3>
+          <button className="btn btn-lite" onClick={onCreatePromo}><span className="label">Создать</span></button>
+        </div>
+        <div className="admin-grid">
+          <div className="admin-list">
+            {promos.map(p=>(
+              <div className="row" key={p.id}>
+                <div><b>{p.code}</b> — {p.discount_percent}% {p.active ? '' : '(off)'}</div>
+                <div className="actions">
+                  <button className="link-btn" onClick={()=>onEditPromo(p)}>Ред.</button>
+                  <button className="link-btn" onClick={()=>onDeletePromo(p.id)}>Уд.</button>
+                </div>
+              </div>
+            ))}
+            {!promos.length && <p>Пусто</p>}
+          </div>
+        </div>
+      </div>
+    </>
+  )
+}
+
 function PlanSection({
   billing, isAdmin,
   freeQuota, setFreeQuota,
@@ -154,76 +211,98 @@ function PlanSection({
   const total = billing?.free_total ?? 3
   const left = billing?.free_left ?? 3
   const hasSub = !!billing?.subscription
+
+  const refreshBilling = () => {
+    AuthAPI.getBillingStatus().then(st => {
+       window.dispatchEvent(new CustomEvent('billing:update', { detail: st }))
+    }).catch(()=>{})
+  }
+
   return (
     <>
       <div className="card" style={{marginBottom:16}}>
         {!hasSub ? (
           <>
             <p>Тариф: Бесплатный</p>
-            <p>Лимит страниц для скачивания на сегодня: {left} из {total}</p>
-            {billing?.reset_at && <p>Сброс лимита: {new Date(billing.reset_at).toLocaleString('ru-RU')}</p>}
+            <p>Лимит страниц для скачивания на сегодня: <b>{left} из {total}</b></p>
+            {billing?.reset_at && <p className="sub-text">Лимит обновится: {new Date(billing.reset_at).toLocaleString('ru-RU')}</p>}
           </>
         ) : (
           <>
-            <p>Тариф: Без ограничений ({billing.subscription.plan === 'month' ? 'месяц' : 'год'})</p>
-            <p>Лимит страниц для скачивания на сегодня: неограниченно</p>
-            <p>Сброс лимита: не требуется</p>
-            <p>Действует до: {new Date(billing.subscription.expires_at).toLocaleDateString('ru-RU')}</p>
+            <div style={{display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:12}}>
+              <div>
+                <h3 style={{margin:'0 0 4px', fontSize: 20}}>
+                  Тариф «Без ограничений» ({billing.subscription.plan === 'month' ? 'Месяц' : 'Год'})
+                </h3>
+                <p style={{margin:0, color:'#2a7', fontWeight:600}}>Активен</p>
+              </div>
+              <div style={{textAlign:'right'}}>
+                 <div style={{fontSize:12, color:'#888'}}>Действует до</div>
+                 <div style={{fontSize:16, fontWeight:600}}>{new Date(billing.subscription.expires_at).toLocaleDateString('ru-RU')}</div>
+              </div>
+            </div>
+
+            <hr style={{margin:'16px 0', border:'none', borderTop:'1px solid #eee'}}/>
+
+            {/* БЛОК ПРИВЯЗАННОЙ КАРТЫ */}
+            {billing.subscription.auto_renew && billing.subscription.card_info && (
+              <div className="linked-card-panel">
+                <div className="lc-top-row">
+                  <div className="lc-icon">
+                    <img src={cardIcon} alt="Card" />
+                  </div>
+                  <div className="lc-details">
+                    <div className="lc-title">Привязанная карта</div>
+                    <div className="lc-number">{billing.subscription.card_info}</div>
+                  </div>
+                  <div className="lc-badge">Автопродление включено</div>
+                </div>
+
+                <div className="lc-desc">
+                  Следующее списание произойдет автоматически в конце периода действия подписки. 
+                  Вы можете отменить его в любой момент, отвязав карту.
+                </div>
+
+                <div className="lc-footer">
+                   <button 
+                     className="btn btn-lite btn-sm"
+                     onClick={async () => {
+                       if(confirm('Отвязать карту? Автоматическое продление будет отключено.')) {
+                         try {
+                           await AuthAPI.authed('/billing/unsubscribe/', {method: 'POST'})
+                           toast('Карта успешно отвязана', 'success')
+                           refreshBilling()
+                         } catch(e) { 
+                           toast(e.message || 'Не удалось отвязать карту', 'error') 
+                         }
+                       }
+                     }}
+                   >
+                     Отвязать карту
+                   </button>
+                </div>
+              </div>
+            )}
+            
+            {(!billing.subscription.auto_renew) && (
+               <p style={{color:'#666', fontSize:14, marginTop:12}}>
+                 Автопродление отключено. По истечении срока тариф переключится на бесплатный.
+               </p>
+            )}
           </>
         )}
       </div>
 
       {isAdmin && (
-        <>
-          <div className="card admin-form" style={{marginBottom:16}}>
-            <h3 style={{marginTop:0}}>Настройки тарифа</h3>
-
-            <div className="field">
-              <label className="subhead with-colon">Количество бесплатных страниц в сутки</label>
-              <input className="text-input admin-input" type="number" min="0" value={freeQuota} onChange={e=>setFreeQuota(e.target.value)} />
-            </div>
-
-            <div className="form-stack">
-              <div className="field">
-                <label className="subhead with-colon">Цена — один документ, ₽</label>
-                <input className="text-input admin-input" type="number" min="0" value={priceSingle} onChange={e=>setPriceSingle(e.target.value)} />
-              </div>
-              <div className="field">
-                <label className="subhead with-colon">Цена — безлимит на месяц, ₽</label>
-                <input className="text-input admin-input" type="number" min="0" value={priceMonth} onChange={e=>setPriceMonth(e.target.value)} />
-              </div>
-              <div className="field">
-                <label className="subhead with-colon">Цена — безлимит на год, ₽</label>
-                <input className="text-input admin-input" type="number" min="0" value={priceYear} onChange={e=>setPriceYear(e.target.value)} />
-              </div>
-            </div>
-
-            <div className="form-actions">
-              <button className="btn" onClick={onSaveBilling}><span className="label">Сохранить</span></button>
-            </div>
-          </div>
-
-          <div className="card">
-            <div className="admin-head">
-              <h3 style={{margin:'6px 0'}}>Промокоды</h3>
-              <button className="btn btn-lite" onClick={onCreatePromo}><span className="label">Создать</span></button>
-            </div>
-            <div className="admin-grid">
-              <div className="admin-list">
-                {promos.map(p=>(
-                  <div className="row" key={p.id}>
-                    <div>{p.code} — {p.discount_percent}% {p.active ? '' : '(отключён)'}</div>
-                    <div className="actions">
-                      <button className="link-btn" onClick={()=>onEditPromo(p)}>Редактировать</button>
-                      <button className="link-btn" onClick={()=>onDeletePromo(p.id)}>Удалить</button>
-                    </div>
-                  </div>
-                ))}
-                {promos.length===0 && <p>Промокодов нет.</p>}
-              </div>
-            </div>
-          </div>
-        </>
+        <AdminBillingSettings 
+           freeQuota={freeQuota} setFreeQuota={setFreeQuota}
+           priceSingle={priceSingle} setPriceSingle={setPriceSingle}
+           priceMonth={priceMonth} setPriceMonth={setPriceMonth}
+           priceYear={priceYear} setPriceYear={setPriceYear}
+           onSaveBilling={onSaveBilling}
+           promos={promos} onCreatePromo={onCreatePromo} 
+           onEditPromo={onEditPromo} onDeletePromo={onDeletePromo}
+        />
       )}
     </>
   )

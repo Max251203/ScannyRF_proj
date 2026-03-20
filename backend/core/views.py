@@ -1,11 +1,7 @@
-import os
-from decimal import Decimal
-from django.conf import settings
-from yookassa import Configuration, Payment
 import time
 import base64
 import copy
-from datetime import timedelta
+import uuid  
 
 import requests
 from django.utils import timezone
@@ -25,6 +21,44 @@ from .models import (
     Upload,
     DocumentDraft,
 )
+
+import os
+import json
+import logging
+from decimal import Decimal
+from datetime import timedelta
+
+from django.conf import settings
+from django.utils import timezone
+from django.http import HttpResponse
+from django.views.decorators.csrf import csrf_exempt
+from django.utils.decorators import method_decorator
+
+from rest_framework import permissions
+from rest_framework.response import Response
+from rest_framework.views import APIView
+
+from yookassa import Configuration, Payment, Webhook
+from yookassa.domain.notification import WebhookNotification
+from yookassa.domain.exceptions import BadRequestError, ForbiddenError, NotFoundError, TooManyRequestsError, UnauthorizedError
+
+import uuid
+
+from .models import (
+    Subscription,
+    Operation,
+    BillingConfig,
+    PromoCode,
+    SignImage,
+    GlobalSignImage,
+    HiddenDefaultSign,
+    Upload,
+    DocumentDraft,
+)
+
+logger = logging.getLogger(__name__)
+
+
 
 # ---------- Ключевая ставка ЦБ ----------
 _KEY_RATE_CACHE = {"data": None, "ts": 0, "ttl": 3600}  # 1 час
@@ -53,7 +87,6 @@ class KeyRateView(APIView):
             if _KEY_RATE_CACHE["data"]:
                 return Response(_KEY_RATE_CACHE["data"])
             return Response({"keyRate": 16.0, "date": ""})
-
 
 # ---------- Вспомогательные ----------
 def _get_quota():
@@ -119,7 +152,9 @@ def _billing_status(user):
         "reset_at": (start + timedelta(days=1)).isoformat(),
         "subscription": ({
             "plan": sub.plan,
-            "expires_at": sub.expires_at.isoformat()
+            "expires_at": sub.expires_at.isoformat(),
+            "auto_renew": sub.auto_renew,       
+            "card_info": sub.card_info         
         } if sub else None),
         "uploads": list(uploads),
         "draft_ttl_hours": _get_ttl_hours(),
@@ -477,12 +512,14 @@ class HideDefaultSignView(APIView):
             HiddenDefaultSign.objects.filter(user=request.user, sign_id=sign_id).delete()
 
         return Response({'ok': True})
-    
-# ---------- Платежи (заглушка-редирект) ----------
+
+# ===================== YOOKASSA PAYMENT =====================
+
 class PaymentCreateView(APIView):
     """
-    Создание платежа в ЮKassa и возврат URL для редиректа.
-    Пока только создаём платёж, не меняем подписки (для этого нужен webhook).
+    Создание платежа в ЮKassa.
+    Включен save_payment_method=True для автосписаний.
+    Добавлена обработка ошибок на русском языке.
     """
     permission_classes = [permissions.IsAuthenticated]
 
@@ -490,31 +527,21 @@ class PaymentCreateView(APIView):
         plan = (request.data.get('plan') or 'single').strip()
         promo = (request.data.get('promo') or '').strip()
 
-        # ---- 1. Определяем базовую цену из BillingConfig ----
+        # 1. Цена
         cfg, _ = BillingConfig.objects.get_or_create(pk=1, defaults={
-            'free_daily_quota': 3,
-            'draft_ttl_hours': 24,
-            'price_single': 99,
-            'price_month': 399,
-            'price_year': 3999,
+            'price_single': 99, 'price_month': 399, 'price_year': 3999
         })
 
-        if plan == 'single':
-            base_price = int(cfg.price_single or 0)
-        elif plan == 'month':
-            base_price = int(cfg.price_month or 0)
-        elif plan == 'year':
-            base_price = int(cfg.price_year or 0)
-        else:
-            return Response({'detail': 'Неизвестный план'}, status=400)
-
-        if base_price <= 0:
-            return Response({'detail': 'Цена для выбранного плана не задана'}, status=400)
+        base_price = 0
+        if plan == 'single': base_price = int(cfg.price_single)
+        elif plan == 'month': base_price = int(cfg.price_month)
+        elif plan == 'year': base_price = int(cfg.price_year)
+        else: return Response({'detail': 'Выбран несуществующий тариф'}, status=400)
 
         price = Decimal(str(base_price))
         discount_percent = 0
 
-        # ---- 2. Применяем промокод, если есть ----
+        # 2. Промокод
         if promo:
             pr = PromoCode.objects.filter(code__iexact=promo, active=True).first()
             if pr:
@@ -522,50 +549,172 @@ class PaymentCreateView(APIView):
                 if discount_percent > 0:
                     price = price * (Decimal('100') - Decimal(discount_percent)) / Decimal('100')
 
-        # Округляем до копеек
         price = price.quantize(Decimal('0.01'))
         if price <= 0:
-            return Response({'detail': 'Итоговая сумма должна быть больше 0'}, status=400)
+            return Response({'detail': 'Итоговая сумма не может быть нулевой'}, status=400)
 
-        # ---- 3. Настройки ЮKassa ----
-        shop_id = os.environ.get('YOOKASSA_SHOP_ID') or getattr(settings, 'YOOKASSA_SHOP_ID', '')
-        secret_key = os.environ.get('YOOKASSA_SECRET_KEY') or getattr(settings, 'YOOKASSA_SECRET_KEY', '')
-        return_url = os.environ.get('YOOKASSA_RETURN_URL') or getattr(settings, 'YOOKASSA_RETURN_URL', '')
+        # 3. Настройки
+        shop_id = getattr(settings, 'YOOKASSA_SHOP_ID', '')
+        secret_key = getattr(settings, 'YOOKASSA_SECRET_KEY', '')
+        return_url = getattr(settings, 'YOOKASSA_RETURN_URL', '')
 
         if not shop_id or not secret_key:
-            # Если ЮKassa не настроена — возвращаем заглушку, чтобы не ломать фронт
-            url = f'https://example.com/pay?plan={plan}&uid={request.user.id}&discount={discount_percent}'
+            # Тестовая заглушка, если ключи не прописаны
+            url = f'https://yoomoney.ru/stub?sum={price}' 
             return Response({'url': url})
 
         Configuration.account_id = shop_id
         Configuration.secret_key = secret_key
 
-        # Если return_url не задан в настройках — по умолчанию ведём в профиль
         if not return_url:
-            return_url = request.build_absolute_uri('/#/profile').replace('http://', 'https://')
+            return_url = 'https://xn--80aqenau.xn--p1ai/profile'
 
         try:
             payment = Payment.create({
                 "amount": {
-                    "value": str(price),      # в рублях, с точкой, например "399.00"
-                    "currency": "RUB",
+                    "value": str(price),
+                    "currency": "RUB"
                 },
                 "confirmation": {
                     "type": "redirect",
-                    "return_url": return_url,
+                    "return_url": return_url
                 },
                 "capture": True,
-                "description": f"Сканни.рф — тариф {plan} для пользователя #{request.user.id}",
+                "save_payment_method": True, 
+                "description": f"Сканни.рф: тариф {plan} (user #{request.user.id})",
                 "metadata": {
                     "user_id": request.user.id,
                     "plan": plan,
-                    "promo": promo,
-                    "discount_percent": discount_percent,
-                },
-            })
+                    "promo": promo
+                }
+            }, uuid.uuid4())
+
             return Response({"url": payment.confirmation.confirmation_url})
+
+        except ForbiddenError:
+            return Response({'detail': 'Ошибка доступа к кассе. Возможно, магазин не активирован или запрещены автоплатежи.'}, status=403)
+        except UnauthorizedError:
+            return Response({'detail': 'Ошибка авторизации магазина (неверный shopId или ключ).'}, status=401)
+        except BadRequestError as e:
+            return Response({'detail': 'Некорректные данные платежа.'}, status=400)
+        except TooManyRequestsError:
+            return Response({'detail': 'Слишком много запросов. Попробуйте через минуту.'}, status=429)
         except Exception as e:
-            return Response({'detail': f'Ошибка ЮKassa: {e}'}, status=500)
+            logger.error(f"Yookassa unknown error: {e}")
+            return Response({'detail': 'Произошла ошибка при создании платежа. Попробуйте позже.'}, status=500)
+
+
+@method_decorator(csrf_exempt, name='dispatch')
+class YookassaWebhookView(APIView):
+    """
+    Сюда ЮKassa стучится при смене статуса платежа.
+    Мы ловим payment.succeeded и выдаем подписку.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        try:
+            # Парсим уведомление
+            event_json = json.loads(request.body)
+            notification_object = WebhookNotification(event_json)
+            payment = notification_object.object
+            
+            if event_json.get('event') == 'payment.succeeded':
+                metadata = payment.metadata
+                user_id = metadata.get('user_id')
+                plan = metadata.get('plan')
+                
+                payment_method_id = None
+                card_info = None
+                
+                if payment.payment_method and payment.payment_method.saved:
+                    payment_method_id = payment.payment_method.id
+                    # Пытаемся достать данные карты
+                    try:
+                        card = payment.payment_method.card
+                        card_type = card.card_type  # MasterCard
+                        last4 = card.last4          # 1234
+                        card_info = f"{card_type} **** {last4}"
+                    except:
+                        card_info = "Bank Card"
+
+                self._activate_subscription(user_id, plan, payment_method_id, card_info)
+            
+            return HttpResponse(status=200)
+        except Exception as e:
+            logger.error(f"Webhook error: {e}")
+            return HttpResponse(status=400)
+
+    # В YookassaWebhookView._activate_subscription:
+
+    def _activate_subscription(self, user_id, plan, payment_method_id, card_info=None):
+        from accounts.models import User
+        try:
+            user = User.objects.get(pk=user_id)
+            
+            days = 30
+            is_auto = False
+            if plan == 'single': 
+                days = 1
+            elif plan == 'month': 
+                days = 30
+                is_auto = True
+            elif plan == 'year': 
+                days = 365
+                is_auto = True
+            
+            # Если plan='single', автопродление не включаем, даже если токен пришел (хотя для single он обычно не приходит)
+            if plan == 'single':
+                payment_method_id = None
+                is_auto = False
+
+            expires_at = timezone.now() + timedelta(days=days)
+            
+            # Ищем активную или создаем новую
+            # Логика: если есть активная подписка - продлеваем её и обновляем карту
+            # Если нет - создаем новую
+            
+            sub = Subscription.objects.filter(user=user).order_by('-expires_at').first()
+            
+            if sub and sub.expires_at > timezone.now():
+                # Продление
+                sub.expires_at = sub.expires_at + timedelta(days=days)
+                sub.plan = plan
+                # Если пришла новая карта - обновляем, если нет - оставляем старую
+                if payment_method_id:
+                    sub.payment_method_id = payment_method_id
+                    sub.card_info = card_info
+                    sub.auto_renew = True
+                sub.save()
+            else:
+                # Новая
+                Subscription.objects.create(
+                    user=user,
+                    plan=plan,
+                    expires_at=expires_at,
+                    payment_method_id=payment_method_id,
+                    card_info=card_info,
+                    auto_renew=(is_auto and bool(payment_method_id))
+                )
+                
+        except User.DoesNotExist:
+            pass
+
+
+# Новый View для отвязки
+class UnsubscribeView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        # Ищем активную подписку с автопродлением
+        sub = Subscription.objects.filter(user=request.user, auto_renew=True).first()
+        if sub:
+            sub.auto_renew = False
+            sub.payment_method_id = None
+            sub.card_info = None
+            sub.save()
+            return Response({'status': 'unsubscribed'})
+        return Response({'detail': 'Нет активной подписки'}, status=400)
 
 
 # ---------- История загрузок документов ----------

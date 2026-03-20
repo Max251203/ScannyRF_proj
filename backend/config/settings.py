@@ -7,9 +7,13 @@ from django.core.exceptions import ImproperlyConfigured
 from datetime import timedelta
 
 BASE_DIR = Path(__file__).resolve().parent.parent  # .../backend
-ROOT_DIR = BASE_DIR.parent                         # корень репозитория
+ROOT_DIR = BASE_DIR.parent                          # .../
 
-config = Config(RepositoryEnv(str(ROOT_DIR / '.env')))
+ENV_FILE = ROOT_DIR / '.env'
+if ENV_FILE.exists():
+    config = Config(RepositoryEnv(str(ENV_FILE)))
+else:
+    from decouple import config  # type: ignore
 
 # --- Основные настройки ---
 SECRET_KEY = config('SECRET_KEY')
