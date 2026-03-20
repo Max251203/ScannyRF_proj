@@ -1,19 +1,18 @@
 import os
 from pathlib import Path
+import os
+from datetime import timedelta
 
 import dj_database_url
 from decouple import Config, RepositoryEnv
 from django.core.exceptions import ImproperlyConfigured
-from datetime import timedelta
 
-BASE_DIR = Path(__file__).resolve().parent.parent  # .../backend
-ROOT_DIR = BASE_DIR.parent                          # .../
+BASE_DIR = Path(__file__).resolve().parent.parent  # /srv/scannyrf/backend
+ROOT_DIR = BASE_DIR.parent                          # /srv/scannyrf
 
+# читаем .env из КОРНЯ проекта
 ENV_FILE = ROOT_DIR / '.env'
-if ENV_FILE.exists():
-    config = Config(RepositoryEnv(str(ENV_FILE)))
-else:
-    from decouple import config  # type: ignore
+config = Config(RepositoryEnv(str(ENV_FILE)))
 
 # --- Основные настройки ---
 SECRET_KEY = config('SECRET_KEY')
@@ -226,3 +225,21 @@ if 'RENDER' in os.environ:
     SECURE_SSL_REDIRECT = True
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True
+
+# Сообщаем Django, что за ним HTTPS-прокси (nginx)
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
+# Делать ли редирект HTTP->HTTPS силами Django (nginx уже делает, можно оставить False)
+SECURE_SSL_REDIRECT = False
+
+# Куки по HTTPS (можно включить позже)
+SESSION_COOKIE_SECURE = True
+CSRF_COOKIE_SECURE = True
+
+SECURE_CROSS_ORIGIN_OPENER_POLICY = 'same-origin-allow-popups'
+
+
+# ЮKassa
+YOOKASSA_SHOP_ID = config('YOOKASSA_SHOP_ID', default='')
+YOOKASSA_SECRET_KEY = config('YOOKASSA_SECRET_KEY', default='')
+YOOKASSA_RETURN_URL = config('YOOKASSA_RETURN_URL', default='')

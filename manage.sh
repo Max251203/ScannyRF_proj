@@ -1,15 +1,12 @@
-
 set -e
 
 CMD="${1:-help}"
 
-# Абсолютные пути
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKEND="$ROOT/backend"
 FRONTEND="$ROOT/frontend"
 VENV="$ROOT/.venv"
 
-# python3 или python
 if command -v python3 >/dev/null 2>&1; then
   PY_BIN=python3
 else
@@ -44,10 +41,8 @@ sync_frontend_env() {
   : > "$FRONTEND/.env"
 
   if [ -f "$ROOT/.env" ]; then
-    # Локально / на VDS — читаем из корневого .env
     grep '^VITE_' "$ROOT/.env" >> "$FRONTEND/.env" || true
   else
-    # На Render — берём VITE_* из переменных окружения
     env | grep '^VITE_' >> "$FRONTEND/.env" || true
   fi
 }
@@ -90,7 +85,11 @@ case "$CMD" in
     cd "$BACKEND"
     python_venv manage.py collectstatic --noinput --clear
     python_venv manage.py migrate
-    python_venv ../create_superuser.py || true
+    # Если нужен автосоздаваемый суперюзер, оставь строку ниже.
+    # Если нет — можно закомментировать.
+    if [ -f "create_superuser.py" ]; then
+      python_venv create_superuser.py || true
+    fi
     ;;
 
   start)

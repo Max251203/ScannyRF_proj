@@ -1,0 +1,21 @@
+[0;1;32m●[0m scannyrf.service - Scannyrf Django app (Daphne)
+     Loaded: loaded (]8;;file://v3014747.hosted-by-vdsina.ru/etc/systemd/system/scannyrf.service\/etc/systemd/system/scannyrf.service]8;;\; [0;1;32menabled[0m; preset: [0;1;32menabled[0m)
+     Active: [0;1;32mactive (running)[0m since Thu 2026-01-08 05:31:21 MSK; 3 days ago
+ Invocation: d50adffc98dd469eaeba2ded3f347f5f
+   Main PID: 57005 (daphne)
+      Tasks: 6[0;38;5;245m (limit: 2303)[0m
+     Memory: 69.4M (peak: 69.8M)
+        CPU: 2min 17.008s
+     CGroup: /system.slice/scannyrf.service
+             └─[0;38;5;245m57005 /opt/scannyrf/.venv/bin/python3 /opt/scannyrf/.venv/bin/daphne -b 127.0.0.1 -p 8000 backend.config.asgi:application[0m
+
+Jan 11 23:18:50 v3014747.hosted-by-vdsina.ru daphne[57005]: 127.0.0.1:44190 - - [11/Jan/2026:23:18:50] "GET /" 200 484
+Jan 11 23:37:36 v3014747.hosted-by-vdsina.ru daphne[57005]: 127.0.0.1:50002 - - [11/Jan/2026:23:37:36] "GET /" 200 484
+Jan 11 23:42:27 v3014747.hosted-by-vdsina.ru daphne[57005]: 127.0.0.1:52396 - - [11/Jan/2026:23:42:27] "GET /" 200 484
+Jan 11 23:42:38 v3014747.hosted-by-vdsina.ru daphne[57005]: 127.0.0.1:36274 - - [11/Jan/2026:23:42:38] "GET /" 200 484
+Jan 12 00:09:05 v3014747.hosted-by-vdsina.ru daphne[57005]: 127.0.0.1:40056 - - [12/Jan/2026:00:09:05] "GET /" 200 484
+Jan 12 00:31:50 v3014747.hosted-by-vdsina.ru daphne[57005]: 127.0.0.1:45956 - - [12/Jan/2026:00:31:50] "GET /" 200 484
+Jan 12 00:33:41 v3014747.hosted-by-vdsina.ru daphne[57005]: 127.0.0.1:44600 - - [12/Jan/2026:00:33:41] "GET /" 200 484
+Jan 12 00:57:32 v3014747.hosted-by-vdsina.ru daphne[57005]: 127.0.0.1:50484 - - [12/Jan/2026:00:57:32] "GET /" 200 484
+Jan 12 01:09:26 v3014747.hosted-by-vdsina.ru daphne[57005]: 127.0.0.1:39604 - - [12/Jan/2026:01:09:26] "GET /" 200 484
+Jan 12 01:21:21 v3014747.hosted-by-vdsina.ru daphne[57005]: 127.0.0.1:40320 - - [12/Jan/2026:01:21:21] "GET /" 200 484

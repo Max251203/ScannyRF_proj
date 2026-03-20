@@ -106,22 +106,24 @@ export default function AuthModal({ open, onClose, onSuccess }) {
     }
   }
 
-  // Слушатель ответов от popup (Google/FB/VK)
+    // Слушатель ответов от popup (через LocalStorage)
   useEffect(() => {
     if (!open) return
-    const onMsg = async (e) => {
+
+    const handleAuthData = async (data) => {
       try {
-        const d = e.data || {}
-        if (!d.provider) return
+        if (!data.provider) return
         setLoading(true); setError('')
         let u = null
-        if (d.provider === 'google' && d.id_token) {
-          u = await AuthAPI.google(d.id_token)
-        } else if (d.provider === 'facebook' && d.access_token) {
-          u = await AuthAPI.facebook(d.access_token)
-        } else if (d.provider === 'vk' && d.access_token) {
-          u = await AuthAPI.vk(d.access_token, d.email || '')
+        
+        if (data.provider === 'google' && data.id_token) {
+          u = await AuthAPI.google(data.id_token)
+        } else if (data.provider === 'facebook' && data.access_token) {
+          u = await AuthAPI.facebook(data.access_token)
+        } else if (data.provider === 'vk' && data.access_token) {
+          u = await AuthAPI.vk(data.access_token, data.email || '')
         }
+
         if (u) {
           window.dispatchEvent(new CustomEvent('user:update', { detail: u }))
           onSuccess?.(u); onClose?.()
@@ -131,10 +133,21 @@ export default function AuthModal({ open, onClose, onSuccess }) {
         toast(err.message || 'Ошибка авторизации', 'error')
       } finally {
         setLoading(false)
+        // Чистим за собой
+        localStorage.removeItem('oauth_result')
       }
     }
-    window.addEventListener('message', onMsg)
-    return () => window.removeEventListener('message', onMsg)
+
+    const checkStorage = (e) => {
+      // Если событие пришло из другой вкладки (попапа)
+      if (e.key === 'oauth_result' && e.newValue) {
+        const data = JSON.parse(e.newValue)
+        handleAuthData(data)
+      }
+    }
+
+    window.addEventListener('storage', checkStorage)
+    return () => window.removeEventListener('storage', checkStorage)
   }, [open, onClose, onSuccess])
 
   const openPopup = (url) => {

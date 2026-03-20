@@ -10,14 +10,23 @@ export default function OAuthCatch() {
       const idt = p.get('id_token') || ''
       const state = p.get('state') || ''
       const email = p.get('email') || ''
-      if (window.opener && state && (token || idt)) {
-        window.opener.postMessage(
-          { provider: state, access_token: token, id_token: idt, email },
-          '*'
-        )
+
+      if (state && (token || idt)) {
+        // ПИШЕМ В STORAGE ВМЕСТО postMessage
+        localStorage.setItem('oauth_result', JSON.stringify({
+          provider: state,
+          access_token: token,
+          id_token: idt,
+          email,
+          timestamp: Date.now() // метка времени, чтобы событие было уникальным
+        }))
       }
-    } catch {}
-    setTimeout(() => window.close(), 200)
+    } catch (e) {
+      console.error(e)
+    }
+    // Закрываем окно чуть быстрее
+    setTimeout(() => window.close(), 50)
   }, [])
-  return <div style={{ padding: 20 }}>Закрываем окно…</div>
+
+  return <div style={{ padding: 20 }}>Авторизация...</div>
 }
