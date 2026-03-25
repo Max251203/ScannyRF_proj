@@ -56,6 +56,7 @@ export default function Header() {
   }
 
   const closeAndNav = (to) => () => { setMenuOpen(false); nav(to) }
+  const closeMenu = () => setMenuOpen(false)
 
   const logout = () => {
     AuthAPI.logout()
@@ -92,6 +93,11 @@ export default function Header() {
 
         <nav className={`nav ${menuOpen?'open':''}`}>
           <button className="nav-close" aria-label="Закрыть меню" onClick={()=>setMenuOpen(false)}>✕</button>
+
+          <Link to="/editor" onClick={closeAndNav('/editor')}>
+            Начать работу
+          </Link>
+
           <a href="#how-it-works" onClick={goToSection('how-it-works')}>Простой процесс</a>
           <a href="#examples" onClick={goToSection('examples')}>Какой результат</a>
           <a href="#pricing" onClick={goToSection('pricing')}>Цены</a>

@@ -24,6 +24,7 @@ export default function Footer() {
           </div>
 
           <nav className="footer-nav">
+            <Link to="/editor">Начать работу</Link>
             <a href="#how-it-works" onClick={goToSection('how-it-works')}>Простой процесс</a>
             <a href="#examples" onClick={goToSection('examples')}>Какой результат</a>
             <a href="#pricing" onClick={goToSection('pricing')}>Цены</a>
@@ -34,7 +35,7 @@ export default function Footer() {
           </nav>
         </div>
 
-        <div className="copy">© Сканни.рф, 2025</div>
+        <div className="copy">© Сканни.рф, 2026</div>
       </div>
     </footer>
   )
