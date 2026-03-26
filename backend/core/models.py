@@ -4,25 +4,33 @@ from django.utils import timezone
 
 class Subscription(models.Model):
     PLAN_CHOICES = [
-        ('single', 'single'), 
+        ('single', 'single'),
         ('month', 'month'),
         ('year', 'year'),
     ]
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='subs')
     plan = models.CharField(max_length=16, choices=PLAN_CHOICES)
     started_at = models.DateTimeField(auto_now_add=True)
-    expires_at = models.DateTimeField()
-    
-    # Новые поля для автоплатежа
-    auto_renew = models.BooleanField(default=False)  # Включено ли автопродление
-    payment_method_id = models.CharField(max_length=100, blank=True, null=True) # Токен карты ЮKassa
-    card_info = models.CharField(max_length=50, blank=True, null=True) # Например: "Visa **** 1234"
+    expires_at = models.DateTimeField(null=True, blank=True)
+
+    # Автоплатёж
+    auto_renew = models.BooleanField(default=False)
+    payment_method_id = models.CharField(max_length=100, blank=True, null=True)
+    card_info = models.CharField(max_length=50, blank=True, null=True)
+
+    # Для single-тарифа
+    single_client_id = models.CharField(max_length=64, blank=True, null=True, db_index=True)
+    downloads_left = models.PositiveIntegerField(default=0, blank=True)
 
     def is_active(self) -> bool:
-        return self.expires_at > timezone.now()
+        if self.plan == 'single':
+            return int(self.downloads_left or 0) > 0
+        return bool(self.expires_at and self.expires_at > timezone.now())
 
     def __str__(self) -> str:
-        return f'{self.user_id}:{self.plan}:{self.expires_at.date()}'
+        if self.plan == 'single':
+            return f'{self.user_id}:single:{self.single_client_id}:{self.downloads_left}'
+        return f'{self.user_id}:{self.plan}:{self.expires_at.date() if self.expires_at else "no-expiry"}'
 
 
 class Operation(models.Model):

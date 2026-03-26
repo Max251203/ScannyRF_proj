@@ -26,13 +26,47 @@ export default function Profile(){
   const [tab,setTab]=useState('info')
 
   const [billing, setBilling] = useState(null)
-  const reloadBilling = async()=> {
-    if (!localStorage.getItem('access')) { setBilling(null); return }
-    try { setBilling(await AuthAPI.getBillingStatus()) } catch {}
+  const reloadBilling = async () => {
+    if (!localStorage.getItem('access')) {
+      setBilling(null)
+      return
+    }
+    try {
+      const st = await AuthAPI.getBillingStatus()
+      setBilling(st)
+      window.dispatchEvent(new CustomEvent('billing:update', { detail: st }))
+    } catch {}
   }
 
   useEffect(()=>{ if(!user){ AuthAPI.me().then(u=>setUser(u)).catch(()=>{}) }},[])
   useEffect(()=>{ reloadBilling() },[])
+  useEffect(() => {
+    let timerId = 0
+    let intervalId = 0
+
+    // страховочное периодическое обновление
+    intervalId = window.setInterval(() => {
+      reloadBilling()
+    }, 30000)
+
+    // точечное обновление в момент истечения подписки
+    const exp = billing?.subscription?.expires_at
+    if (exp) {
+      const ms = new Date(exp).getTime() - Date.now()
+      if (ms <= 0) {
+        reloadBilling()
+      } else {
+        timerId = window.setTimeout(() => {
+          reloadBilling()
+        }, ms + 1000)
+      }
+    }
+
+    return () => {
+      if (timerId) window.clearTimeout(timerId)
+      if (intervalId) window.clearInterval(intervalId)
+    }
+  }, [billing?.subscription?.expires_at])
 
   useEffect(() => {
     const onUpd = (e) => setUser(e.detail)
@@ -232,13 +266,28 @@ function PlanSection({
             <div style={{display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:12}}>
               <div>
                 <h3 style={{margin:'0 0 4px', fontSize: 20}}>
-                  Тариф «Без ограничений» ({billing.subscription.plan === 'month' ? 'Месяц' : 'Год'})
+                  {billing.subscription.plan === 'single'
+                    ? 'Тариф «Один документ»'
+                    : `Тариф «Без ограничений» (${billing.subscription.plan === 'month' ? 'Месяц' : 'Год'})`}
                 </h3>
                 <p style={{margin:0, color:'#2a7', fontWeight:600}}>Активен</p>
               </div>
               <div style={{textAlign:'right'}}>
-                 <div style={{fontSize:12, color:'#888'}}>Действует до</div>
-                 <div style={{fontSize:16, fontWeight:600}}>{new Date(billing.subscription.expires_at).toLocaleDateString('ru-RU')}</div>
+                {billing.subscription.plan === 'single' ? (
+                  <>
+                    <div style={{fontSize:12, color:'#888'}}>Статус</div>
+                    <div style={{fontSize:16, fontWeight:600}}>
+                      Осталось скачиваний: {Number(billing.subscription.downloads_left || 0)}
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div style={{fontSize:12, color:'#888'}}>Действует до</div>
+                    <div style={{fontSize:16, fontWeight:600}}>
+                      {new Date(billing.subscription.expires_at).toLocaleDateString('ru-RU')}
+                    </div>
+                  </>
+                )}
               </div>
             </div>
 
@@ -284,10 +333,14 @@ function PlanSection({
               </div>
             )}
             
-            {(!billing.subscription.auto_renew) && (
-               <p style={{color:'#666', fontSize:14, marginTop:12}}>
-                 Автопродление отключено. По истечении срока тариф переключится на бесплатный.
-               </p>
+            {billing.subscription.plan === 'single' ? (
+              <p style={{color:'#666', fontSize:14, marginTop:12}}>
+                Доступ действует до первого успешного скачивания выбранного документа, после чего тариф автоматически переключится на бесплатный.
+              </p>
+            ) : (!billing.subscription.auto_renew) && (
+              <p style={{color:'#666', fontSize:14, marginTop:12}}>
+                Автопродление отключено. По истечении срока тариф переключится на бесплатный.
+              </p>
             )}
           </>
         )}

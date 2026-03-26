@@ -25,8 +25,6 @@ import icDelete from '../assets/icons/delete.png'
 import icUndo from '../assets/icons/undo.png'
 import icJpgFree from '../assets/icons/dl-jpg-free.png'
 import icPdfFree from '../assets/icons/dl-pdf-free.png'
-import icJpgPaid from '../assets/icons/dl-jpg-paid.png'
-import icPdfPaid from '../assets/icons/dl-pdf-paid.png'
 import icDownload from '../assets/icons/download.png'
 import icPlus from '../assets/icons/plus.png'
 import icPrev from '../assets/icons/prev.png'
@@ -38,14 +36,12 @@ import plan1 from '../assets/images/один документ.png'
 import plan2 from '../assets/images/безлимит.png'
 import plan3 from '../assets/images/безлимит про.png'
 
-// УБРАЛИ .doc — поддерживаем только .docx
 const ACCEPT_DOC = '.jpg,.jpeg,.png,.pdf,.docx,.xls,.xlsx'
 const FONTS = ['Arial', 'Times New Roman', 'Ermilov', 'Segoe UI', 'Roboto', 'Georgia']
 const PDF_RENDER_SCALE = 3.0
 const RASTER_RENDER_SCALE = 3.0
-
-// Линейный коэффициент, совпадает с движком (без дополнительных отступов)
 const LH_FACTOR = 1
+const PENDING_EXPORT_KEY = 'pending_export'
 
 function randDocId () { return String(Math.floor(1e15 + Math.random() * 9e15)) }
 function genDefaultName () {
@@ -61,19 +57,26 @@ function sanitizeName (s) {
 function setDraftHint (flag) {
   try { localStorage.setItem('has_draft', flag ? '1' : '0') } catch {}
 }
+function setPendingExport (payload) {
+  try {
+    sessionStorage.setItem(PENDING_EXPORT_KEY, JSON.stringify(payload || {}))
+  } catch {}
+}
+function getPendingExport () {
+  try {
+    const raw = sessionStorage.getItem(PENDING_EXPORT_KEY)
+    return raw ? JSON.parse(raw) : null
+  } catch {
+    return null
+  }
+}
+function clearPendingExport () {
+  try { sessionStorage.removeItem(PENDING_EXPORT_KEY) } catch {}
+}
 
-/**
- * Замер прямоугольника текста через скрытый DOM-элемент.
- * ВАЖНО:
- *  - высоту считаем по количеству строк (учитываем завершающий \n),
- *    чтобы не "терять" пустую последнюю строку;
- *  - ширину берём из реального DOM-замера браузера;
- *  - добавляем минимальные «подушки» по краям, чтобы рамка не подрезала буквы.
- */
 function measureTextBoxDom (text, fontFamily, fontSize, fontWeight, fontStyle) {
   const size = fontSize || 48
 
-  // SSR / тесты без DOM — возвращаем приближённые размеры с маленьким запасом
   if (typeof document === 'undefined') {
     const padY = Math.max(2, Math.round(size * 0.1))
     const padX = Math.max(1, Math.round(size * 0.04))
@@ -110,7 +113,6 @@ function measureTextBoxDom (text, fontFamily, fontSize, fontWeight, fontStyle) {
 
   const rect = el.getBoundingClientRect()
 
-  // Кол-во строк с учётом завершающего перевода строки
   const str = text || ''
   let lines = str.split('\n')
   if (str.endsWith('\n')) {
@@ -123,10 +125,8 @@ function measureTextBoxDom (text, fontFamily, fontSize, fontWeight, fontStyle) {
   const logicalHeight = lineCount * baseLineHeight
   const baseHeight = Math.max(rect.height || baseLineHeight, logicalHeight)
 
-  // Небольшие симметричные «подушки», чтобы рамка не подрезала хвосты
-  // и последнюю букву справа, но визуально оставалась максимально плотной.
-  const padY = Math.max(2, Math.round(size * 0.1))   // ~10% от fontSize, минимум 2px
-  const padX = Math.max(1, Math.round(size * 0.04))  // ~4% от fontSize, минимум 1px
+  const padY = Math.max(2, Math.round(size * 0.1))
+  const padX = Math.max(1, Math.round(size * 0.04))
 
   return {
     width: baseWidth + padX * 2,
@@ -168,7 +168,6 @@ function loadImageEl (src) {
   })
 }
 
-// Построение стиля HTML-слоя текста (и просмотр, и редактирование)
 function buildTextOverlayStyle (rc, ov, canvasEl, editable = false) {
   if (!rc || !ov) return null
 
@@ -179,7 +178,6 @@ function buildTextOverlayStyle (rc, ov, canvasEl, editable = false) {
     offY = canvasEl.offsetTop || 0
   }
 
-  // Округляем к целым пикселям, чтобы текст и каретка не попадали "между пикселями"
   const leftPx = Math.round((rc.cx || 0) + offX)
   const topPx = Math.round((rc.cy || 0) + offY)
 
@@ -456,6 +454,7 @@ export default function Editor () {
   const [menuPos, setMenuPos] = useState({ top: 0, left: 0 })
 
   const [payOpen, setPayOpen] = useState(false)
+  const [payTargetFormat, setPayTargetFormat] = useState(null)
   const [cropOpen, setCropOpen] = useState(false)
   const [cropSrc, setCropSrc] = useState('')
   const [cropKind, setCropKind] = useState('signature')
@@ -508,6 +507,8 @@ export default function Editor () {
   const isMobileRef = useRef(isMobile)
 
   const saveTimerRef = useRef(0)
+  const autoExportStartedRef = useRef(false)
+  const [draftReady, setDraftReady] = useState(false)
   const dragFromTextareaRef = useRef({ active: false, started: false, pointerId: null, startX: 0, startY: 0 })
 
   useEffect(() => {
@@ -587,6 +588,35 @@ export default function Editor () {
     }
   }, [])
 
+  const refreshBillingStatus = useCallback(async () => {
+    if (!localStorage.getItem('access')) return billing
+    try {
+      const st = await AuthAPI.getBillingStatus()
+      applyBilling(st)
+      return st
+    } catch {
+      return billing
+    }
+  }, [applyBilling, billing])
+
+  const hasPaidAccessForCurrentDoc = useCallback((st) => {
+    const sub = st?.subscription
+    const currentClientId = docIdRef.current || ''
+    if (!sub) return false
+
+    if (sub.plan === 'month' || sub.plan === 'year') return true
+
+    if (sub.plan === 'single') {
+      return (
+        Number(sub.downloads_left || 0) > 0 &&
+        !!sub.single_client_id &&
+        sub.single_client_id === currentClientId
+      )
+    }
+
+    return false
+  }, [])
+
   function buildDraftSnapshot () {
     if (!pagesRef.current.length) return null
     let cid = docIdRef.current
@@ -663,13 +693,12 @@ export default function Editor () {
     return () => mq.removeEventListener('change', on)
   }, [])
 
-  // Подтягиваем биллинг один раз при заходе в редактор
   useEffect(() => {
     if (!isAuthed) {
       setBilling(null)
       return
     }
-    (async () => {
+    ;(async () => {
       try {
         const st = await AuthAPI.getBillingStatus()
         applyBilling(st)
@@ -677,7 +706,6 @@ export default function Editor () {
     })()
   }, [isAuthed, applyBilling])
 
-  // Обновление по user:update (логин, регистрация, bootstrap)
   useEffect(() => {
     const onUser = async () => {
       if (localStorage.getItem('access')) {
@@ -693,7 +721,6 @@ export default function Editor () {
     return () => window.removeEventListener('user:update', onUser)
   }, [applyBilling])
 
-  // Динамическое обновление цен по billing:update (админ меняет тарифы и т.п.)
   useEffect(() => {
     const onBill = (e) => {
       const st = e.detail || null
@@ -1075,13 +1102,27 @@ export default function Editor () {
   useEffect(() => { if (isAuthed) loadLibrary() }, [isAuthed])
 
   useEffect(() => {
-    if (!isAuthed) return
+    autoExportStartedRef.current = false
+
+    if (!isAuthed) {
+      setDraftReady(true)
+      return
+    }
+
+    setDraftReady(false)
 
     ;(async () => {
       let srv
-      try { srv = await AuthAPI.getDraft() } catch { return }
+      try {
+        srv = await AuthAPI.getDraft()
+      } catch {
+        setDraftReady(true)
+        return
+      }
+
       if (!srv || !srv.exists || !srv.data || !Array.isArray(srv.data.pages) || !srv.data.pages.length) {
         setDraftHint(false)
+        setDraftReady(true)
         return
       }
 
@@ -1203,7 +1244,11 @@ export default function Editor () {
       showBanner('Восстановлен последний документ')
 
       forceLayoutSyncRef.current?.()
-    })()
+      setDraftReady(true)
+    })().catch(() => {
+      setProgress(p => ({ ...p, active: false }))
+      setDraftReady(true)
+    })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthed])
 
@@ -1241,7 +1286,6 @@ export default function Editor () {
           const pdf = await pdfjsLib.getDocument({ data: await f.arrayBuffer() }).promise
           total += pdf.numPages || 1
         } catch { total += 1 }
-      // DOCX и таблицы — считаем как 2 условные страницы
       } else if (['docx', 'xls', 'xlsx'].includes(ext)) {
         total += 2
       } else {
@@ -1313,7 +1357,6 @@ export default function Editor () {
             })
             addedPages++; tick(1)
           }
-        // DOCX: обрабатываем как раньше
         } else if (ext === 'docx') {
           const big = await renderDOCXToCanvas(f)
           const slices = sliceCanvasToPages(big)
@@ -1331,7 +1374,6 @@ export default function Editor () {
             addedPages++
           }
           tick(2)
-        // XLS / XLSX
         } else if (['xls', 'xlsx'].includes(ext)) {
           const big = await renderXLSXToCanvas(f)
           const slices = sliceCanvasToPages(big)
@@ -1349,7 +1391,6 @@ export default function Editor () {
             addedPages++
           }
           tick(2)
-        // НОВОЕ: .doc — устаревший и не поддерживается
         } else if (ext === 'doc') {
           toast('Формат .doc устарел и не поддерживается. Пожалуйста, сохраните документ в формате .docx и загрузите его снова.', 'error')
           tick(1)
@@ -1393,6 +1434,7 @@ export default function Editor () {
       try { if (docIdRef.current) await AuthAPI.deleteUploadsByClient(docIdRef.current) } catch {}
       try { await AuthAPI.clearDraft() } catch {}
       setDraftHint(false)
+      clearPendingExport()
       toast('Документ удалён', 'success')
       return
     }
@@ -1716,6 +1758,41 @@ export default function Editor () {
     forceLayoutSyncRef.current?.()
   }
 
+  async function requestExport (format) {
+    try {
+      if (!pagesRef.current.length) return
+
+      const st = await refreshBillingStatus()
+      const pageCount = pagesRef.current.length
+      const freeLeft = Number(st?.free_left ?? 0)
+      const hasPaidAccess = hasPaidAccessForCurrentDoc(st)
+
+      if (hasPaidAccess) {
+        if (format === 'jpg') {
+          await exportJPG('paid')
+        } else {
+          await exportPDF('paid')
+        }
+        return
+      }
+
+      if (freeLeft >= pageCount) {
+        if (format === 'jpg') {
+          await exportJPG('free')
+        } else {
+          await exportPDF('free')
+        }
+        return
+      }
+
+      setPayTargetFormat(format)
+      setPlan(entryPlan)
+      setPayOpen(true)
+    } catch (e) {
+      toast(e.message || 'Не удалось подготовить выгрузку', 'error')
+    }
+  }
+
   async function applyPromo () {
     try {
       if (!promo) { setPromoPercent(0); setPromoError(''); return }
@@ -1736,12 +1813,45 @@ export default function Editor () {
 
   async function startPurchase () {
     try {
-      const r = await AuthAPI.startPurchase(plan, promo || '')
+      if (!payTargetFormat) {
+        toast('Сначала выберите формат выгрузки', 'error')
+        return
+      }
+
+      const snap = buildDraftSnapshot()
+      if (snap) {
+        try {
+          await AuthAPI.saveDraft(snap)
+          setDraftHint(true)
+        } catch {}
+      }
+
+      const clientId = plan === 'single'
+        ? (snap?.client_id || docIdRef.current || '')
+        : ''
+
+      if (plan === 'single' && !clientId) {
+        toast('Не удалось определить документ для тарифа "Один документ"', 'error')
+        return
+      }
+
+      setPendingExport({
+        format: payTargetFormat,
+        created_at: Date.now()
+      })
+
+      const returnUrl = `${window.location.origin}/editor`
+      const r = await AuthAPI.startPurchase(plan, promo || '', returnUrl, clientId)
+
       if (r?.url) {
-        window.open(r.url, '_blank')
         setPayOpen(false)
-      } else toast('Не удалось сформировать оплату', 'error')
+        window.location.assign(r.url)
+      } else {
+        clearPendingExport()
+        toast('Не удалось сформировать оплату', 'error')
+      }
     } catch (e) {
+      clearPendingExport()
       toast(e.message || 'Ошибка оплаты', 'error')
     }
   }
@@ -1752,20 +1862,20 @@ export default function Editor () {
     return sanitizeName(nm)
   }
 
-  async function exportJPG () {
+  async function exportJPG (mode = 'free') {
     try {
       if (!pagesRef.current.length) return
       const bn = baseName()
       if (!bn) return
-      const count = pagesRef.current.length
-      if ((billing?.free_left ?? 0) < count) { setPlan(entryPlan); setPayOpen(true); return }
+
+      const pageCount = pagesRef.current.length
 
       setProgress({
         active: true,
         mode: 'export',
         label: 'Подготовка JPG',
         val: 0,
-        max: count,
+        max: pageCount,
         suffix: 'стр.'
       })
 
@@ -1793,6 +1903,8 @@ export default function Editor () {
         suffix: ''
       })
 
+      await AuthAPI.recordDownload('jpg', pageCount, bn, mode, docIdRef.current || '')
+
       const a = document.createElement('a')
       const href = URL.createObjectURL(out)
       a.href = href
@@ -1802,8 +1914,8 @@ export default function Editor () {
       a.remove()
       setTimeout(() => URL.revokeObjectURL(href), 1500)
 
-      try { AuthAPI.recordDownload('jpg', pagesRef.current.length, bn, 'free').catch(() => {}) } catch {}
-      toast(`Скачано страниц: ${pagesRef.current.length}`, 'success')
+      toast(`Скачано страниц: ${pageCount}`, 'success')
+      setPayTargetFormat(null)
     } catch (e) {
       console.error(e)
       toast(e.message || 'Не удалось выгрузить JPG', 'error')
@@ -1812,20 +1924,20 @@ export default function Editor () {
     }
   }
 
-  async function exportPDF () {
+  async function exportPDF (mode = 'free') {
     try {
       if (!pagesRef.current.length) return
       const bn = baseName()
       if (!bn) return
-      const count = pagesRef.current.length
-      if ((billing?.free_left ?? 0) < count) { setPlan(entryPlan); setPayOpen(true); return }
+
+      const pageCount = pagesRef.current.length
 
       setProgress({
         active: true,
         mode: 'export',
         label: 'Подготовка PDF',
         val: 0,
-        max: count,
+        max: pageCount,
         suffix: 'стр.'
       })
 
@@ -1856,6 +1968,8 @@ export default function Editor () {
         suffix: ''
       })
 
+      await AuthAPI.recordDownload('pdf', pageCount, bn, mode, docIdRef.current || '')
+
       const blob = new Blob([pdfBytes], { type: 'application/pdf' })
       const a = document.createElement('a')
       const href = URL.createObjectURL(blob)
@@ -1866,8 +1980,8 @@ export default function Editor () {
       a.remove()
       setTimeout(() => URL.revokeObjectURL(href), 1500)
 
-      try { AuthAPI.recordDownload('pdf', pagesRef.current.length, bn, 'free').catch(() => {}) } catch {}
-      toast(`Скачан PDF (${pagesRef.current.length} стр.)`, 'success')
+      toast(`Скачан PDF (${pageCount} стр.)`, 'success')
+      setPayTargetFormat(null)
     } catch (e) {
       console.error(e)
       toast(e.message || 'Не удалось выгрузить PDF', 'error')
@@ -1875,6 +1989,60 @@ export default function Editor () {
       setProgress(p => ({ ...p, active: false }))
     }
   }
+
+  useEffect(() => {
+    if (!draftReady) return
+    if (!pagesRef.current.length) return
+
+    const pending = getPendingExport()
+    if (!pending?.format) return
+    if (autoExportStartedRef.current) return
+
+    autoExportStartedRef.current = true
+
+    ;(async () => {
+      const pageCount = pagesRef.current.length
+      let st = null
+      let allowed = false
+      let mode = 'free'
+
+      for (let i = 0; i < 6; i++) {
+        st = await refreshBillingStatus()
+        const freeLeft = Number(st?.free_left ?? 0)
+        const hasPaidAccess = hasPaidAccessForCurrentDoc(st)
+
+        if (hasPaidAccess) {
+          allowed = true
+          mode = 'paid'
+          break
+        }
+
+        if (freeLeft >= pageCount) {
+          allowed = true
+          mode = 'free'
+          break
+        }
+
+        await new Promise(r => setTimeout(r, 1500))
+      }
+
+      if (!allowed) {
+        clearPendingExport()
+        autoExportStartedRef.current = false
+        toast('Оплата пока не подтверждена. Повторите скачивание после обновления тарифа.', 'error')
+        return
+      }
+
+      clearPendingExport()
+      toast('Оплата подтверждена. Начинаем выгрузку...', 'success')
+
+      if (pending.format === 'jpg') {
+        await exportJPG(mode)
+      } else {
+        await exportPDF(mode)
+      }
+    })()
+  }, [draftReady, pages.length, refreshBillingStatus, hasPaidAccessForCurrentDoc])
 
   useEffect(() => {
     const onKey = (e) => {
@@ -2081,7 +2249,7 @@ export default function Editor () {
   const pageForRender = hasDoc ? pages[cur] : null
   const engineForRender = engineRef.current
 
-  return (
+    return (
     <div className="doc-editor page" style={{ paddingTop: 0 }}>
       <ProgressOverlay
         open={progress.active}
@@ -2285,7 +2453,6 @@ export default function Editor () {
               <>
                 <canvas ref={canvasRef} style={{ width: '100%', height: '100%', display: 'block' }} />
 
-                {/* Текстовые HTML-слои (просмотр) */}
                 {engineForRender && pageForRender && (pageForRender.overlays || []).filter(ov => ov.type === 'text').map(ov => {
                   if (textEdit && textEdit.overlayId === ov.id) return null
                   const rc = engineForRender.getOverlayScreenBoundsById(ov.id)
@@ -2356,6 +2523,7 @@ export default function Editor () {
                 try { if (docIdRef.current) await AuthAPI.deleteUploadsByClient(docIdRef.current) } catch {}
                 try { await AuthAPI.clearDraft() } catch {}
                 setDraftHint(false)
+                clearPendingExport()
                 toast('Документ удалён', 'success')
                 forceLayoutSyncRef.current?.()
               }}
@@ -2389,39 +2557,21 @@ export default function Editor () {
           </div>
 
           <div className="ed-download">
-            <div className="ed-dl-title">Скачать бесплатно:</div>
+            <div className="ed-dl-title">Скачать результат:</div>
             <div className="ed-dl-row">
               <button
                 className={`btn btn-lite ${(!pagesRef.current.length) ? 'disabled' : ''}`}
                 onMouseDown={e => e.preventDefault()}
-                onClick={exportJPG}
+                onClick={() => requestExport('jpg')}
               >
                 <img src={icJpgFree} alt="" style={{ width: 18, height: 18, marginRight: 8 }} />JPG
               </button>
               <button
                 className={`btn btn-lite ${(!pagesRef.current.length) ? 'disabled' : ''}`}
                 onMouseDown={e => e.preventDefault()}
-                onClick={exportPDF}
+                onClick={() => requestExport('pdf')}
               >
                 <img src={icPdfFree} alt="" style={{ width: 18, height: 18, marginRight: 8 }} />PDF
-              </button>
-            </div>
-
-            <div className="ed-dl-title" style={{ marginTop: 10 }}>Купить:</div>
-            <div className="ed-dl-row ed-dl-row-paid">
-              <button
-                className={`btn ${(!pagesRef.current.length) ? 'disabled' : ''}`}
-                onMouseDown={e => e.preventDefault()}
-                onClick={() => { if (pagesRef.current.length) { setPlan(entryPlan); setPayOpen(true) } }}
-              >
-                <img src={icJpgPaid} alt="" style={{ width: 18, height: 18, marginRight: 8 }} />JPG
-              </button>
-              <button
-                className={`btn ${(!pagesRef.current.length) ? 'disabled' : ''}`}
-                onMouseDown={e => e.preventDefault()}
-                onClick={() => { if (pagesRef.current.length) { setPlan(entryPlan); setPayOpen(true) } }}
-              >
-                <img src={icPdfPaid} alt="" style={{ width: 18, height: 18, marginRight: 10 }} />PDF
               </button>
             </div>
           </div>
@@ -2495,6 +2645,14 @@ export default function Editor () {
           <button
             className={pagesRef.current.length ? '' : 'disabled'}
             onMouseDown={e => e.preventDefault()}
+            onClick={undoLast}
+          >
+            <img src={icUndo} alt="" style={{ width: 18, height: 18, marginRight: 10 }} />Отменить
+          </button>
+
+          <button
+            className={pagesRef.current.length ? '' : 'disabled'}
+            onMouseDown={e => e.preventDefault()}
             onClick={async () => {
               closeMenus()
               if (!pagesRef.current.length) return
@@ -2504,6 +2662,7 @@ export default function Editor () {
               try { if (docIdRef.current) await AuthAPI.deleteUploadsByClient(docIdRef.current) } catch {}
               try { await AuthAPI.clearDraft() } catch {}
               setDraftHint(false)
+              clearPendingExport()
               toast('Документ удалён', 'success')
               forceLayoutSyncRef.current?.()
             }}
@@ -2540,33 +2699,17 @@ export default function Editor () {
       {menuOpen === 'download' && (
         <div className="ed-sheet bottom-right" ref={sheetDownloadRef} style={{ padding: 6 }}>
           <button
-            className={`btn ${pagesRef.current.length ? '' : 'disabled'}`}
+            className={`btn btn-lite ${pagesRef.current.length ? '' : 'disabled'}`}
             style={{ padding: '10px 14px' }}
             onMouseDown={e => e.preventDefault()}
             onClick={() => {
               if (pagesRef.current.length) {
                 closeMenus()
-                setPlan(entryPlan); 
-                setPayOpen(true)
+                requestExport('jpg')
               }
             }}
           >
-            <img src={icJpgPaid} alt="" style={{ width: 18, height: 18, marginRight: 10 }} />Купить JPG
-          </button>
-
-          <button
-            className={`btn ${pagesRef.current.length ? '' : 'disabled'}`}
-            style={{ padding: '10px 14px' }}
-            onMouseDown={e => e.preventDefault()}
-            onClick={() => {
-              if (pagesRef.current.length) {
-                closeMenus()
-                setPlan(entryPlan); 
-                setPayOpen(true)
-              }
-            }}
-          >
-            <img src={icPdfPaid} alt="" style={{ width: 18, height: 18, marginRight: 10 }} />Купить PDF
+            <img src={icJpgFree} alt="" style={{ width: 18, height: 18, marginRight: 10 }} />Скачать в JPG
           </button>
 
           <button
@@ -2576,33 +2719,19 @@ export default function Editor () {
             onClick={() => {
               if (pagesRef.current.length) {
                 closeMenus()
-                exportJPG()
+                requestExport('pdf')
               }
             }}
           >
-            <img src={icJpgFree} alt="" style={{ width: 18, height: 18, marginRight: 10 }} />Скачать бесплатно JPG
-          </button>
-
-          <button
-            className={`btn btn-lite ${pagesRef.current.length ? '' : 'disabled'}`}
-            style={{ padding: '10px 14px' }}
-            onMouseDown={e => e.preventDefault()}
-            onClick={() => {
-              if (pagesRef.current.length) {
-                closeMenus()
-                exportPDF()
-              }
-            }}
-          >
-            <img src={icPdfFree} alt="" style={{ width: 18, height: 18, marginRight: 10 }} />Скачать бесплатно PDF
+            <img src={icPdfFree} alt="" style={{ width: 18, height: 18, marginRight: 10 }} />Скачать в PDF
           </button>
         </div>
       )}
 
       {payOpen && (
-        <div className="modal-overlay" onClick={() => setPayOpen(false)}>
+        <div className="modal-overlay" onClick={() => { setPayOpen(false); setPayTargetFormat(null) }}>
           <div className="modal pay-modal" onClick={e => e.stopPropagation()}>
-            <button className="modal-x" onClick={() => setPayOpen(false)}>×</button>
+            <button className="modal-x" onClick={() => { setPayOpen(false); setPayTargetFormat(null) }}>×</button>
             <h3 className="modal-title">Чтобы выгрузить документ придётся немного заплатить</h3>
 
             <div className="pay-grid">

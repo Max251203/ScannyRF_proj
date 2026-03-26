@@ -229,19 +229,15 @@ export const AuthAPI = {
     };
   },
 
-  async recordDownload(kind, pages, doc_name, mode = 'free') {
-    if (!hasAccess()) return null;
-    try {
-      const s = await requestAuthed('/billing/record/', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ kind, pages, doc_name, mode }),
-      });
-      emitBilling(s);
-      return s;
-    } catch {
-      return null;
-    }
+  async recordDownload(kind, pages, doc_name, mode = 'free', client_id = '') {
+    if (!hasAccess()) return Promise.reject(new Error('Требуется авторизация'));
+    const s = await requestAuthed('/billing/record/', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind, pages, doc_name, mode, client_id }),
+    });
+    emitBilling(s);
+    return s;
   },
 
   async recordUpload(client_id, doc_name, pages) {
@@ -274,12 +270,12 @@ export const AuthAPI = {
     }
   },
 
-  startPurchase(plan, promo = '') {
+  startPurchase(plan, promo = '', return_url = '', client_id = '') {
     if (!hasAccess()) return Promise.reject(new Error('Требуется авторизация'));
     return requestAuthed('/payments/create/', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ plan, promo }),
+      body: JSON.stringify({ plan, promo, return_url, client_id }),
     });
   },
 

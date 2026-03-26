@@ -9,6 +9,7 @@ from django.db.models import Sum, Q
 from rest_framework import permissions
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from urllib.parse import urlparse
 
 from .models import (
     Subscription,
@@ -126,10 +127,57 @@ def _get_prices_dict():
     }
 
 
+def _get_active_subscription(user):
+    """
+    Приоритет:
+    1) month/year по сроку
+    2) single по оставшимся скачиваниям
+    """
+    now = timezone.now()
+
+    sub = (
+        Subscription.objects
+        .filter(user=user, plan__in=['month', 'year'], expires_at__gt=now)
+        .order_by('-expires_at')
+        .first()
+    )
+    if sub:
+        return sub
+
+    return (
+        Subscription.objects
+        .filter(user=user, plan='single', downloads_left__gt=0)
+        .order_by('-started_at')
+        .first()
+    )
+
+
+def _has_paid_access_for_client(sub, client_id: str) -> bool:
+    if not sub:
+        return False
+    if sub.plan in ('month', 'year'):
+        return True
+    if sub.plan == 'single':
+        return (
+            int(sub.downloads_left or 0) > 0 and
+            bool(client_id) and
+            (sub.single_client_id == client_id)
+        )
+    return False
+
+
+def _consume_single_subscription(sub: Subscription):
+    if not sub or sub.plan != 'single':
+        return
+    left = int(sub.downloads_left or 0)
+    left = max(0, left - 1)
+    sub.downloads_left = left
+    sub.save(update_fields=['downloads_left'])
+
 def _billing_status(user):
     tz = timezone.get_default_timezone()
     now = timezone.now().astimezone(tz)
-    start = now.replace(hour=0, minute=0, second=0, microsecond=0)  # полночь локальной TZ
+    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
     free_total = _get_quota()
     free_used = (
@@ -139,7 +187,7 @@ def _billing_status(user):
     )
     free_left = max(0, free_total - int(free_used))
 
-    sub = Subscription.objects.filter(user=user, expires_at__gt=timezone.now()).order_by('-expires_at').first()
+    sub = _get_active_subscription(user)
 
     uploads = Upload.objects.filter(user=user).values(
         'id', 'client_id', 'doc_name', 'pages', 'created_at', 'auto_delete_at', 'deleted'
@@ -152,9 +200,11 @@ def _billing_status(user):
         "reset_at": (start + timedelta(days=1)).isoformat(),
         "subscription": ({
             "plan": sub.plan,
-            "expires_at": sub.expires_at.isoformat(),
-            "auto_renew": sub.auto_renew,       
-            "card_info": sub.card_info         
+            "expires_at": sub.expires_at.isoformat() if sub.plan != 'single' else None,
+            "auto_renew": (sub.auto_renew if sub.plan != 'single' else False),
+            "card_info": (sub.card_info if sub.plan != 'single' else None),
+            "single_client_id": sub.single_client_id,
+            "downloads_left": int(sub.downloads_left or 0),
         } if sub else None),
         "uploads": list(uploads),
         "draft_ttl_hours": _get_ttl_hours(),
@@ -178,15 +228,22 @@ class BillingRecordView(APIView):
         pages = max(1, int(request.data.get('pages') or 1))
         mode = (request.data.get('mode') or 'free').lower()  # 'free'|'paid'
         doc_name = (request.data.get('doc_name') or '')[:200]
+        client_id = (request.data.get('client_id') or '').strip()[:64]
 
         if kind not in ('jpg', 'pdf'):
             return Response({'detail': 'kind должен быть jpg|pdf'}, status=400)
 
-        has_sub = Subscription.objects.filter(user=request.user, expires_at__gt=timezone.now()).exists()
-        if mode == 'free' and not has_sub:
-            st = _billing_status(request.user)
-            if st['free_left'] < pages:
-                return Response({'detail': 'Лимит бесплатных страниц на сегодня исчерпан'}, status=403)
+        sub = _get_active_subscription(request.user)
+        has_paid_access = _has_paid_access_for_client(sub, client_id)
+
+        if mode == 'free':
+            if not has_paid_access:
+                st = _billing_status(request.user)
+                if st['free_left'] < pages:
+                    return Response({'detail': 'Лимит бесплатных страниц на сегодня исчерпан'}, status=403)
+        else:
+            if not has_paid_access:
+                return Response({'detail': 'Тариф не позволяет скачать этот документ'}, status=403)
 
         Operation.objects.create(
             user=request.user,
@@ -195,6 +252,10 @@ class BillingRecordView(APIView):
             doc_name=doc_name,
             free=(mode == 'free'),
         )
+
+        if mode == 'paid' and sub and sub.plan == 'single':
+            _consume_single_subscription(sub)
+
         return Response(_billing_status(request.user))
 
 
@@ -518,14 +579,17 @@ class HideDefaultSignView(APIView):
 class PaymentCreateView(APIView):
     """
     Создание платежа в ЮKassa.
-    Включен save_payment_method=True для автосписаний.
-    Добавлена обработка ошибок на русском языке.
+    Для тарифа single обязательно передаётся client_id текущего документа.
     """
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
         plan = (request.data.get('plan') or 'single').strip()
         promo = (request.data.get('promo') or '').strip()
+        client_id = (request.data.get('client_id') or '').strip()[:64]
+
+        if plan == 'single' and not client_id:
+            return Response({'detail': 'Для тарифа одного документа нужен client_id'}, status=400)
 
         # 1. Цена
         cfg, _ = BillingConfig.objects.get_or_create(pk=1, defaults={
@@ -533,10 +597,14 @@ class PaymentCreateView(APIView):
         })
 
         base_price = 0
-        if plan == 'single': base_price = int(cfg.price_single)
-        elif plan == 'month': base_price = int(cfg.price_month)
-        elif plan == 'year': base_price = int(cfg.price_year)
-        else: return Response({'detail': 'Выбран несуществующий тариф'}, status=400)
+        if plan == 'single':
+            base_price = int(cfg.price_single)
+        elif plan == 'month':
+            base_price = int(cfg.price_month)
+        elif plan == 'year':
+            base_price = int(cfg.price_year)
+        else:
+            return Response({'detail': 'Выбран несуществующий тариф'}, status=400)
 
         price = Decimal(str(base_price))
         discount_percent = 0
@@ -556,18 +624,27 @@ class PaymentCreateView(APIView):
         # 3. Настройки
         shop_id = getattr(settings, 'YOOKASSA_SHOP_ID', '')
         secret_key = getattr(settings, 'YOOKASSA_SECRET_KEY', '')
-        return_url = getattr(settings, 'YOOKASSA_RETURN_URL', '')
+
+        requested_return_url = (request.data.get('return_url') or '').strip()
+        return_url = requested_return_url or getattr(settings, 'YOOKASSA_RETURN_URL', '')
+
+        if requested_return_url:
+            try:
+                parsed = urlparse(requested_return_url)
+                if parsed.scheme not in ('http', 'https') or not parsed.netloc:
+                    return Response({'detail': 'Некорректный return_url'}, status=400)
+            except Exception:
+                return Response({'detail': 'Некорректный return_url'}, status=400)
 
         if not shop_id or not secret_key:
-            # Тестовая заглушка, если ключи не прописаны
-            url = f'https://yoomoney.ru/stub?sum={price}' 
+            url = f'https://yoomoney.ru/stub?sum={price}'
             return Response({'url': url})
 
         Configuration.account_id = shop_id
         Configuration.secret_key = secret_key
 
         if not return_url:
-            return_url = 'https://xn--80aqenau.xn--p1ai/profile'
+            return_url = getattr(settings, 'YOOKASSA_RETURN_URL', '') or 'http://127.0.0.1:8000/editor'
 
         try:
             payment = Payment.create({
@@ -580,12 +657,13 @@ class PaymentCreateView(APIView):
                     "return_url": return_url
                 },
                 "capture": True,
-                "save_payment_method": True, 
+                "save_payment_method": True,
                 "description": f"Сканни.рф: тариф {plan} (user #{request.user.id})",
                 "metadata": {
                     "user_id": request.user.id,
                     "plan": plan,
-                    "promo": promo
+                    "promo": promo,
+                    "client_id": client_id,
                 }
             }, uuid.uuid4())
 
@@ -595,7 +673,7 @@ class PaymentCreateView(APIView):
             return Response({'detail': 'Ошибка доступа к кассе. Возможно, магазин не активирован или запрещены автоплатежи.'}, status=403)
         except UnauthorizedError:
             return Response({'detail': 'Ошибка авторизации магазина (неверный shopId или ключ).'}, status=401)
-        except BadRequestError as e:
+        except BadRequestError:
             return Response({'detail': 'Некорректные данные платежа.'}, status=400)
         except TooManyRequestsError:
             return Response({'detail': 'Слишком много запросов. Попробуйте через минуту.'}, status=429)
@@ -623,6 +701,7 @@ class YookassaWebhookView(APIView):
                 metadata = payment.metadata
                 user_id = metadata.get('user_id')
                 plan = metadata.get('plan')
+                client_id = metadata.get('client_id') or ''
                 
                 payment_method_id = None
                 card_info = None
@@ -638,7 +717,7 @@ class YookassaWebhookView(APIView):
                     except:
                         card_info = "Bank Card"
 
-                self._activate_subscription(user_id, plan, payment_method_id, card_info)
+            self._activate_subscription(user_id, plan, payment_method_id, card_info, client_id)
             
             return HttpResponse(status=200)
         except Exception as e:
@@ -647,56 +726,70 @@ class YookassaWebhookView(APIView):
 
     # В YookassaWebhookView._activate_subscription:
 
-    def _activate_subscription(self, user_id, plan, payment_method_id, card_info=None):
+    def _activate_subscription(self, user_id, plan, payment_method_id, card_info=None, single_client_id=''):
         from accounts.models import User
         try:
             user = User.objects.get(pk=user_id)
-            
+
+            if plan == 'single':
+                if not single_client_id:
+                    return
+
+                # Закрываем прежние single-доступы, если были
+                Subscription.objects.filter(
+                    user=user,
+                    plan='single',
+                    downloads_left__gt=0
+                ).update(downloads_left=0)
+
+                Subscription.objects.create(
+                    user=user,
+                    plan='single',
+                    expires_at=None,
+                    payment_method_id=None,
+                    card_info=None,
+                    auto_renew=False,
+                    single_client_id=single_client_id,
+                    downloads_left=1,
+                )
+                return
+
             days = 30
             is_auto = False
-            if plan == 'single': 
-                days = 1
-            elif plan == 'month': 
+            if plan == 'month':
                 days = 30
                 is_auto = True
-            elif plan == 'year': 
+            elif plan == 'year':
                 days = 365
                 is_auto = True
-            
-            # Если plan='single', автопродление не включаем, даже если токен пришел (хотя для single он обычно не приходит)
-            if plan == 'single':
-                payment_method_id = None
-                is_auto = False
 
             expires_at = timezone.now() + timedelta(days=days)
-            
-            # Ищем активную или создаем новую
-            # Логика: если есть активная подписка - продлеваем её и обновляем карту
-            # Если нет - создаем новую
-            
-            sub = Subscription.objects.filter(user=user).order_by('-expires_at').first()
-            
-            if sub and sub.expires_at > timezone.now():
-                # Продление
+
+            sub = Subscription.objects.filter(
+                user=user,
+                plan__in=['month', 'year']
+            ).order_by('-expires_at').first()
+
+            if sub and sub.expires_at and sub.expires_at > timezone.now():
                 sub.expires_at = sub.expires_at + timedelta(days=days)
                 sub.plan = plan
-                # Если пришла новая карта - обновляем, если нет - оставляем старую
                 if payment_method_id:
                     sub.payment_method_id = payment_method_id
                     sub.card_info = card_info
                     sub.auto_renew = True
                 sub.save()
             else:
-                # Новая
                 Subscription.objects.create(
                     user=user,
                     plan=plan,
                     expires_at=expires_at,
                     payment_method_id=payment_method_id,
                     card_info=card_info,
-                    auto_renew=(is_auto and bool(payment_method_id))
+                    auto_renew=(is_auto and bool(payment_method_id)),
+                    single_client_id=None,
+                    downloads_left=0,
                 )
-                
+
         except User.DoesNotExist:
             pass
 
