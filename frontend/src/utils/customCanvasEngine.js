@@ -80,28 +80,32 @@ export class CustomCanvasEngine {
     this.onTextEditRequest = opts.onTextEditRequest || (() => {})
     this.onBlankClick = opts.onBlankClick || (() => {})
     this.onInteractionEnd = opts.onInteractionEnd || (() => {})
-    this.onLimit = opts.onLimit || (() => {}) // колбэк при достижении ограничения
+    this.onLimit = opts.onLimit || (() => {})
 
+    // docWidth/docHeight = размеры ХОЛСТА (рабочей области)
     this.docWidth = 1000
     this.docHeight = 1414
+
+    // contentWidth/contentHeight = размеры КОНТЕНТА внутри холста
+    this.contentWidth = 1000
+    this.contentHeight = 1414
+    this.contentOffsetX = 0
+    this.contentOffsetY = 0
+
     this.backgroundImage = null
     this.overlays = []
-
-    this.rotation = 0
-    this.pageWidth = this.docWidth
-    this.pageHeight = this.docHeight
-
-    const isMobileInitial =
-      typeof window !== 'undefined' &&
-      typeof window.matchMedia === 'function' &&
-      window.matchMedia('(max-width: 960px)').matches
-
-    this.rotationAffectsTransform = isMobileInitial
 
     this.viewWidth = canvas.clientWidth || canvas.width || 1
     this.viewHeight = canvas.clientHeight || canvas.height || 1
     this.pixelRatio = Math.max(window.devicePixelRatio || 1, 2)
     this.viewMargin = typeof opts.viewMargin === 'number' ? Math.max(0, opts.viewMargin) : 24
+
+    this.viewportInsets = {
+      top: 0,
+      right: 0,
+      bottom: 0,
+      left: 0
+    }
 
     this.scale = 1
     this.offsetX = 0
@@ -116,6 +120,11 @@ export class CustomCanvasEngine {
     this._cursor = 'default'
 
     this.editingId = null
+
+    const isMobileInitial =
+      typeof window !== 'undefined' &&
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(max-width: 960px)').matches
 
     this.handleRadius = isMobileInitial ? 16 : 14
     this.hitRadius = isMobileInitial ? 34 : 28
@@ -154,40 +163,49 @@ export class CustomCanvasEngine {
   // Public helpers
   // ---------------------------------------------------------------------------
 
-  computePageSize (docW, docH, rotation = 0) {
-    const W = Number(docW || 1000)
-    const H = Number(docH || 1414)
-    const rot = rotation === 90 ? 90 : 0
-    if (rot === 0) return { pageW: W, pageH: H }
-    if (W > 0) return { pageW: (H * H) / W, pageH: H }
-    return { pageW: H, pageH: H }
+  setViewportInsets (insets = {}) {
+    this.viewportInsets = {
+      top: Math.max(0, Number(insets.top || 0)),
+      right: Math.max(0, Number(insets.right || 0)),
+      bottom: Math.max(0, Number(insets.bottom || 0)),
+      left: Math.max(0, Number(insets.left || 0))
+    }
+    this._updateTransform()
+    this._draw()
   }
 
-  getOverlayDocBoundsForPage (ov, docW, docH, rotation = 0) {
+  getContentRect () {
+    return {
+      x: this.contentOffsetX,
+      y: this.contentOffsetY,
+      w: this.contentWidth,
+      h: this.contentHeight
+    }
+  }
+
+  getOverlayDocBoundsForPage (ov, canvasW, canvasH) {
     return this._getOverlayDocBounds(ov)
   }
 
-  /**
-   * Мягкое ограничение: учитываем 4 угла и возможность сдвига центра.
-   * Используется извне (Editor.jsx) и внутри движка при повороте.
-   */
-  clampOverlayToPage (ov, docW, docH, rotation = 0) {
+  clampOverlayToPage (ov, canvasW = this.docWidth, canvasH = this.docHeight) {
     const safe = { ...ov, data: { ...(ov?.data || {}) } }
     if (safe?.type === 'text') normalizeTextOverlay(safe)
 
-    const { pageW, pageH } = this.computePageSize(docW, docH, rotation)
-    const rect = this._pageRect(docW, docH, pageW, pageH)
+    const rect = {
+      left: 0,
+      right: Math.max(1, Number(canvasW || this.docWidth || 1)),
+      top: 0,
+      bottom: Math.max(1, Number(canvasH || this.docHeight || 1))
+    }
 
     const b0 = this._getOverlayDocBounds(safe)
     const w0 = b0.w
     const h0 = b0.h
 
-    // Физически больше листа — никак не влезет
-    if (w0 > pageW + 0.5 || h0 > pageH + 0.5) {
+    if (w0 > rect.right - rect.left + 0.5 || h0 > rect.bottom - rect.top + 0.5) {
       return { ok: false, overlay: safe }
     }
 
-    // Пытаемся сдвинуть центр внутрь
     let dx = 0
     let dy = 0
     if (b0.minX < rect.left) dx = rect.left - b0.minX
@@ -208,17 +226,41 @@ export class CustomCanvasEngine {
     return { ok, overlay: safe }
   }
 
-  /**
-   * Ограничивает коэффициент масштабирования так, чтобы объект
-   * НЕ становился физически больше страницы. Положение центра
-   * при этом не учитываем — им займётся _clampOverlay.
-   */
+  _fitOverlayIntoCanvas (ov, fill = 1) {
+    const maxW = Math.max(1, this.docWidth * fill - 4)
+    const maxH = Math.max(1, this.docHeight * fill - 4)
+    const b = this._getOverlayDocBounds(ov)
+    const factor = Math.min(
+      maxW / Math.max(b.w, 1e-6),
+      maxH / Math.max(b.h, 1e-6),
+      1
+    )
+
+    if (factor >= 1) return ov
+
+    if (ov.type === 'text') {
+      const d = ov.data || (ov.data = {})
+      const fs0 = Number(d.fontSize || 48)
+      const fs1 = Math.max(6, Math.round(fs0 * factor))
+      const real = fs0 ? (fs1 / fs0) : factor
+      d.fontSize = fs1
+      ov.w = Math.max(1, Number(ov.w || 1) * real)
+      ov.h = Math.max(1, Number(ov.h || 1) * real)
+      ov.scaleX = 1
+      ov.scaleY = 1
+    } else {
+      ov.scaleX = (ov.scaleX || 1) * factor
+      ov.scaleY = (ov.scaleY || 1) * factor
+    }
+
+    return ov
+  }
+
   _limitScaleFactorToPage (startOverlay, desiredFactor) {
-    // Уменьшать объект можно свободно — ограничиваем только рост
     if (desiredFactor <= 1) return desiredFactor
 
-    const pageW = this.pageWidth || this.docWidth
-    const pageH = this.pageHeight || this.docHeight
+    const pageW = this.docWidth
+    const pageH = this.docHeight
 
     const b0 = this._getOverlayDocBounds(startOverlay)
     const w0 = b0.w
@@ -234,9 +276,7 @@ export class CustomCanvasEngine {
       return 1
     }
 
-    // Без искусственного потолка 5x — только реальный размер страницы
     fMax = Math.max(0.1, fMax)
-
     return Math.min(desiredFactor, fMax)
   }
 
@@ -247,17 +287,30 @@ export class CustomCanvasEngine {
   setDocument (doc) {
     const prevActive = this.activeId
 
-    this.docWidth = doc.docWidth || 1000
-    this.docHeight = doc.docHeight || 1414
+    this.docWidth = Math.max(1, Number(doc.canvasWidth || doc.docWidth || 1000))
+    this.docHeight = Math.max(1, Number(doc.canvasHeight || doc.docHeight || 1414))
+
+    this.contentWidth = Math.max(
+      1,
+      Number(doc.contentWidth || doc.content_w || doc.backgroundWidth || this.docWidth)
+    )
+    this.contentHeight = Math.max(
+      1,
+      Number(doc.contentHeight || doc.content_h || doc.backgroundHeight || this.docHeight)
+    )
+
+    // гарантируем, что контент физически не больше холста
+    this.docWidth = Math.max(this.docWidth, this.contentWidth)
+    this.docHeight = Math.max(this.docHeight, this.contentHeight)
+
+    this._updateContentRect()
+
     this.backgroundImage = doc.backgroundImage || null
 
     const incoming = cloneOverlaysDeep(doc.overlays || [])
     for (const ov of incoming) normalizeTextOverlay(ov)
 
     this.overlays = incoming
-    this.rotation = doc.rotation === 90 ? 90 : 0
-
-    this._updatePageSize()
     this._updateTransform()
 
     if (prevActive && this.overlays.some(o => o.id === prevActive)) {
@@ -265,6 +318,7 @@ export class CustomCanvasEngine {
     } else {
       this.activeId = null
     }
+
     this._draw()
   }
 
@@ -294,86 +348,7 @@ export class CustomCanvasEngine {
     return ov ? this._getOverlayScreenBounds(ov) : null
   }
 
-  setPageRotation (rotation, recalcTransform = false) {
-    const newRot = rotation === 90 ? 90 : 0
-    if (this.rotation === newRot && !recalcTransform) return
-
-    this.onBeforeOverlayChange(this.overlays.map(cloneOverlay))
-
-    const prevRotation = this.rotation
-    this.rotation = newRot
-    if (recalcTransform) this.rotationAffectsTransform = true
-
-    this._updatePageSize()
-
-    if (recalcTransform) {
-      const prevScale = this.scale || 1
-      this._updateTransform()
-      const newScale = this.scale || 1
-      const k = newScale ? prevScale / newScale : 1
-
-      if (k && k !== 1) {
-        for (const ov of this.overlays) {
-          if (ov.type === 'text') {
-            const d = ov.data || (ov.data = {})
-            const fs = Math.max(6, Math.round(Number(d.fontSize || 48) * k))
-            d.fontSize = fs
-            ov.w = Math.max(1, Number(ov.w || 1) * k)
-            ov.h = Math.max(1, Number(ov.h || 1) * k)
-            ov.scaleX = 1
-            ov.scaleY = 1
-          } else {
-            ov.scaleX = (ov.scaleX || 1) * k
-            ov.scaleY = (ov.scaleY || 1) * k
-          }
-        }
-      }
-    } else {
-      this._updateTransform()
-    }
-
-    // 90 -> 0: автоужатие под портретный лист
-    if (prevRotation === 90 && this.rotation === 0) {
-      const maxW = (this.pageWidth || this.docWidth) - 4
-      const maxH = (this.pageHeight || this.docHeight) - 4
-
-      for (const ov of this.overlays) {
-        const b = this._getOverlayDocBounds(ov)
-        const bw = Math.max(1e-6, b.w)
-        const bh = Math.max(1e-6, b.h)
-        const factor = Math.min(maxW / bw, maxH / bh, 1)
-
-        if (factor < 1) {
-          if (ov.type === 'text') {
-            const d = ov.data || (ov.data = {})
-            const fs0 = Number(d.fontSize || 48)
-            const fs1 = Math.max(6, Math.round(fs0 * factor))
-            const real = fs0 ? (fs1 / fs0) : factor
-            d.fontSize = fs1
-            ov.w = Math.max(1, Number(ov.w || 1) * real)
-            ov.h = Math.max(1, Number(ov.h || 1) * real)
-            ov.scaleX = 1
-            ov.scaleY = 1
-          } else {
-            ov.scaleX = (ov.scaleX || 1) * factor
-            ov.scaleY = (ov.scaleY || 1) * factor
-          }
-        }
-      }
-    }
-
-    for (const ov of this.overlays) {
-      normalizeTextOverlay(ov)
-      this._clampOverlay(ov)
-      this.onOverlayChange(cloneOverlay(ov))
-    }
-
-    this._draw()
-    this.onInteractionEnd(this.overlays.map(cloneOverlay))
-  }
-
   setMode (isMobile) {
-    this.rotationAffectsTransform = !!isMobile
     this.handleRadius = isMobile ? 16 : 14
     this.hitRadius = isMobile ? 34 : 28
     this._updateTransform()
@@ -407,60 +382,28 @@ export class CustomCanvasEngine {
   // Geometry & rendering
   // ---------------------------------------------------------------------------
 
-  _updatePageSize () {
-    const W = this.docWidth
-    const H = this.docHeight
-    if (this.rotation === 0) {
-      this.pageWidth = W
-      this.pageHeight = H
-    } else {
-      if (W > 0) {
-        this.pageHeight = H
-        this.pageWidth = (H * H) / W
-      } else {
-        this.pageHeight = H
-        this.pageWidth = H
-      }
-    }
+  _updateContentRect () {
+    this.contentOffsetX = (this.docWidth - this.contentWidth) / 2
+    this.contentOffsetY = (this.docHeight - this.contentHeight) / 2
   }
 
   _updateTransform () {
-    const W = this.docWidth
-    const H = this.docHeight
     const cw = this.viewWidth
     const ch = this.viewHeight
     const margin = this.viewMargin || 0
 
-    const isMobileLandscape = this.rotationAffectsTransform && this.rotation === 90
+    const insets = this.viewportInsets || { top: 0, right: 0, bottom: 0, left: 0 }
 
-    const extraVerticalMargin = isMobileLandscape ? ch * 0.12 : 0
-    const availW0 = Math.max(10, cw - margin * 2)
-    const availH0 = Math.max(10, ch - margin - extraVerticalMargin)
+    const availW = Math.max(10, cw - margin * 2 - insets.left - insets.right)
+    const availH = Math.max(10, ch - margin * 2 - insets.top - insets.bottom)
 
-    let fitW = availW0
-    let fitH = availH0
-
-    if (this.rotationAffectsTransform && this.rotation === 90) {
-      const tmp = fitW
-      fitW = fitH
-      fitH = tmp
-    }
-
-    let scale = Math.min(fitW / W, fitH / H) || 1
-    let actualW = W * scale
-    let actualH = H * scale
-
-    const pageW = this.pageWidth || W
-    const maxPageW = cw - margin * 2
-    if (pageW * scale > maxPageW) {
-      scale = maxPageW / pageW
-      actualW = W * scale
-      actualH = H * scale
-    }
+    const scale = Math.min(availW / this.docWidth, availH / this.docHeight) || 1
+    const actualW = this.docWidth * scale
+    const actualH = this.docHeight * scale
 
     this.scale = scale
-    this.offsetX = (cw - actualW) / 2
-    this.offsetY = (ch - actualH) / 2
+    this.offsetX = insets.left + margin + (availW - actualW) / 2
+    this.offsetY = insets.top + margin + (availH - actualH) / 2
   }
 
   _docToScreen (x, y) {
@@ -487,26 +430,25 @@ export class CustomCanvasEngine {
     ctx.imageSmoothingQuality = 'high'
 
     const dpr = this.pixelRatio || 1
-    const W = this.docWidth
-    const H = this.docHeight
-    const pageW = this.pageWidth || W
-    const pageH = this.pageHeight || H
     const s = this.scale
 
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     ctx.translate(this.offsetX, this.offsetY)
     ctx.scale(s, s)
 
-    const docCx = W / 2
-    const docCy = H / 2
-    const halfPW = pageW / 2
-    const halfPH = pageH / 2
-
+    // белый холст
     ctx.fillStyle = '#ffffff'
-    ctx.fillRect(docCx - halfPW, docCy - halfPH, pageW, pageH)
+    ctx.fillRect(0, 0, this.docWidth, this.docHeight)
 
+    // контент внутри холста не вращаем — просто центрируем
     if (isDrawable(this.backgroundImage)) {
-      ctx.drawImage(this.backgroundImage, 0, 0, W, H)
+      ctx.drawImage(
+        this.backgroundImage,
+        this.contentOffsetX,
+        this.contentOffsetY,
+        this.contentWidth,
+        this.contentHeight
+      )
     }
 
     for (const ov of this.overlays) {
@@ -541,7 +483,7 @@ export class CustomCanvasEngine {
     }
 
     if (ov.type === 'text') {
-      // текст на экране рисуется HTML-слоем (Editor.jsx)
+      // текст рисуется HTML-слоем поверх canvas
       ctx.restore()
       return
     }
@@ -883,7 +825,6 @@ export class CustomCanvasEngine {
     this.dragState.lastOverlay = cloneOverlay(ov)
   }
 
-  // Вращение с ограничением: как только 4 угла не влезают — стоп + onLimit('rotate')
   _handleRotateWithLimit (ov, sx, sy) {
     const curDoc = this._screenToDoc(sx, sy)
     const dx = curDoc.x - ov.cx
@@ -896,8 +837,7 @@ export class CustomCanvasEngine {
     const { ok, overlay } = this.clampOverlayToPage(
       test,
       this.docWidth,
-      this.docHeight,
-      this.rotation
+      this.docHeight
     )
 
     if (!ok) {
@@ -912,28 +852,16 @@ export class CustomCanvasEngine {
   }
 
   // ---------------------------------------------------------------------------
-  // Page rect / bounds / clamp
+  // Bounds / clamp
   // ---------------------------------------------------------------------------
 
-  _pageRect (docW, docH, pageW, pageH) {
-    const W = Number(docW || 1000)
-    const H = Number(docH || 1414)
-    const pW = Number(pageW || W)
-    const pH = Number(pageH || H)
-    const docCx = W / 2
-    const docCy = H / 2
-    return {
-      left: docCx - pW / 2,
-      right: docCx + pW / 2,
-      top: docCy - pH / 2,
-      bottom: docCy + pH / 2
+  _clampOverlay (ov, canvasW = this.docWidth, canvasH = this.docHeight) {
+    const rect = {
+      left: 0,
+      right: Math.max(1, Number(canvasW || this.docWidth || 1)),
+      top: 0,
+      bottom: Math.max(1, Number(canvasH || this.docHeight || 1))
     }
-  }
-
-  _clampOverlay (ov) {
-    const pageW = this.pageWidth || this.docWidth
-    const pageH = this.pageHeight || this.docHeight
-    const rect = this._pageRect(this.docWidth, this.docHeight, pageW, pageH)
 
     const bounds = this._getOverlayDocBounds(ov)
     let dx = 0
@@ -1005,17 +933,12 @@ export class CustomCanvasEngine {
   }
 
   getDocumentScreenRect () {
-    const s = this.scale
-    const pageW = this.pageWidth || this.docWidth
-    const pageH = this.pageHeight || this.docHeight
-    const docCx = this.docWidth / 2
-    const docCy = this.docHeight / 2
-    const centerScreen = this._docToScreen(docCx, docCy)
+    const topLeft = this._docToScreen(0, 0)
     return {
-      x: centerScreen.x - (pageW * s) / 2,
-      y: centerScreen.y - (pageH * s) / 2,
-      width: pageW * s,
-      height: pageH * s
+      x: topLeft.x,
+      y: topLeft.y,
+      width: this.docWidth * this.scale,
+      height: this.docHeight * this.scale
     }
   }
 
@@ -1043,9 +966,11 @@ export class CustomCanvasEngine {
       data: { src: data.src || null, image: img }
     }
 
+    this._fitOverlayIntoCanvas(ov, 0.9)
+    this._clampOverlay(ov)
+
     this.overlays.push(ov)
     this.activeId = id
-    this._clampOverlay(ov)
     this.onSelectionChange(cloneOverlay(ov))
     this._draw()
     this.onOverlayChange(cloneOverlay(ov))
@@ -1082,10 +1007,11 @@ export class CustomCanvasEngine {
     }
 
     normalizeTextOverlay(ov)
+    this._fitOverlayIntoCanvas(ov, 0.92)
+    this._clampOverlay(ov)
 
     this.overlays.push(ov)
     this.activeId = id
-    this._clampOverlay(ov)
     this.onSelectionChange(cloneOverlay(ov))
     this._draw()
     this.onOverlayChange(cloneOverlay(ov))

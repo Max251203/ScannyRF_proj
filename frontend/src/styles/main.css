@@ -1088,9 +1088,13 @@ main { flex:1; }
   .doc-editor .ed-canvas-wrap{
     border-radius:0;border:none;background:#f0f4f3;
     padding:0;
-    padding-bottom:var(--ed-bottom-h-mobile);
     display:flex;align-items:center;justify-content:center;
     height:100%;overflow:hidden;
+  }
+
+  .doc-editor .ed-dropzone{
+    height:min(420px, calc(100% - var(--ed-bottom-h-mobile) - 24px));
+    margin-bottom:calc(var(--ed-bottom-h-mobile) * .45);
   }
 
   .doc-editor .ed-bottom{

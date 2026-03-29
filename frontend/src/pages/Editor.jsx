@@ -43,6 +43,123 @@ const RASTER_RENDER_SCALE = 3.0
 const LH_FACTOR = 1
 const PENDING_EXPORT_KEY = 'pending_export'
 
+const EXTREME_RATIO_THRESHOLD = 2.2
+const STRICT_PORTRAIT_RATIO = 0.707
+const STRICT_LANDSCAPE_RATIO = 1.414
+const SOFT_PORTRAIT_RATIO = 0.92
+const SOFT_LANDSCAPE_RATIO = 1.08
+
+function getOrientationBySize (w, h) {
+  return Number(w || 0) >= Number(h || 0) ? 'landscape' : 'portrait'
+}
+
+function isExtremeRatio (w, h) {
+  const ww = Math.max(1, Number(w || 1))
+  const hh = Math.max(1, Number(h || 1))
+  const r = ww / hh
+  return r > EXTREME_RATIO_THRESHOLD || r < (1 / EXTREME_RATIO_THRESHOLD)
+}
+
+function getTargetCanvasRatio (contentW, contentH, targetOrientation) {
+  const extreme = isExtremeRatio(contentW, contentH)
+  if (targetOrientation === 'portrait') {
+    return extreme ? SOFT_PORTRAIT_RATIO : STRICT_PORTRAIT_RATIO
+  }
+  return extreme ? SOFT_LANDSCAPE_RATIO : STRICT_LANDSCAPE_RATIO
+}
+
+function computeCanvasForOrientation (contentW, contentH, targetOrientation) {
+  const W = Math.max(1, Number(contentW || 1))
+  const H = Math.max(1, Number(contentH || 1))
+  const nativeOrientation = getOrientationBySize(W, H)
+
+  if (targetOrientation === nativeOrientation) {
+    return {
+      canvasWidth: W,
+      canvasHeight: H,
+      targetRatio: W / H,
+      extreme: isExtremeRatio(W, H)
+    }
+  }
+
+  const targetRatio = getTargetCanvasRatio(W, H, targetOrientation)
+  const contentRatio = W / H
+
+  let canvasWidth = W
+  let canvasHeight = H
+
+  if (contentRatio > targetRatio) {
+    canvasHeight = Math.ceil(W / targetRatio)
+  } else {
+    canvasWidth = Math.ceil(H * targetRatio)
+  }
+
+  return {
+    canvasWidth,
+    canvasHeight,
+    targetRatio,
+    extreme: isExtremeRatio(W, H)
+  }
+}
+
+function getContentRectInCanvas (canvasWidth, canvasHeight, contentWidth, contentHeight) {
+  const cw = Math.max(1, Number(canvasWidth || 1))
+  const ch = Math.max(1, Number(canvasHeight || 1))
+  const pw = Math.max(1, Number(contentWidth || 1))
+  const ph = Math.max(1, Number(contentHeight || 1))
+
+  return {
+    x: (cw - pw) / 2,
+    y: (ch - ph) / 2,
+    w: pw,
+    h: ph
+  }
+}
+
+function normalizePageGeometry (page) {
+  const contentWidth = Math.max(
+    1,
+    Number(page?.contentWidth || page?.content_w || page?.docWidth || page?.doc_w || 1000)
+  )
+  const contentHeight = Math.max(
+    1,
+    Number(page?.contentHeight || page?.content_h || page?.docHeight || page?.doc_h || 1414)
+  )
+
+  let canvasWidth = Number(page?.canvasWidth || page?.canvas_w || 0)
+  let canvasHeight = Number(page?.canvasHeight || page?.canvas_h || 0)
+
+  if (!(canvasWidth > 0 && canvasHeight > 0)) {
+    canvasWidth = contentWidth
+    canvasHeight = contentHeight
+  }
+
+  return {
+    ...page,
+    contentWidth,
+    contentHeight,
+    canvasWidth: Math.max(contentWidth, canvasWidth),
+    canvasHeight: Math.max(contentHeight, canvasHeight),
+    overlays: Array.isArray(page?.overlays) ? page.overlays : []
+  }
+}
+
+function makePageFromBackground (img, bgSrc) {
+  const contentWidth = img.width || img.naturalWidth || 1000
+  const contentHeight = img.height || img.naturalHeight || 1414
+
+  return {
+    id: `p_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+    contentWidth,
+    contentHeight,
+    canvasWidth: contentWidth,
+    canvasHeight: contentHeight,
+    bgImage: img,
+    bgSrc,
+    overlays: []
+  }
+}
+
 function randDocId () { return String(Math.floor(1e15 + Math.random() * 9e15)) }
 function genDefaultName () {
   const a = Math.floor(Math.random() * 1e6)
@@ -323,27 +440,17 @@ async function renderPDFPageToCanvas (pdf, pageNum, scale) {
 }
 
 function renderPageOffscreen (page, scaleMul = 2) {
-  const rot = page.rotation || 0
-  const docW = page.docWidth || 1000
-  const docH = page.docHeight || 1414
+  const pg = normalizePageGeometry(page)
 
-  let pageW, pageH
-  if (rot === 0) {
-    pageW = docW
-    pageH = docH
-  } else {
-    if (docW > 0) {
-      pageH = docH
-      pageW = (docH * docH) / docW
-    } else {
-      pageH = docH
-      pageW = docH
-    }
-  }
+  const canvasW = pg.canvasWidth || 1000
+  const canvasH = pg.canvasHeight || 1414
+  const contentW = pg.contentWidth || canvasW
+  const contentH = pg.contentHeight || canvasH
+  const contentRect = getContentRectInCanvas(canvasW, canvasH, contentW, contentH)
 
   const canvas = document.createElement('canvas')
-  canvas.width = Math.round(pageW * scaleMul)
-  canvas.height = Math.round(pageH * scaleMul)
+  canvas.width = Math.round(canvasW * scaleMul)
+  canvas.height = Math.round(canvasH * scaleMul)
   const ctx = canvas.getContext('2d')
 
   ctx.fillStyle = '#fff'
@@ -351,19 +458,19 @@ function renderPageOffscreen (page, scaleMul = 2) {
 
   ctx.scale(scaleMul, scaleMul)
 
-  const docCx = docW / 2
-  const docCy = docH / 2
-  const pLeft = docCx - pageW / 2
-  const pTop = docCy - pageH / 2
-  ctx.translate(-pLeft, -pTop)
-
-  if (isDrawableForExport(page.bgImage)) {
+  if (isDrawableForExport(pg.bgImage)) {
     ctx.imageSmoothingEnabled = true
     try { ctx.imageSmoothingQuality = 'high' } catch {}
-    ctx.drawImage(page.bgImage, 0, 0, docW, docH)
+    ctx.drawImage(
+      pg.bgImage,
+      contentRect.x,
+      contentRect.y,
+      contentRect.w,
+      contentRect.h
+    )
   }
 
-  const overlays = page.overlays || []
+  const overlays = pg.overlays || []
   for (const ov of overlays) {
     ctx.save()
     ctx.translate(ov.cx, ov.cy)
@@ -625,7 +732,9 @@ export default function Editor () {
       setDocId(cid)
     }
     const name = sanitizeName(fileNameRef.current || genDefaultName())
-    const pagesData = pagesRef.current.map(p => {
+    const pagesData = pagesRef.current.map(rawPage => {
+      const p = normalizePageGeometry(rawPage)
+
       const overlays = (p.overlays || []).map(ov => {
         const d = ov.data || {}
         const base = {
@@ -666,9 +775,10 @@ export default function Editor () {
 
       return {
         id: p.id,
-        docWidth: p.docWidth,
-        docHeight: p.docHeight,
-        rotation: p.rotation || 0,
+        canvas_w: p.canvasWidth,
+        canvas_h: p.canvasHeight,
+        content_w: p.contentWidth,
+        content_h: p.contentHeight,
         bg_src: bgSrc,
         overlays
       }
@@ -730,6 +840,13 @@ export default function Editor () {
     return () => window.removeEventListener('billing:update', onBill)
   }, [applyBilling])
 
+  const getBottomViewportInset = useCallback(() => {
+    if (!isMobileRef.current) return 0
+    const bottomEl = document.querySelector('.doc-editor .ed-bottom')
+    if (!bottomEl) return 0
+    return Math.max(0, bottomEl.getBoundingClientRect().height + 6)
+  }, [])
+
   const forceLayoutSync = useCallback(() => {
     const engine = engineRef.current
     const wrap = canvasWrapRef.current
@@ -744,16 +861,20 @@ export default function Editor () {
         return
       }
 
+      engine.setViewportInsets({ bottom: getBottomViewportInset() })
       engine.resize(rect.width, rect.height)
 
-      const page = pagesRef.current[curRef.current]
+      const rawPage = pagesRef.current[curRef.current]
+      const page = rawPage ? normalizePageGeometry(rawPage) : null
+
       if (page) {
         engine.setDocument({
-          docWidth: page.docWidth,
-          docHeight: page.docHeight,
+          canvasWidth: page.canvasWidth,
+          canvasHeight: page.canvasHeight,
+          contentWidth: page.contentWidth,
+          contentHeight: page.contentHeight,
           backgroundImage: page.bgImage,
-          overlays: page.overlays || [],
-          rotation: page.rotation || 0
+          overlays: page.overlays || []
         })
 
         const te = textEditRef.current
@@ -782,12 +903,12 @@ export default function Editor () {
           }
         }
       } else {
-        setDocRect(engine.getDocumentScreenRect())
+        setDocRect(null)
       }
     }
 
     requestAnimationFrame(() => requestAnimationFrame(run))
-  }, [])
+  }, [getBottomViewportInset])
 
   const forceLayoutSyncRef = useRef(forceLayoutSync)
   useEffect(() => { forceLayoutSyncRef.current = forceLayoutSync }, [forceLayoutSync])
@@ -1037,19 +1158,23 @@ export default function Editor () {
     }
     internalUpdateRef.current = false
 
-    const page = pages[cur]
+    const rawPage = pages[cur]
     const engine = engineRef.current
-    if (!page || !engine) {
+    if (!rawPage || !engine) {
       setDocRect(null)
       return
     }
 
+    const page = normalizePageGeometry(rawPage)
+
+    engine.setViewportInsets({ bottom: getBottomViewportInset() })
     engine.setDocument({
-      docWidth: page.docWidth,
-      docHeight: page.docHeight,
+      canvasWidth: page.canvasWidth,
+      canvasHeight: page.canvasHeight,
+      contentWidth: page.contentWidth,
+      contentHeight: page.contentHeight,
       backgroundImage: page.bgImage,
-      overlays: page.overlays || [],
-      rotation: page.rotation || 0
+      overlays: page.overlays || []
     })
 
     const te = textEditRef.current
@@ -1077,7 +1202,7 @@ export default function Editor () {
           : prev))
       }
     }
-  }, [pages, cur])
+  }, [pages, cur, getBottomViewportInset])
 
   useEffect(() => {
     const engine = engineRef.current
@@ -1142,45 +1267,57 @@ export default function Editor () {
       const restored = []
       let idx = 0
 
-      for (const pg of pagesData) {
+      for (const pgRaw of pagesData) {
         let img = null
-        let bgSrc = null
-        let docWidth = 1000
-        let docHeight = 1414
-        let rotation = 0
+        let bgSrc = pgRaw.bgSrc || pgRaw.bg_src || null
 
-        if (pg.docWidth) {
-          docWidth = pg.docWidth
-          docHeight = pg.docHeight
-          rotation = pg.rotation || 0
-          if (pg.bg_src) {
-            try { img = await loadImageEl(pg.bg_src); bgSrc = pg.bg_src } catch {}
-          }
-        } else {
-          rotation = pg.landscape ? 90 : 0
-          if (pg.type === 'pdf' && pg.bytes_b64) {
-            try {
-              await ensurePDFJS()
-              // eslint-disable-next-line no-undef
-              const pdf = await pdfjsLib.getDocument({ data: b64ToU8(pg.bytes_b64) }).promise
-              const cv = await renderPDFPageToCanvas(pdf, (pg.index || 0) + 1, PDF_RENDER_SCALE)
-              img = cv
-              bgSrc = cv.toDataURL('image/png')
-              docWidth = cv.width
-              docHeight = cv.height
-            } catch {}
-          } else if ((pg.type === 'image' || pg.type === 'raster') && pg.src) {
-            try {
-              img = await loadImageEl(pg.src)
-              bgSrc = pg.src
-              docWidth = pg.doc_w || pg.w || img.naturalWidth || img.width || 1000
-              docHeight = pg.doc_h || pg.h || img.naturalHeight || img.height || 1414
-            } catch {}
-          }
+        let contentWidth = Number(pgRaw.content_w || pgRaw.contentWidth || pgRaw.docWidth || pgRaw.doc_w || 0)
+        let contentHeight = Number(pgRaw.content_h || pgRaw.contentHeight || pgRaw.docHeight || pgRaw.doc_h || 0)
+
+        if (bgSrc) {
+          try {
+            img = await loadImageEl(bgSrc)
+          } catch {}
+        } else if (pgRaw.type === 'pdf' && pgRaw.bytes_b64) {
+          try {
+            await ensurePDFJS()
+            // eslint-disable-next-line no-undef
+            const pdf = await pdfjsLib.getDocument({ data: b64ToU8(pgRaw.bytes_b64) }).promise
+            const cv = await renderPDFPageToCanvas(pdf, (pgRaw.index || 0) + 1, PDF_RENDER_SCALE)
+            img = cv
+            bgSrc = cv.toDataURL('image/png')
+            contentWidth = cv.width
+            contentHeight = cv.height
+          } catch {}
+        } else if ((pgRaw.type === 'image' || pgRaw.type === 'raster') && pgRaw.src) {
+          try {
+            img = await loadImageEl(pgRaw.src)
+            bgSrc = pgRaw.src
+            contentWidth = pgRaw.doc_w || pgRaw.w || img.naturalWidth || img.width || 1000
+            contentHeight = pgRaw.doc_h || pgRaw.h || img.naturalHeight || img.height || 1414
+          } catch {}
+        }
+
+        if ((!contentWidth || !contentHeight) && img) {
+          contentWidth = img.naturalWidth || img.width || 1000
+          contentHeight = img.naturalHeight || img.height || 1414
+        }
+
+        if (!contentWidth || !contentHeight) {
+          contentWidth = 1000
+          contentHeight = 1414
+        }
+
+        let canvasWidth = Number(pgRaw.canvas_w || pgRaw.canvasWidth || 0)
+        let canvasHeight = Number(pgRaw.canvas_h || pgRaw.canvasHeight || 0)
+
+        if (!(canvasWidth > 0 && canvasHeight > 0)) {
+          canvasWidth = contentWidth
+          canvasHeight = contentHeight
         }
 
         const overlays = []
-        for (const ov of (pg.overlays || [])) {
+        for (const ov of (pgRaw.overlays || [])) {
           const base = {
             id: ov.id || `ov_${Date.now()}_${Math.random().toString(36).slice(2)}`,
             type: ov.type || 'image',
@@ -1220,15 +1357,16 @@ export default function Editor () {
           overlays.push(base)
         }
 
-        restored.push({
-          id: pg.id || `p_${Date.now()}_${Math.random().toString(36).slice(2)}_${idx}`,
-          docWidth,
-          docHeight,
+        restored.push(normalizePageGeometry({
+          id: pgRaw.id || `p_${Date.now()}_${Math.random().toString(36).slice(2)}_${idx}`,
+          contentWidth,
+          contentHeight,
+          canvasWidth,
+          canvasHeight,
           bgImage: img,
           bgSrc,
-          overlays,
-          rotation
-        })
+          overlays
+        }))
 
         idx++
         setProgress(p => ({ ...p, val: idx }))
@@ -1328,15 +1466,7 @@ export default function Editor () {
         if (['jpg', 'jpeg', 'png'].includes(ext)) {
           const url = await readAsDataURL(f)
           const img = await loadImageEl(url)
-          newPages.push({
-            id: `p_${Date.now()}_${Math.random().toString(36).slice(2)}`,
-            docWidth: img.width || img.naturalWidth,
-            docHeight: img.height || img.naturalHeight,
-            bgImage: img,
-            bgSrc: url,
-            overlays: [],
-            rotation: 0
-          })
+          newPages.push(makePageFromBackground(img, url))
           addedPages++; tick(1)
         } else if (ext === 'pdf') {
           await ensurePDFJS()
@@ -1346,15 +1476,7 @@ export default function Editor () {
           for (let i = 1; i <= num; i++) {
             const cv = await renderPDFPageToCanvas(pdf, i, PDF_RENDER_SCALE)
             const url = cv.toDataURL('image/png')
-            newPages.push({
-              id: `p_${Date.now()}_${Math.random().toString(36).slice(2)}_${i}`,
-              docWidth: cv.width,
-              docHeight: cv.height,
-              bgImage: cv,
-              bgSrc: url,
-              overlays: [],
-              rotation: 0
-            })
+            newPages.push(makePageFromBackground(cv, url))
             addedPages++; tick(1)
           }
         } else if (ext === 'docx') {
@@ -1379,15 +1501,7 @@ export default function Editor () {
           const slices = sliceCanvasToPages(big)
           for (const url of slices) {
             const img = await loadImageEl(url)
-            newPages.push({
-              id: `p_${Date.now()}_${Math.random().toString(36).slice(2)}`,
-              docWidth: img.width || img.naturalWidth,
-              docHeight: img.height || img.naturalHeight,
-              bgImage: img,
-              bgSrc: url,
-              overlays: [],
-              rotation: 0
-            })
+            newPages.push(makePageFromBackground(img, url))
             addedPages++
           }
           tick(2)
@@ -1474,16 +1588,17 @@ export default function Editor () {
     const engine = engineRef.current
     if (!engine || !ov || !page) return ov
 
+    const pg = normalizePageGeometry(page)
+
     const bounds = engine.getOverlayDocBoundsForPage
-      ? engine.getOverlayDocBoundsForPage(ov, page.docWidth || 1000, page.docHeight || 1414, page.rotation || 0)
+      ? engine.getOverlayDocBoundsForPage(ov, pg.canvasWidth, pg.canvasHeight)
       : null
 
     const bw = bounds ? Math.max(1e-6, bounds.w) : Math.max(1e-6, ov.w)
     const bh = bounds ? Math.max(1e-6, bounds.h) : Math.max(1e-6, ov.h)
 
-    const { pageW, pageH } = engine.computePageSize(page.docWidth || 1000, page.docHeight || 1414, page.rotation || 0)
-    const maxW = (pageW || page.docWidth || 1000) - 4
-    const maxH = (pageH || page.docHeight || 1414) - 4
+    const maxW = Math.max(1, pg.canvasWidth - 4)
+    const maxH = Math.max(1, pg.canvasHeight - 4)
 
     const factor = Math.min(maxW / bw, maxH / bh, 1)
 
@@ -1557,7 +1672,8 @@ export default function Editor () {
       }
     }
 
-    const bounded = engineRef.current.clampOverlayToPage(newOv, page.docWidth || 1000, page.docHeight || 1414, page.rotation || 0)
+    const pg = normalizePageGeometry(page)
+    const bounded = engineRef.current.clampOverlayToPage(newOv, pg.canvasWidth, pg.canvasHeight)
     if (!bounded.ok) {
       showLimitWarning('text')
       return false
@@ -1602,27 +1718,78 @@ export default function Editor () {
   }, [font, fontSize, bold, italic, color, fitOverlayToPage])
 
   async function rotatePage () {
-    const page = pagesRef.current[cur]
+    const rawPage = pagesRef.current[cur]
     const engine = engineRef.current
-    if (!page || !engine) return
+    if (!rawPage || !engine) return
 
-    const newRot = page.rotation === 90 ? 0 : 90
+    const page = normalizePageGeometry(rawPage)
 
-    engine.setPageRotation(newRot, isMobileRef.current)
-    setDocRect(engine.getDocumentScreenRect())
+    const nativeOrientation = getOrientationBySize(page.contentWidth, page.contentHeight)
+    const currentOrientation = getOrientationBySize(page.canvasWidth, page.canvasHeight)
+    const targetOrientation = currentOrientation === 'portrait' ? 'landscape' : 'portrait'
+
+    let nextCanvasWidth = page.contentWidth
+    let nextCanvasHeight = page.contentHeight
+
+    if (targetOrientation !== nativeOrientation) {
+      const nextCanvas = computeCanvasForOrientation(
+        page.contentWidth,
+        page.contentHeight,
+        targetOrientation
+      )
+      nextCanvasWidth = nextCanvas.canvasWidth
+      nextCanvasHeight = nextCanvas.canvasHeight
+    }
+
+    const oldContentRect = getContentRectInCanvas(
+      page.canvasWidth,
+      page.canvasHeight,
+      page.contentWidth,
+      page.contentHeight
+    )
+
+    const newContentRect = getContentRectInCanvas(
+      nextCanvasWidth,
+      nextCanvasHeight,
+      page.contentWidth,
+      page.contentHeight
+    )
+
+    const dx = newContentRect.x - oldContentRect.x
+    const dy = newContentRect.y - oldContentRect.y
+
+    const shiftedOverlays = (page.overlays || []).map(ov => {
+      const next = {
+        ...ov,
+        data: { ...(ov.data || {}) },
+        cx: Number(ov.cx || 0) + dx,
+        cy: Number(ov.cy || 0) + dy
+      }
+
+      if (next.type === 'text') {
+        next.scaleX = 1
+        next.scaleY = 1
+      }
+
+      const cl = engine.clampOverlayToPage(next, nextCanvasWidth, nextCanvasHeight)
+      return cl?.overlay || next
+    })
 
     internalUpdateRef.current = true
     setPages(prev => {
       const copy = [...prev]
-      const p = copy[cur]
-      if (!p) return prev
-      copy[cur] = { ...p, rotation: newRot }
+      const curPage = normalizePageGeometry(copy[cur])
+      copy[cur] = {
+        ...curPage,
+        canvasWidth: nextCanvasWidth,
+        canvasHeight: nextCanvasHeight,
+        overlays: shiftedOverlays
+      }
       pagesRef.current = copy
       return copy
     })
 
     scheduleSaveDraftRef.current?.()
-
     forceLayoutSyncRef.current?.()
   }
 
@@ -1710,14 +1877,16 @@ export default function Editor () {
     }))
     setUndoStack(stk => [...stk, { type: 'multi', pages: snapshotAll }])
 
-    const srcW = currentPage.docWidth || 1
-    const srcH = currentPage.docHeight || 1
+    const currentPg = normalizePageGeometry(currentPage)
+    const srcW = currentPg.canvasWidth || 1
+    const srcH = currentPg.canvasHeight || 1
 
     const newPages = pagesArr.map((page, idx) => {
       if (idx === cur) return page
 
-      const dstW = page.docWidth || srcW
-      const dstH = page.docHeight || srcH
+      const targetPage = normalizePageGeometry(page)
+      const dstW = targetPage.canvasWidth || srcW
+      const dstH = targetPage.canvasHeight || srcH
 
       const relX = src.cx / srcW
       const relY = src.cy / srcH
@@ -1740,15 +1909,14 @@ export default function Editor () {
 
       const cl = engine.clampOverlayToPage(
         newOv,
-        page.docWidth || 1000,
-        page.docHeight || 1414,
-        page.rotation || 0
+        targetPage.canvasWidth,
+        targetPage.canvasHeight
       )
       if (cl?.overlay) newOv = cl.overlay
 
       return {
-        ...page,
-        overlays: [...(page.overlays || []), newOv]
+        ...targetPage,
+        overlays: [...(targetPage.overlays || []), newOv]
       }
     })
 
@@ -2110,7 +2278,7 @@ export default function Editor () {
 
     const pagesSnap = pagesRef.current
     const pageIndex = curRef.current
-    const page = pagesSnap[pageIndex]
+    const page = normalizePageGeometry(pagesSnap[pageIndex])
     if (!page) {
       setTextEditValue(value)
       return
@@ -2142,7 +2310,7 @@ export default function Editor () {
     targetOv.data.text = text
     targetOv.data.fontSize = fontSizeLocal
 
-    const cl = engine.clampOverlayToPage(targetOv, page.docWidth || 1000, page.docHeight || 1414, page.rotation || 0)
+    const cl = engine.clampOverlayToPage(targetOv, page.canvasWidth, page.canvasHeight)
     if (!cl.ok) {
       showLimitWarning('text')
       setTextEditValue(lastGoodTextRef.current)
@@ -2248,6 +2416,20 @@ export default function Editor () {
 
   const pageForRender = hasDoc ? pages[cur] : null
   const engineForRender = engineRef.current
+
+  const pageDeleteButtonStyle = (() => {
+    if (!docRect || !canvasWrapRef.current) return null
+    const wrapW = canvasWrapRef.current.clientWidth || 0
+    const desiredLeft = docRect.x + docRect.width + 8
+    const safeLeft = Math.min(desiredLeft, Math.max(12, wrapW - 12))
+
+    return {
+      position: 'absolute',
+      left: safeLeft,
+      top: Math.max(8, docRect.y + 8),
+      transform: 'translate(-50%, 0)'
+    }
+  })()
 
     return (
     <div className="doc-editor page" style={{ paddingTop: 0 }}>
@@ -2470,15 +2652,11 @@ export default function Editor () {
                   )
                 })}
 
-                {docRect && (
+                {docRect && pageDeleteButtonStyle && (
                   <button
                     className="ed-page-x desktop-only x-btn x-btn--medium"
                     title="Удалить эту страницу"
-                    style={{
-                      position: 'absolute',
-                      left: docRect.x + docRect.width,
-                      top: docRect.y + 8
-                    }}
+                    style={pageDeleteButtonStyle}
                     onClick={() => deletePageAt(cur)}
                   >
                     <img src={icClose} alt="Удалить страницу" />
