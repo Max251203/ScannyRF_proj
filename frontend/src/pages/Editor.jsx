@@ -43,6 +43,56 @@ const RASTER_RENDER_SCALE = 3.0
 const LH_FACTOR = 1
 const PENDING_EXPORT_KEY = 'pending_export'
 
+function clonePagesState (arr) {
+  return (arr || []).map(p => ({
+    ...p,
+    overlays: (p.overlays || []).map(o => ({
+      ...o,
+      data: { ...(o.data || {}) }
+    }))
+  }))
+}
+
+function colorToGrayscale (color) {
+  if (!color) return color
+  const c = String(color).trim()
+
+  let r = null
+  let g = null
+  let b = null
+  let a = null
+
+  const shortHex = c.match(/^#([0-9a-f]{3})$/i)
+  if (shortHex) {
+    r = parseInt(shortHex[1][0] + shortHex[1][0], 16)
+    g = parseInt(shortHex[1][1] + shortHex[1][1], 16)
+    b = parseInt(shortHex[1][2] + shortHex[1][2], 16)
+  }
+
+  const longHex = c.match(/^#([0-9a-f]{6})$/i)
+  if (longHex) {
+    r = parseInt(longHex[1].slice(0, 2), 16)
+    g = parseInt(longHex[1].slice(2, 4), 16)
+    b = parseInt(longHex[1].slice(4, 6), 16)
+  }
+
+  const rgb = c.match(/^rgba?\(([^)]+)\)$/i)
+  if (rgb) {
+    const parts = rgb[1].split(',').map(v => v.trim())
+    r = Number(parts[0])
+    g = Number(parts[1])
+    b = Number(parts[2])
+    if (parts.length > 3) a = parts[3]
+  }
+
+  if ([r, g, b].some(v => v == null || Number.isNaN(v))) {
+    return color
+  }
+
+  const y = Math.round(r * 0.299 + g * 0.587 + b * 0.114)
+  return a != null ? `rgba(${y}, ${y}, ${y}, ${a})` : `rgb(${y}, ${y}, ${y})`
+}
+
 const EXTREME_RATIO_THRESHOLD = 2.2
 const STRICT_PORTRAIT_RATIO = 0.707
 const STRICT_LANDSCAPE_RATIO = 1.414
@@ -140,15 +190,16 @@ function normalizePageGeometry (page) {
     contentHeight,
     canvasWidth: Math.max(contentWidth, canvasWidth),
     canvasHeight: Math.max(contentHeight, canvasHeight),
+    bwContent: !!page?.bwContent,
     overlays: Array.isArray(page?.overlays) ? page.overlays : []
   }
 }
 
-function makePageFromBackground (img, bgSrc) {
+function makePageFromBackground (img, bgSrc, bwContent = false) {
   const contentWidth = img.width || img.naturalWidth || 1000
   const contentHeight = img.height || img.naturalHeight || 1414
 
-  return {
+    return {
     id: `p_${Date.now()}_${Math.random().toString(36).slice(2)}`,
     contentWidth,
     contentHeight,
@@ -156,6 +207,7 @@ function makePageFromBackground (img, bgSrc) {
     canvasHeight: contentHeight,
     bgImage: img,
     bgSrc,
+    bwContent: !!bwContent,
     overlays: []
   }
 }
@@ -322,7 +374,7 @@ function buildTextOverlayStyle (rc, ov, canvasEl, editable = false) {
     fontSize: `${fontSize}px`,
     fontWeight: d.fontWeight || 'bold',
     fontStyle: d.fontStyle || 'normal',
-    color: d.fill || '#000000',
+    color: d.bw ? colorToGrayscale(d.fill || '#000000') : (d.fill || '#000000'),
 
     textAlign: d.textAlign || 'left',
 
@@ -461,6 +513,8 @@ function renderPageOffscreen (page, scaleMul = 2) {
   if (isDrawableForExport(pg.bgImage)) {
     ctx.imageSmoothingEnabled = true
     try { ctx.imageSmoothingQuality = 'high' } catch {}
+    ctx.save()
+    if (pg.bwContent) ctx.filter = 'grayscale(1)'
     ctx.drawImage(
       pg.bgImage,
       contentRect.x,
@@ -468,6 +522,7 @@ function renderPageOffscreen (page, scaleMul = 2) {
       contentRect.w,
       contentRect.h
     )
+    ctx.restore()
   }
 
   const overlays = pg.overlays || []
@@ -486,10 +541,13 @@ function renderPageOffscreen (page, scaleMul = 2) {
     const halfH = h / 2
 
     if (ov.type === 'image' && isDrawableForExport(ov.data?.image)) {
+      ctx.save()
+      if (ov.data?.bw) ctx.filter = 'grayscale(1)'
       ctx.drawImage(ov.data.image, -halfW, -halfH, w, h)
+      ctx.restore()
     } else if (ov.type === 'text') {
       const d = ov.data || {}
-      ctx.fillStyle = d.fill || '#000000'
+      ctx.fillStyle = d.bw ? colorToGrayscale(d.fill || '#000000') : (d.fill || '#000000')
       const fontWeight = d.fontWeight || 'bold'
       const fontStyle = d.fontStyle || 'normal'
       const fontSize = Math.max(6, d.fontSize || 48)
@@ -575,6 +633,7 @@ export default function Editor () {
   const [prices, setPrices] = useState({ single: 0, month: 0, year: 0 })
   const [promoPercent, setPromoPercent] = useState(0)
   const [billing, setBilling] = useState(null)
+  const [bwMode, setBwMode] = useState(false)
   const isAuthed = !!localStorage.getItem('access')
 
   const [undoStack, setUndoStack] = useState([])
@@ -598,6 +657,12 @@ export default function Editor () {
   const [textEdit, setTextEdit] = useState(null)
   const [textEditValue, setTextEditValue] = useState('')
   const textAreaRef = useRef(null)
+  const bwModeRef = useRef(false)
+  const [mobileZoom, setMobileZoom] = useState({ scale: 1, x: 0, y: 0 })
+  const mobileZoomRef = useRef({ scale: 1, x: 0, y: 0 })
+  const touchPointsRef = useRef(new Map())
+  const pinchStateRef = useRef(null)
+  const panStateRef = useRef(null)
   const textEditRef = useRef(textEdit)
   const textEditValueRef = useRef(textEditValue)
   const lastGoodTextRef = useRef('')
@@ -637,6 +702,8 @@ export default function Editor () {
   useEffect(() => { textEditRef.current = textEdit }, [textEdit])
   useEffect(() => { textEditValueRef.current = textEditValue }, [textEditValue])
   useEffect(() => { isMobileRef.current = isMobile }, [isMobile])
+  useEffect(() => { bwModeRef.current = bwMode }, [bwMode])
+  useEffect(() => { mobileZoomRef.current = mobileZoom }, [mobileZoom])
 
   const setPagesSync = useCallback((nextPages) => {
     pagesRef.current = nextPages
@@ -660,6 +727,41 @@ export default function Editor () {
 
     toast(msg, 'error')
   }
+
+  const clampMobileZoom = useCallback((next) => {
+    const wrap = canvasWrapRef.current
+    if (!wrap) return { scale: 1, x: 0, y: 0 }
+
+    const scale = Math.max(1, Math.min(4, Number(next?.scale || 1)))
+    if (scale <= 1.001) return { scale: 1, x: 0, y: 0 }
+
+    const maxX = ((wrap.clientWidth || 0) * (scale - 1)) / 2
+    const maxY = ((wrap.clientHeight || 0) * (scale - 1)) / 2
+
+    return {
+      scale,
+      x: Math.max(-maxX, Math.min(maxX, Number(next?.x || 0))),
+      y: Math.max(-maxY, Math.min(maxY, Number(next?.y || 0)))
+    }
+  }, [])
+
+  const setMobileZoomSafe = useCallback((next) => {
+    const clamped = clampMobileZoom(next)
+    mobileZoomRef.current = clamped
+    setMobileZoom(clamped)
+  }, [clampMobileZoom])
+
+  const resetMobileZoom = useCallback(() => {
+    setMobileZoomSafe({ scale: 1, x: 0, y: 0 })
+  }, [setMobileZoomSafe])
+
+  useEffect(() => {
+    resetMobileZoom()
+  }, [cur, pages.length, resetMobileZoom])
+
+  useEffect(() => {
+    if (textEdit) resetMobileZoom()
+  }, [textEdit, resetMobileZoom])
 
   const closeMenus = useCallback(() => setMenuOpen(null), [])
   const toggleMenu = useCallback((name) => {
@@ -749,7 +851,7 @@ export default function Editor () {
           angleRad: ov.angleRad || 0
         }
         if (ov.type === 'image') {
-          return { ...base, data: { src: d.src || null } }
+          return { ...base, data: { src: d.src || null, bw: !!d.bw } }
         }
         if (ov.type === 'text') {
           return {
@@ -761,7 +863,8 @@ export default function Editor () {
               fontWeight: d.fontWeight || 'bold',
               fontStyle: d.fontStyle || 'normal',
               fill: d.fill || '#000000',
-              textAlign: d.textAlign || 'left'
+              textAlign: d.textAlign || 'left',
+              bw: !!d.bw
             }
           }
         }
@@ -779,12 +882,13 @@ export default function Editor () {
         canvas_h: p.canvasHeight,
         content_w: p.contentWidth,
         content_h: p.contentHeight,
+        bwContent: !!p.bwContent,
         bg_src: bgSrc,
         overlays
       }
     })
 
-    return { client_id: cid, name, pages: pagesData }
+    return { client_id: cid, name, bw_mode: bwModeRef.current, pages: pagesData }
   }
 
   useEffect(() => {
@@ -847,6 +951,99 @@ export default function Editor () {
     return Math.max(0, bottomEl.getBoundingClientRect().height + 6)
   }, [])
 
+    const onWrapPointerDownCapture = useCallback((e) => {
+    if (!isMobileRef.current || e.pointerType !== 'touch') return
+
+    touchPointsRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
+
+    if (touchPointsRef.current.size === 2) {
+      const pts = [...touchPointsRef.current.values()]
+      const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y) || 1
+      pinchStateRef.current = {
+        startDistance: dist,
+        startScale: mobileZoomRef.current.scale
+      }
+      panStateRef.current = null
+      e.preventDefault()
+      return
+    }
+
+    if (touchPointsRef.current.size === 1 && mobileZoomRef.current.scale > 1.001) {
+      panStateRef.current = {
+        pointerId: e.pointerId,
+        startX: e.clientX,
+        startY: e.clientY,
+        startPanX: mobileZoomRef.current.x,
+        startPanY: mobileZoomRef.current.y
+      }
+      e.preventDefault()
+    }
+  }, [])
+
+  const onWrapPointerMoveCapture = useCallback((e) => {
+    if (!isMobileRef.current || e.pointerType !== 'touch') return
+    if (!touchPointsRef.current.has(e.pointerId)) return
+
+    touchPointsRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
+
+    if (touchPointsRef.current.size >= 2) {
+      const pts = [...touchPointsRef.current.values()].slice(0, 2)
+      const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y) || 1
+      const pinch = pinchStateRef.current || {
+        startDistance: dist,
+        startScale: mobileZoomRef.current.scale
+      }
+      pinchStateRef.current = pinch
+
+      const nextScale = pinch.startScale * (dist / Math.max(1, pinch.startDistance))
+      setMobileZoomSafe({
+        scale: nextScale,
+        x: mobileZoomRef.current.x,
+        y: mobileZoomRef.current.y
+      })
+      e.preventDefault()
+      return
+    }
+
+  const pan = panStateRef.current
+    if (pan && pan.pointerId === e.pointerId && mobileZoomRef.current.scale > 1.001) {
+      setMobileZoomSafe({
+        scale: mobileZoomRef.current.scale,
+        x: pan.startPanX + (e.clientX - pan.startX),
+        y: pan.startPanY + (e.clientY - pan.startY)
+      })
+      e.preventDefault()
+    }
+  }, [setMobileZoomSafe])
+
+  const onWrapPointerEndCapture = useCallback((e) => {
+    if (!isMobileRef.current || e.pointerType !== 'touch') return
+
+    touchPointsRef.current.delete(e.pointerId)
+
+    if (panStateRef.current?.pointerId === e.pointerId) {
+      panStateRef.current = null
+    }
+
+    if (touchPointsRef.current.size < 2) {
+      pinchStateRef.current = null
+    }
+
+    if (touchPointsRef.current.size === 1 && mobileZoomRef.current.scale > 1.001) {
+      const entry = touchPointsRef.current.entries().next().value
+      if (entry) {
+        const [pointerId, pt] = entry
+        panStateRef.current = {
+          pointerId,
+          startX: pt.x,
+          startY: pt.y,
+          startPanX: mobileZoomRef.current.x,
+          startPanY: mobileZoomRef.current.y
+        }
+      }
+    }
+  }, [])
+
   const forceLayoutSync = useCallback(() => {
     const engine = engineRef.current
     const wrap = canvasWrapRef.current
@@ -874,6 +1071,7 @@ export default function Editor () {
           contentWidth: page.contentWidth,
           contentHeight: page.contentHeight,
           backgroundImage: page.bgImage,
+          bwContent: !!page.bwContent,
           overlays: page.overlays || []
         })
 
@@ -1174,6 +1372,7 @@ export default function Editor () {
       contentWidth: page.contentWidth,
       contentHeight: page.contentHeight,
       backgroundImage: page.bgImage,
+      bwContent: !!page.bwContent,
       overlays: page.overlays || []
     })
 
@@ -1343,12 +1542,13 @@ export default function Editor () {
               fontWeight: d.fontWeight || ov.fontWeight || 'bold',
               fontStyle: d.fontStyle || ov.fontStyle || 'normal',
               fill: d.fill || ov.fill || '#000000',
-              textAlign: d.textAlign || ov.textAlign || 'left'
+              textAlign: d.textAlign || ov.textAlign || 'left',
+              bw: !!(d.bw || ov.bw)
             }
           } else if (ov.type === 'image' || ov.t === 'im') {
             base.type = 'image'
             const src = ov.data?.src || ov.src
-            base.data = { src }
+            base.data = { src, bw: !!(ov.data?.bw || ov.bw) }
             if (src) {
               try { base.data.image = await loadImageEl(src) } catch {}
             }
@@ -1365,6 +1565,7 @@ export default function Editor () {
           canvasHeight,
           bgImage: img,
           bgSrc,
+          bwContent: !!(pgRaw.bwContent || pgRaw.bw_content),
           overlays
         }))
 
@@ -1373,6 +1574,7 @@ export default function Editor () {
       }
 
       setPagesSync(restored)
+      setBwMode(Boolean(data.bw_mode) || restored.some(p => p.bwContent))
       if (restored.length) setCur(0)
       setDraftHint(true)
       setDocId(data.client_id || randDocId())
@@ -1466,7 +1668,7 @@ export default function Editor () {
         if (['jpg', 'jpeg', 'png'].includes(ext)) {
           const url = await readAsDataURL(f)
           const img = await loadImageEl(url)
-          newPages.push(makePageFromBackground(img, url))
+          newPages.push(makePageFromBackground(img, url, bwModeRef.current))
           addedPages++; tick(1)
         } else if (ext === 'pdf') {
           await ensurePDFJS()
@@ -1476,7 +1678,7 @@ export default function Editor () {
           for (let i = 1; i <= num; i++) {
             const cv = await renderPDFPageToCanvas(pdf, i, PDF_RENDER_SCALE)
             const url = cv.toDataURL('image/png')
-            newPages.push(makePageFromBackground(cv, url))
+            newPages.push(makePageFromBackground(cv, url, bwModeRef.current))
             addedPages++; tick(1)
           }
         } else if (ext === 'docx') {
@@ -1484,15 +1686,7 @@ export default function Editor () {
           const slices = sliceCanvasToPages(big)
           for (const url of slices) {
             const img = await loadImageEl(url)
-            newPages.push({
-              id: `p_${Date.now()}_${Math.random().toString(36).slice(2)}`,
-              docWidth: img.width || img.naturalWidth,
-              docHeight: img.height || img.naturalHeight,
-              bgImage: img,
-              bgSrc: url,
-              overlays: [],
-              rotation: 0
-            })
+            newPages.push(makePageFromBackground(img, url, bwModeRef.current))
             addedPages++
           }
           tick(2)
@@ -1501,7 +1695,7 @@ export default function Editor () {
           const slices = sliceCanvasToPages(big)
           for (const url of slices) {
             const img = await loadImageEl(url)
-            newPages.push(makePageFromBackground(img, url))
+            newPages.push(makePageFromBackground(img, url, bwModeRef.current))
             addedPages++
           }
           tick(2)
@@ -1826,6 +2020,15 @@ export default function Editor () {
     const last = undoStack[undoStack.length - 1]
     setUndoStack(stk => stk.slice(0, -1))
 
+    if (last.type === 'doc') {
+      internalUpdateRef.current = true
+      setPagesSync(clonePagesState(last.pages || []))
+      setBwMode(!!last.bwMode)
+      scheduleSaveDraftRef.current?.()
+      forceLayoutSyncRef.current?.()
+      return
+    }
+
     const cloneOvs = (arr) => (arr || []).map(o => ({ ...o, data: { ...(o.data || {}) } }))
 
     internalUpdateRef.current = true
@@ -1854,6 +2057,43 @@ export default function Editor () {
       return copy
     })
 
+    scheduleSaveDraftRef.current?.()
+    forceLayoutSyncRef.current?.()
+  }
+
+  function applyBwMode (nextChecked) {
+    const next = !!nextChecked
+
+    if (!pagesRef.current.length) {
+      setBwMode(next)
+      return
+    }
+
+    const snapshot = clonePagesState(pagesRef.current)
+    setUndoStack(stk => [...stk, {
+      type: 'doc',
+      pages: snapshot,
+      bwMode: bwModeRef.current
+    }])
+
+    const updated = pagesRef.current.map(rawPage => {
+      const page = normalizePageGeometry(rawPage)
+      return {
+        ...page,
+        bwContent: next,
+        overlays: (page.overlays || []).map(ov => ({
+          ...ov,
+          data: {
+            ...(ov.data || {}),
+            bw: next
+          }
+        }))
+      }
+    })
+
+    internalUpdateRef.current = true
+    setPagesSync(updated)
+    setBwMode(next)
     scheduleSaveDraftRef.current?.()
     forceLayoutSyncRef.current?.()
   }
@@ -2426,10 +2666,21 @@ export default function Editor () {
     return {
       position: 'absolute',
       left: safeLeft,
-      top: Math.max(8, docRect.y + 8),
-      transform: 'translate(-50%, 0)'
+      top: Math.max(12, docRect.y),
+      transform: 'translate(-50%, -50%)'
     }
   })()
+
+  const zoomLocked = isMobile && mobileZoom.scale > 1.001
+
+  const docLayerStyle = {
+    position: 'absolute',
+    inset: 0,
+    transform: `translate3d(${mobileZoom.x}px, ${mobileZoom.y}px, 0) scale(${mobileZoom.scale})`,
+    transformOrigin: 'center center',
+    transition: 'transform .08s ease-out',
+    pointerEvents: zoomLocked ? 'none' : 'auto'
+  }
 
     return (
     <div className="doc-editor page" style={{ paddingTop: 0 }}>
@@ -2629,10 +2880,14 @@ export default function Editor () {
             ref={canvasWrapRef}
             onDragOver={(e) => e.preventDefault()}
             onDrop={onCanvasDrop}
+            onPointerDownCapture={onWrapPointerDownCapture}
+            onPointerMoveCapture={onWrapPointerMoveCapture}
+            onPointerUpCapture={onWrapPointerEndCapture}
+            onPointerCancelCapture={onWrapPointerEndCapture}
             style={{ position: 'relative', touchAction: 'none' }}
           >
             {hasDoc && (
-              <>
+              <div className="ed-doc-layer" style={docLayerStyle}>
                 <canvas ref={canvasRef} style={{ width: '100%', height: '100%', display: 'block' }} />
 
                 {engineForRender && pageForRender && (pageForRender.overlays || []).filter(ov => ov.type === 'text').map(ov => {
@@ -2674,7 +2929,7 @@ export default function Editor () {
                     autoCapitalize="off"
                   />
                 )}
-              </>
+              </div>
             )}
 
             {!hasDoc && (
@@ -2732,6 +2987,16 @@ export default function Editor () {
             >
               <img src={icAddPage} alt="" style={{ width: 18, height: 18, marginRight: 8 }} />На все страницы
             </button>
+          </div>
+          <div className="ed-option-row">
+            <label className="ed-check">
+              <input
+                type="checkbox"
+                checked={bwMode}
+                onChange={(e) => applyBwMode(e.target.checked)}
+              />
+              <span>Режим ЧБ</span>
+            </label>
           </div>
 
           <div className="ed-download">
@@ -2847,6 +3112,14 @@ export default function Editor () {
           >
             <img src={icDelete} alt="" style={{ width: 18, height: 18, marginRight: 10 }} />Удалить документ
           </button>
+          <label className="ed-check ed-check-sheet">
+            <input
+              type="checkbox"
+              checked={bwMode}
+              onChange={(e) => applyBwMode(e.target.checked)}
+            />
+            <span>Режим ЧБ</span>
+          </label>
         </div>
       )}
 
@@ -3104,7 +3377,7 @@ function UnifiedPager ({ total, current, pgText, setPgText, onGo, onPrev, onNext
         {canNext ? (
           <img src={icPrev} alt="Next" style={{ transform: 'rotate(180deg)' }} />
         ) : (
-          <img src={icPlus} alt="+" onClick={onAdd} />
+          <img src={icPlus} alt="+" />
         )}
       </button>
     </div>

@@ -618,6 +618,27 @@ main { flex:1; }
   transition:box-shadow .2s ease;
 }
 .user-chip .chip-label{font-weight:700;color:var(--accent)}
+.chip-meta{
+  display:flex;
+  flex-direction:column;
+  align-items:flex-start;
+  gap:3px;
+  min-width:0;
+}
+.chip-plan-badge{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  background:var(--accent);
+  color:#fff;
+  padding:4px 8px;
+  border-radius:999px;
+  font-size:11px;
+  line-height:1;
+  font-weight:800;
+  white-space:nowrap;
+  max-width:220px;
+}
 .user-chip:hover{box-shadow:0 6px 18px rgba(226,109,92,.35)}
 .chip-avatar{
   width:28px;height:28px;border-radius:50%;
@@ -937,6 +958,33 @@ main { flex:1; }
 .doc-editor .ed-bottom .ed-pager .pg-total{
   font-weight:800;font-size:18px;opacity:.9;white-space:nowrap;
 }
+.doc-editor .ed-option-row{
+  margin-top:12px;
+  padding-top:12px;
+  border-top:1px solid #f0f0f0;
+}
+.ed-check{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  font-weight:700;
+  cursor:pointer;
+  user-select:none;
+}
+.ed-check input{
+  width:18px;
+  height:18px;
+  accent-color:var(--accent);
+}
+.ed-check-sheet{
+  margin-top:6px;
+  padding:10px 12px;
+  border-top:1px solid #f3f3f3;
+}
+.ed-doc-layer{
+  position:absolute;
+  inset:0;
+}
 
 .disabled,.btn.disabled,.ed-action.disabled,.ed-tool.disabled,.fab.disabled,.ed-menu>button.disabled{
   opacity:.45;filter:saturate(0);cursor:default;pointer-events:none;
@@ -1128,6 +1176,13 @@ main { flex:1; }
   .doc-editor .ed-toolbar .sep{margin:0 2px}
   .two-col{grid-template-columns:1fr!important}
   #profile .form-grid{grid-template-columns:1fr!important}
+  .chip-plan-badge{
+    font-size:10px;
+    padding:3px 7px;
+    max-width:150px;
+    overflow:hidden;
+    text-overflow:ellipsis;
+  }
 }
 
 /* Прогресс‑оверлей */

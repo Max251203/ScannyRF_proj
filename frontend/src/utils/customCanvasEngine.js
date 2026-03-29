@@ -93,6 +93,7 @@ export class CustomCanvasEngine {
     this.contentOffsetY = 0
 
     this.backgroundImage = null
+    this.backgroundGray = false
     this.overlays = []
 
     this.viewWidth = canvas.clientWidth || canvas.width || 1
@@ -306,6 +307,7 @@ export class CustomCanvasEngine {
     this._updateContentRect()
 
     this.backgroundImage = doc.backgroundImage || null
+    this.backgroundGray = !!doc.bwContent
 
     const incoming = cloneOverlaysDeep(doc.overlays || [])
     for (const ov of incoming) normalizeTextOverlay(ov)
@@ -442,6 +444,8 @@ export class CustomCanvasEngine {
 
     // контент внутри холста не вращаем — просто центрируем
     if (isDrawable(this.backgroundImage)) {
+      ctx.save()
+      if (this.backgroundGray) ctx.filter = 'grayscale(1)'
       ctx.drawImage(
         this.backgroundImage,
         this.contentOffsetX,
@@ -449,6 +453,7 @@ export class CustomCanvasEngine {
         this.contentWidth,
         this.contentHeight
       )
+      ctx.restore()
     }
 
     for (const ov of this.overlays) {
@@ -476,6 +481,7 @@ export class CustomCanvasEngine {
         ctx.scale(sx, sy)
         const halfW = ov.w / 2
         const halfH = ov.h / 2
+        if (ov.data?.bw) ctx.filter = 'grayscale(1)'
         ctx.drawImage(img, -halfW, -halfH, ov.w, ov.h)
       }
       ctx.restore()
