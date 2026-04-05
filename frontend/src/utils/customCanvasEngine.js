@@ -14,7 +14,6 @@ scaleImg.src = icScale
 const editImg = new Image()
 editImg.src = icEdit
 
-// Совпадает с LH_FACTOR в Editor.jsx
 const LH_FACTOR = 1
 
 function rotateVec (x, y, c, s) {
@@ -40,7 +39,6 @@ function isDrawable (img) {
   return false
 }
 
-// text overlay НИКОГДА не хранит масштаб в scaleX/scaleY.
 function normalizeTextOverlay (ov) {
   if (!ov || ov.type !== 'text') return ov
 
@@ -68,6 +66,45 @@ function cloneOverlaysDeep (arr) {
   return (arr || []).map(o => ({ ...o, data: { ...(o.data || {}) } }))
 }
 
+const grayDrawableCache = new WeakMap()
+
+function getGrayDrawable (source) {
+  if (!isDrawable(source)) return source
+  if (grayDrawableCache.has(source)) return grayDrawableCache.get(source)
+
+  try {
+    const w = source.naturalWidth || source.videoWidth || source.width
+    const h = source.naturalHeight || source.videoHeight || source.height
+    if (!w || !h) return source
+
+    const canvas = document.createElement('canvas')
+    canvas.width = w
+    canvas.height = h
+    const ctx = canvas.getContext('2d', { willReadFrequently: true })
+    ctx.drawImage(source, 0, 0, w, h)
+
+    const img = ctx.getImageData(0, 0, w, h)
+    const d = img.data
+    for (let i = 0; i < d.length; i += 4) {
+      const y = Math.round(d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114)
+      d[i] = y
+      d[i + 1] = y
+      d[i + 2] = y
+    }
+    ctx.putImageData(img, 0, 0)
+    grayDrawableCache.set(source, canvas)
+    return canvas
+  } catch {
+    return source
+  }
+}
+
+function drawImageMaybeGray (ctx, source, x, y, w, h, gray = false) {
+  if (!isDrawable(source)) return
+  const drawable = gray ? getGrayDrawable(source) : source
+  ctx.drawImage(drawable, x, y, w, h)
+}
+
 export class CustomCanvasEngine {
   constructor (canvas, opts = {}) {
     this.canvas = canvas
@@ -82,11 +119,9 @@ export class CustomCanvasEngine {
     this.onInteractionEnd = opts.onInteractionEnd || (() => {})
     this.onLimit = opts.onLimit || (() => {})
 
-    // docWidth/docHeight = размеры ХОЛСТА (рабочей области)
     this.docWidth = 1000
     this.docHeight = 1414
 
-    // contentWidth/contentHeight = размеры КОНТЕНТА внутри холста
     this.contentWidth = 1000
     this.contentHeight = 1414
     this.contentOffsetX = 0
@@ -107,6 +142,8 @@ export class CustomCanvasEngine {
       bottom: 0,
       left: 0
     }
+
+    this.externalViewScale = 1
 
     this.scale = 1
     this.offsetX = 0
@@ -160,10 +197,6 @@ export class CustomCanvasEngine {
     window.removeEventListener('pointercancel', this._onPointerCancel)
   }
 
-  // ---------------------------------------------------------------------------
-  // Public helpers
-  // ---------------------------------------------------------------------------
-
   setViewportInsets (insets = {}) {
     this.viewportInsets = {
       top: Math.max(0, Number(insets.top || 0)),
@@ -173,6 +206,10 @@ export class CustomCanvasEngine {
     }
     this._updateTransform()
     this._draw()
+  }
+
+  setExternalViewTransform (transform = {}) {
+    this.externalViewScale = Math.max(0.25, Number(transform.scale || 1))
   }
 
   getContentRect () {
@@ -281,10 +318,6 @@ export class CustomCanvasEngine {
     return Math.min(desiredFactor, fMax)
   }
 
-  // ---------------------------------------------------------------------------
-  // Public API
-  // ---------------------------------------------------------------------------
-
   setDocument (doc) {
     const prevActive = this.activeId
 
@@ -300,7 +333,6 @@ export class CustomCanvasEngine {
       Number(doc.contentHeight || doc.content_h || doc.backgroundHeight || this.docHeight)
     )
 
-    // гарантируем, что контент физически не больше холста
     this.docWidth = Math.max(this.docWidth, this.contentWidth)
     this.docHeight = Math.max(this.docHeight, this.contentHeight)
 
@@ -380,10 +412,6 @@ export class CustomCanvasEngine {
     this._draw()
   }
 
-  // ---------------------------------------------------------------------------
-  // Geometry & rendering
-  // ---------------------------------------------------------------------------
-
   _updateContentRect () {
     this.contentOffsetX = (this.docWidth - this.contentWidth) / 2
     this.contentOffsetY = (this.docHeight - this.contentHeight) / 2
@@ -438,22 +466,19 @@ export class CustomCanvasEngine {
     ctx.translate(this.offsetX, this.offsetY)
     ctx.scale(s, s)
 
-    // белый холст
     ctx.fillStyle = '#ffffff'
     ctx.fillRect(0, 0, this.docWidth, this.docHeight)
 
-    // контент внутри холста не вращаем — просто центрируем
     if (isDrawable(this.backgroundImage)) {
-      ctx.save()
-      if (this.backgroundGray) ctx.filter = 'grayscale(1)'
-      ctx.drawImage(
+      drawImageMaybeGray(
+        ctx,
         this.backgroundImage,
         this.contentOffsetX,
         this.contentOffsetY,
         this.contentWidth,
-        this.contentHeight
+        this.contentHeight,
+        this.backgroundGray
       )
-      ctx.restore()
     }
 
     for (const ov of this.overlays) {
@@ -481,15 +506,13 @@ export class CustomCanvasEngine {
         ctx.scale(sx, sy)
         const halfW = ov.w / 2
         const halfH = ov.h / 2
-        if (ov.data?.bw) ctx.filter = 'grayscale(1)'
-        ctx.drawImage(img, -halfW, -halfH, ov.w, ov.h)
+        drawImageMaybeGray(ctx, img, -halfW, -halfH, ov.w, ov.h, !!ov.data?.bw)
       }
       ctx.restore()
       return
     }
 
     if (ov.type === 'text') {
-      // текст рисуется HTML-слоем поверх canvas
       ctx.restore()
       return
     }
@@ -568,13 +591,13 @@ export class CustomCanvasEngine {
     this._lastControlPositions = { rotate: pRotate, delete: pDelete, scale: pScale, edit: null }
   }
 
-  // ---------------------------------------------------------------------------
-  // Hit testing / pointer
-  // ---------------------------------------------------------------------------
-
   _getPointerPos (evt) {
     const rect = this.canvas.getBoundingClientRect()
-    return { sx: evt.clientX - rect.left, sy: evt.clientY - rect.top }
+    const extScale = this.externalViewScale || 1
+    return {
+      sx: (evt.clientX - rect.left) / extScale,
+      sy: (evt.clientY - rect.top) / extScale
+    }
   }
 
   _hitHandle (sx, sy) {
@@ -784,10 +807,6 @@ export class CustomCanvasEngine {
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // Transform handlers
-  // ---------------------------------------------------------------------------
-
   _handleMove (ov, sx, sy) {
     const start = this.dragState.startOverlay
     const startDoc = this.dragState.startDoc
@@ -856,10 +875,6 @@ export class CustomCanvasEngine {
     ov.cy = overlay.cy
     this.dragState.lastOverlay = cloneOverlay(overlay)
   }
-
-  // ---------------------------------------------------------------------------
-  // Bounds / clamp
-  // ---------------------------------------------------------------------------
 
   _clampOverlay (ov, canvasW = this.docWidth, canvasH = this.docHeight) {
     const rect = {
@@ -948,10 +963,6 @@ export class CustomCanvasEngine {
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // Add overlays
-  // ---------------------------------------------------------------------------
-
   addImageOverlay (img, data = {}) {
     if (!isDrawable(img)) return
     this.onBeforeOverlayChange(this.overlays.map(cloneOverlay))
@@ -969,7 +980,7 @@ export class CustomCanvasEngine {
       scaleX: 1,
       scaleY: 1,
       angleRad: 0,
-      data: { src: data.src || null, image: img }
+      data: { src: data.src || null, image: img, bw: !!data.bw }
     }
 
     this._fitOverlayIntoCanvas(ov, 0.9)
@@ -1008,11 +1019,13 @@ export class CustomCanvasEngine {
         fontWeight: opts.fontWeight || 'bold',
         fontStyle: opts.fontStyle || 'normal',
         fill: opts.fill || '#000000',
-        textAlign: opts.textAlign || 'left'
+        textAlign: opts.textAlign || 'left',
+        bw: !!opts.bw
       }
     }
 
     normalizeTextOverlay(ov)
+
     this._fitOverlayIntoCanvas(ov, 0.92)
     this._clampOverlay(ov)
 

@@ -802,6 +802,8 @@ main { flex:1; }
   flex:1 1 auto;
   display:grid;grid-template-columns:var(--sideL) 1fr var(--sideR);
   gap:0;align-items:stretch;overflow:hidden;
+  min-height:0;
+  min-width:0;
 }
 .doc-editor .ed-left,
 .doc-editor .ed-right{
@@ -842,6 +844,8 @@ main { flex:1; }
 .doc-editor .ed-center{
   display:flex;flex-direction:column;
   height:100%;overflow:hidden;background:#f0f4f3;position:relative;
+  min-height:0;
+  min-width:0;
 }
 .doc-editor .ed-namebar{
   display:flex;align-items:center;justify-content:center;
@@ -857,6 +861,8 @@ main { flex:1; }
   flex:1;display:flex;justify-content:center;align-items:center;
   overflow:hidden;position:relative;padding:0;
   background-color:#f0f4f3;
+  min-height:0;
+  min-width:0;
 }
 .doc-editor .ed-canvas{
   position:relative;display:none;
@@ -984,6 +990,8 @@ main { flex:1; }
 .ed-doc-layer{
   position:absolute;
   inset:0;
+  will-change:transform;
+  touch-action:none;
 }
 
 .disabled,.btn.disabled,.ed-action.disabled,.ed-tool.disabled,.fab.disabled,.ed-menu>button.disabled{

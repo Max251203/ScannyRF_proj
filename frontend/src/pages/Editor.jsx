@@ -93,6 +93,45 @@ function colorToGrayscale (color) {
   return a != null ? `rgba(${y}, ${y}, ${y}, ${a})` : `rgb(${y}, ${y}, ${y})`
 }
 
+const grayDrawableCache = new WeakMap()
+
+function getGrayDrawableForExport(source) {
+  if (!isDrawableForExport(source)) return source
+  if (grayDrawableCache.has(source)) return grayDrawableCache.get(source)
+
+  try {
+    const w = source.naturalWidth || source.videoWidth || source.width
+    const h = source.naturalHeight || source.videoHeight || source.height
+    if (!w || !h) return source
+
+    const canvas = document.createElement('canvas')
+    canvas.width = w
+    canvas.height = h
+    const ctx = canvas.getContext('2d', { willReadFrequently: true })
+    ctx.drawImage(source, 0, 0, w, h)
+
+    const img = ctx.getImageData(0, 0, w, h)
+    const d = img.data
+    for (let i = 0; i < d.length; i += 4) {
+      const y = Math.round(d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114)
+      d[i] = y
+      d[i + 1] = y
+      d[i + 2] = y
+    }
+    ctx.putImageData(img, 0, 0)
+    grayDrawableCache.set(source, canvas)
+    return canvas
+  } catch {
+    return source
+  }
+}
+
+function drawImageForExport(ctx, source, x, y, w, h, gray = false) {
+  if (!isDrawableForExport(source)) return
+  const drawable = gray ? getGrayDrawableForExport(source) : source
+  ctx.drawImage(drawable, x, y, w, h)
+}
+
 const EXTREME_RATIO_THRESHOLD = 2.2
 const STRICT_PORTRAIT_RATIO = 0.707
 const STRICT_LANDSCAPE_RATIO = 1.414
@@ -513,16 +552,15 @@ function renderPageOffscreen (page, scaleMul = 2) {
   if (isDrawableForExport(pg.bgImage)) {
     ctx.imageSmoothingEnabled = true
     try { ctx.imageSmoothingQuality = 'high' } catch {}
-    ctx.save()
-    if (pg.bwContent) ctx.filter = 'grayscale(1)'
-    ctx.drawImage(
+    drawImageForExport(
+      ctx,
       pg.bgImage,
       contentRect.x,
       contentRect.y,
       contentRect.w,
-      contentRect.h
+      contentRect.h,
+      !!pg.bwContent
     )
-    ctx.restore()
   }
 
   const overlays = pg.overlays || []
@@ -541,10 +579,7 @@ function renderPageOffscreen (page, scaleMul = 2) {
     const halfH = h / 2
 
     if (ov.type === 'image' && isDrawableForExport(ov.data?.image)) {
-      ctx.save()
-      if (ov.data?.bw) ctx.filter = 'grayscale(1)'
-      ctx.drawImage(ov.data.image, -halfW, -halfH, w, h)
-      ctx.restore()
+      drawImageForExport(ctx, ov.data.image, -halfW, -halfH, w, h, !!ov.data?.bw)
     } else if (ov.type === 'text') {
       const d = ov.data || {}
       ctx.fillStyle = d.bw ? colorToGrayscale(d.fill || '#000000') : (d.fill || '#000000')
@@ -634,6 +669,10 @@ export default function Editor () {
   const [promoPercent, setPromoPercent] = useState(0)
   const [billing, setBilling] = useState(null)
   const [bwMode, setBwMode] = useState(false)
+  const [editorViewportHeight, setEditorViewportHeight] = useState(() => {
+    const headerH = document.querySelector('.site-header')?.getBoundingClientRect().height || 64
+    return Math.max(320, (window.visualViewport?.height || window.innerHeight) - headerH)
+})
   const isAuthed = !!localStorage.getItem('access')
 
   const [undoStack, setUndoStack] = useState([])
@@ -732,8 +771,15 @@ export default function Editor () {
     const wrap = canvasWrapRef.current
     if (!wrap) return { scale: 1, x: 0, y: 0 }
 
-    const scale = Math.max(1, Math.min(4, Number(next?.scale || 1)))
-    if (scale <= 1.001) return { scale: 1, x: 0, y: 0 }
+    const scale = Math.max(0.5, Math.min(4, Number(next?.scale || 1)))
+
+    if (scale < 1) {
+      return { scale, x: 0, y: 0 }
+    }
+
+    if (Math.abs(scale - 1) < 0.001) {
+      return { scale: 1, x: 0, y: 0 }
+    }
 
     const maxX = ((wrap.clientWidth || 0) * (scale - 1)) / 2
     const maxY = ((wrap.clientHeight || 0) * (scale - 1)) / 2
@@ -754,6 +800,31 @@ export default function Editor () {
   const resetMobileZoom = useCallback(() => {
     setMobileZoomSafe({ scale: 1, x: 0, y: 0 })
   }, [setMobileZoomSafe])
+
+  useEffect(() => {
+    const updateViewportHeight = () => {
+      const vv = window.visualViewport
+      const h = vv?.height || window.innerHeight
+      const headerH = document.querySelector('.site-header')?.getBoundingClientRect().height || 64
+      setEditorViewportHeight(Math.max(320, Math.round(h - headerH)))
+      requestAnimationFrame(() => forceLayoutSyncRef.current?.())
+    }
+
+    updateViewportHeight()
+
+    const vv = window.visualViewport
+    vv?.addEventListener('resize', updateViewportHeight)
+    vv?.addEventListener('scroll', updateViewportHeight)
+    window.addEventListener('resize', updateViewportHeight)
+    window.addEventListener('orientationchange', updateViewportHeight)
+
+    return () => {
+      vv?.removeEventListener('resize', updateViewportHeight)
+      vv?.removeEventListener('scroll', updateViewportHeight)
+      window.removeEventListener('resize', updateViewportHeight)
+      window.removeEventListener('orientationchange', updateViewportHeight)
+    }
+  }, [])
 
   useEffect(() => {
     resetMobileZoom()
@@ -951,7 +1022,7 @@ export default function Editor () {
     return Math.max(0, bottomEl.getBoundingClientRect().height + 6)
   }, [])
 
-    const onWrapPointerDownCapture = useCallback((e) => {
+  const onWrapPointerDownCapture = useCallback((e) => {
     if (!isMobileRef.current || e.pointerType !== 'touch') return
 
     touchPointsRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
@@ -1005,7 +1076,7 @@ export default function Editor () {
       return
     }
 
-  const pan = panStateRef.current
+    const pan = panStateRef.current
     if (pan && pan.pointerId === e.pointerId && mobileZoomRef.current.scale > 1.001) {
       setMobileZoomSafe({
         scale: mobileZoomRef.current.scale,
@@ -1060,6 +1131,8 @@ export default function Editor () {
 
       engine.setViewportInsets({ bottom: getBottomViewportInset() })
       engine.resize(rect.width, rect.height)
+
+      engine.setExternalViewTransform({ scale: mobileZoomRef.current.scale })
 
       const rawPage = pagesRef.current[curRef.current]
       const page = rawPage ? normalizePageGeometry(rawPage) : null
@@ -1346,6 +1419,12 @@ export default function Editor () {
   }, [textEdit, textEditValue])
 
   const prevCurForSyncRef = useRef(0)
+
+  useEffect(() => {
+    if (!engineRef.current) return
+    engineRef.current.setExternalViewTransform({ scale: mobileZoom.scale })
+  }, [mobileZoom])
+
   useEffect(() => {
     const curChanged = prevCurForSyncRef.current !== cur
     prevCurForSyncRef.current = cur
@@ -1366,6 +1445,7 @@ export default function Editor () {
     const page = normalizePageGeometry(rawPage)
 
     engine.setViewportInsets({ bottom: getBottomViewportInset() })
+    engine.setExternalViewTransform({ scale: mobileZoomRef.current.scale })
     engine.setDocument({
       canvasWidth: page.canvasWidth,
       canvasHeight: page.canvasHeight,
@@ -2671,19 +2751,20 @@ export default function Editor () {
     }
   })()
 
-  const zoomLocked = isMobile && mobileZoom.scale > 1.001
-
   const docLayerStyle = {
     position: 'absolute',
     inset: 0,
     transform: `translate3d(${mobileZoom.x}px, ${mobileZoom.y}px, 0) scale(${mobileZoom.scale})`,
     transformOrigin: 'center center',
     transition: 'transform .08s ease-out',
-    pointerEvents: zoomLocked ? 'none' : 'auto'
+    pointerEvents: 'auto'
   }
 
     return (
-    <div className="doc-editor page" style={{ paddingTop: 0 }}>
+    <div
+      className="doc-editor page"
+      style={{ paddingTop: 0, height: `${editorViewportHeight}px` }}
+    >
       <ProgressOverlay
         open={progress.active}
         label={progress.label}
